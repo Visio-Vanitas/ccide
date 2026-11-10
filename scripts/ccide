@@ -1,0 +1,150 @@
+#!/usr/bin/env zsh
+# Adaptive 3-Tier Launcher for `cc-ide` (Yazi + Lazygit | Claude | AI Companion & Hardware Telemetry)
+# - Tier 1 (Local iTerm2): Warm Unix Socket Daemon (`/tmp/.cc-ide/iterm_daemon.sock`, < 5ms native Metal split)
+# - Tier 2 (SSH in iTerm2): OSC 1337 Escape Sequence Passthrough + SSH ControlMaster (< 25ms client native split)
+# - Tier 3 (Universal / tmux): Dedicated `tmux -L ccide` 3-Column Tiling Engine (Ghostty, Kitty, WezTerm, SSH fallback)
+set -euo pipefail
+
+NVM_NODE_BIN=""
+for d in "$HOME"/.nvm/versions/node/*/bin(N); do
+  NVM_NODE_BIN="$d"
+done
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$HOME/.local/bin:$HOME/.claude/bin${NVM_NODE_BIN:+:$NVM_NODE_BIN}:$PATH"
+
+SHOW_GIT=1
+SHOW_MON=0
+SHOW_RIGHT=1
+LEFT_PCT=30
+KEEP_PANES=0
+BACKEND="${CCIDE_BACKEND:-auto}"
+TARGET_DIR="$PWD"
+CLAUDE_ARGS=()
+ ORIG_ARGS=("$@")
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-git|--tree-only) SHOW_GIT=0; shift ;;
+    --mon) SHOW_MON=1; shift ;;
+    --no-mon|--2|--3) SHOW_MON=0; shift ;;
+    --no-right) SHOW_RIGHT=0; shift ;;
+    --tmux) BACKEND="tmux"; shift ;;
+    --osc) BACKEND="osc"; shift ;;
+    --iterm) BACKEND="iterm"; shift ;;
+    --backend)
+      BACKEND="${2:-auto}"
+      shift 2
+      ;;
+    --ssh)
+      shift
+      mkdir -p "$HOME/.ssh"
+      chmod 700 "$HOME/.ssh"
+      exec ssh -t \
+        -o ControlMaster=auto \
+        -o "ControlPath=$HOME/.ssh/ccide-cm-%C" \
+        -o ControlPersist=10m \
+        -o SendEnv=LC_TERMINAL \
+        "$@"
+      ;;
+    --width)
+      LEFT_PCT="${2:-30}"
+      shift 2
+      ;;
+    --keep-panes)
+      KEEP_PANES=1
+      shift
+      ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: ccide / cc-ide [options] [claude-args...]
+
+Adaptive 3-Tier Workspace Backends:
+  (default)        Auto-selects Local iTerm2 Daemon -> SSH OSC 1337 Native Split -> tmux
+  --iterm          Force Tier 1: Local iTerm2 native Metal split panes
+  --osc            Force Tier 2: OSC 1337 passthrough to client iTerm2 native split panes
+  --tmux           Force Tier 3: Universal tmux 3-column layout (`tmux -L ccide`)
+  --ssh <host>     Connect to <host> with SSH ControlMaster ready for native iTerm2 splits
+
+Layout Options:
+  --no-git         Hide bottom-left Lazygit pane (Yazi full height on left)
+  --width <pct>    Left column width percentage (default: 30)
+  --keep-panes     Keep companion panes open after Claude exits
+EOF
+      exit 0
+      ;;
+    *)
+      CLAUDE_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# If `--tmux` is requested (or running in a non-iTerm2 terminal without `$TMUX`),
+# bootstrap inside a dedicated `tmux -L ccide` server if not already inside `tmux`.
+IS_ITERM=0
+if [[ "${TERM_PROGRAM:-}" == "iTerm.app" || "${LC_TERMINAL:-}" == "iTerm2" || -n "${ITERM_SESSION_ID:-}" ]]; then
+  IS_ITERM=1
+fi
+
+if [[ -z "${TMUX:-}" && ( "$BACKEND" == "tmux" || ( "$BACKEND" == "auto" && "$IS_ITERM" -eq 0 ) ) ]]; then
+  if command -v tmux >/dev/null 2>&1 && [[ -z "${CLAUDECODE:-}" ]]; then
+    SESSION_NAME="ccide-${PWD:t}-$$"
+    exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
+      "export CCIDE_BACKEND=tmux; exec '$0' --tmux ${ORIG_ARGS[*]}"
+  fi
+fi
+
+CACHE_DIR="$HOME/.cache/cc-ide"
+mkdir -p "$CACHE_DIR" /tmp/.cc-ide 2>/dev/null || true
+
+# Deterministic numeric Yazi client ID
+YAZI_CLIENT_ID="$(( ($$ * 65537 + RANDOM * 257 + ${#TARGET_DIR}) & 0x7fffffff ))"
+
+# Fast upward `.git` directory check in pure zsh
+GIT_ROOT=""
+cur_d="$TARGET_DIR"
+while [[ -n "$cur_d" && "$cur_d" != "/" ]]; do
+  if [[ -e "$cur_d/.git" ]]; then
+    GIT_ROOT="$cur_d"
+    break
+  fi
+  cur_d="${cur_d:h}"
+done
+[[ -z "$GIT_ROOT" ]] && SHOW_GIT=0
+
+export CCIDE_SHELL_PID="$$"
+SCRIPT_DIR="${0:A:h}"
+REPO_ROOT="${SCRIPT_DIR:h}"
+CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
+[[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
+
+PANE_SPEC=""
+if [[ -x "$CCIDE_CORE_BIN" ]]; then
+  PANE_SPEC="$("$CCIDE_CORE_BIN" workspace open \
+    "$TARGET_DIR" "$YAZI_CLIENT_ID" "$SHOW_GIT" "$SHOW_MON" "$LEFT_PCT" "$GIT_ROOT" "$SHOW_RIGHT" "$BACKEND" || true)"
+fi
+
+# If SSH OSC 1337 timed out and we are not yet in tmux, bootstrap `tmux -L ccide` automatically
+if [[ -z "$PANE_SPEC" && -z "${TMUX:-}" && -n "${SSH_CONNECTION:-}" && -z "${CLAUDECODE:-}" ]] && command -v tmux >/dev/null 2>&1; then
+  SESSION_NAME="ccide-${PWD:t}-$$"
+  exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
+    "export CCIDE_BACKEND=tmux; exec '$0' --tmux ${ORIG_ARGS[*]}"
+fi
+
+if [[ -n "${CLAUDECODE:-}" ]]; then
+  if [[ -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
+    printf '%s' "$YAZI_CLIENT_ID" > "$CACHE_DIR/session_${CLAUDE_CODE_SESSION_ID}.yazi"
+  fi
+  echo "Workspace panes ready ($PANE_SPEC, Yazi ID: $YAZI_CLIENT_ID)."
+  exit 0
+fi
+
+export CC_YAZI_ID="$YAZI_CLIENT_ID"
+
+cleanup() {
+  if [[ "$KEEP_PANES" -eq 0 && -n "${PANE_SPEC:-}" && -x "$CCIDE_CORE_BIN" ]]; then
+    "$CCIDE_CORE_BIN" workspace close "$PANE_SPEC" "$YAZI_CLIENT_ID" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+claude --dangerously-skip-permissions "${CLAUDE_ARGS[@]}"

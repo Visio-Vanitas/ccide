@@ -1,0 +1,18 @@
+[package]
+name = "ccide-core"
+version = "0.3.0"
+edition = "2024"
+license = "MIT"
+description = "Cross-platform native TUI companion, 3-tier adaptive workspace orchestrator, hardware telemetry oscilloscope, statusline, and Yazi file-tree hook for Claude Code (ccide)"
+authors = ["Visio-Vanitas"]
+
+[[bin]]
+name = "ccide-core"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
