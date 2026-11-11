@@ -42,6 +42,14 @@ while [[ $# -gt 0 ]]; do
       [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
       exec "$CCIDE_CORE_BIN" workspace clear-subagents "${1:-}"
       ;;
+    --theme|--palette)
+      shift
+      SCRIPT_DIR="${0:A:h}"
+      REPO_ROOT="${SCRIPT_DIR:h}"
+      CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
+      [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
+      exec "$CCIDE_CORE_BIN" workspace theme "${1:-list}"
+      ;;
     --ssh)
       shift
       mkdir -p "$HOME/.ssh"
@@ -77,6 +85,7 @@ Layout & Subagent Options:
   --width <pct>      Left column width percentage (default: 30)
   --keep-panes       Keep companion panes open after Claude exits
   --clear-subagents  Dismiss all completed subagents across open sidebars
+  --theme [preset]   List or switch color palette preset (~/.config/cc-ide/palette.json)
 EOF
       exit 0
       ;;

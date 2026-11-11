@@ -1,0 +1,52 @@
+{
+  // Active theme preset: "default" | "catppuccin-mocha" | "tokyo-night" | "nord" | "gruvbox-dark" | "dracula"
+  "preset": "default",
+
+  // Set to true to monochrome-tint the top vector model logo with the active family's accent color
+  "tint_logo": false,
+
+  // Optional per-slot overrides (accepts "#RRGGBB", "#RGB", "rgb(r,g,b)", or ANSI 256-color 0..255).
+  // Uncomment any line below to customize individual colors on top of the selected preset:
+  "ui": {
+    // "border":   "#444A5E",
+    // "divider":  "#303446",
+    // "grid_dot": "#2D3244",
+    // "text":     "#E8ECF8",
+    // "dim":      "#787E96",
+    // "cyan":     "#56D6FF",
+    // "green":    "#5CE49A",
+    // "amber":    "#FFC25C",
+    // "coral":    "#EE7C64",
+    // "blue":     "#62A4FF",
+    // "mint":     "#38DAAC",
+    // "lavender": "#C08EFF"
+  },
+
+  "highlights": {
+    // "active_view_bg":   "#203E5C",
+    // "cursor_bg":        "#36304E",
+    // "active_cursor_bg": "#2A5276"
+  },
+
+  "models": {
+    // "model_claude":   "#EE7C64",
+    // "model_gemini":   "#62A4FF",
+    // "model_deepseek": "#56D6FF",
+    // "model_openai":   "#38DAAC",
+    // "model_grok":     "#C08EFF"
+  },
+
+  "statusline": {
+    // "sl_bypass_bg": 131,  "sl_bypass_fg": 255,
+    // "sl_auto_bg":   61,   "sl_auto_fg":   255,
+    // "sl_plan_bg":   30,   "sl_plan_fg":   255,
+    // "sl_accept_bg": 29,   "sl_accept_fg": 255,
+    // "sl_manual_bg": 239,  "sl_manual_fg": 252,
+    // "sl_model_bg":  24,   "sl_model_fg":  255,
+    // "sl_ctx_ok_bg": 240,  "sl_ctx_ok_fg": 253,
+    // "sl_ctx_warn_bg": 136,"sl_ctx_warn_fg": 255,
+    // "sl_ctx_crit_bg": 131,"sl_ctx_crit_fg": 255,
+    // "sl_git_bg":    237,  "sl_git_fg":    250,
+    // "sl_sys_bg":    235,  "sl_sys_fg":    247
+  }
+}

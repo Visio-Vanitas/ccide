@@ -114,11 +114,16 @@ jobs:
       - name: Validate Plugin & Marketplace JSON Manifests
         run: |
           python3 - <<'PY'
-          import json
+          import json, re
           for p in [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "hooks/hooks.json", "assets/adaptive_quadrant_logos.json"]:
               with open(p, encoding="utf-8") as f:
                   json.load(f)
               print("OK:", p)
+          with open("assets/palette.json", encoding="utf-8") as f:
+              raw = re.sub(r"(?m)^\s*//.*$", "", f.read())
+              pal = json.loads(raw)
+              assert "preset" in pal and "ui" in pal and "statusline" in pal
+              print("OK: assets/palette.json")
           PY
 
       - name: Run Dynamic Patcher Mutation & Structural Unit Tests

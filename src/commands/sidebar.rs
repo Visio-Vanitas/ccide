@@ -40,11 +40,9 @@ use crate::telemetry::chart::build_telemetry_panel_rows;
 use crate::telemetry::TelemetrySampler;
 use crate::tui::grid::{get_terminal_geometry, render_multi_panel_grid, BoxRow, PanelSpec};
 use crate::tui::logo::{build_top_logo_panel, load_adaptive_logos};
+use crate::tui::palette::PaletteWatcher;
 use crate::tui::width::{display_width, trunc_to_width};
-use crate::tui::{
-    ACTIVE_CURSOR_BG, ACTIVE_VIEW_BG, AMBER, BOLD, CURSOR_BG, CYAN, DIM, GREEN, MINT, RESET,
-    SPINNERS, WHITE,
-};
+use crate::tui::{BOLD, RESET, SPINNERS};
 
 fn trigger_yazi_reveal(tab_yazi_id: &str, file_path: &str) {
     if tab_yazi_id.is_empty() || file_path.is_empty() || !Path::new(file_path).exists() {
@@ -323,6 +321,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
     let _ = stdout.flush();
 
     let logos = load_adaptive_logos(&home);
+    let mut pal_watcher = PaletteWatcher::new(&home);
     let mut telemetry = TelemetrySampler::new(48);
     let mut sub_trackers: HashMap<String, JsonlTracker> = HashMap::new();
     let mut main_tracker: HashMap<String, JsonlTracker> = HashMap::new();
@@ -372,6 +371,18 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
 
         let has_running_sub = subagents.iter().any(|a| a.status == "running");
         let is_dirty = DIRTY_EVENT.swap(false, Ordering::SeqCst);
+
+        // Live hot-reload `~/.config/cc-ide/palette.json` whenever its mtime changes (`1` stat syscall)
+        if (is_dirty || tick % 2 == 0) && pal_watcher.reload_if_changed(&home) {
+            prev_rows.clear();
+        }
+        let pal = &pal_watcher.palette;
+        let white = &pal.text;
+        let dim = &pal.dim;
+        let cyan = &pal.cyan;
+        let green = &pal.green;
+        let amber = &pal.amber;
+        let mint = &pal.mint;
 
         // Strictly event-driven: only query session/transcripts on `SIGUSR2` hook/state events,
         // mouse interaction, or while a subagent is actively running (with a 30s safety fallback).
@@ -454,21 +465,12 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
 
         // ── 1. TOP PANEL: MODEL LOGO ──
         let is_main_active = active_view_id == "main";
-        let (top_family, top_accent, top_badge) = if is_main_active {
-            (
-                cached_cfg.main_family,
-                cached_cfg.main_accent,
-                cached_cfg.main_model_short.clone(),
-            )
+        let (top_family, top_badge) = if is_main_active {
+            (cached_cfg.main_family, cached_cfg.main_model_short.clone())
         } else {
-            (
-                cached_cfg.sub_family,
-                cached_cfg.sub_accent,
-                cached_cfg.sub_model_short.clone(),
-            )
+            (cached_cfg.sub_family, cached_cfg.sub_model_short.clone())
         };
-        let (top_panel, top_h) =
-            build_top_logo_panel(geom, &logos, top_family, top_accent, top_badge);
+        let (top_panel, top_h) = build_top_logo_panel(geom, &logos, top_family, top_badge, pal);
 
         // Compute exact panel heights upfront so `SUBAGENTS` knows its exact scrollable viewport
         let rem_after_top = geom.rows.saturating_sub(top_h);
@@ -491,27 +493,27 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         let mut sub_rows = Vec::with_capacity(mid_interior.max(4));
 
         let is_main_cursor = cursor_idx == Some(0);
-        let main_bg = match (is_main_active, is_main_cursor) {
-            (true, true) => ACTIVE_CURSOR_BG,
-            (true, false) => ACTIVE_VIEW_BG,
-            (false, true) => CURSOR_BG,
+        let main_bg: &str = match (is_main_active, is_main_cursor) {
+            (true, true) => &pal.active_cursor_bg,
+            (true, false) => &pal.active_view_bg,
+            (false, true) => &pal.cursor_bg,
             (false, false) => "",
         };
         let main_ptr = if is_main_cursor {
-            format!("{AMBER}❯{RESET}{main_bg}")
+            format!("{amber}❯{RESET}{main_bg}")
         } else if is_main_active {
-            format!("{CYAN}▸{RESET}{main_bg}")
+            format!("{cyan}▸{RESET}{main_bg}")
         } else {
             " ".to_string()
         };
         let main_dot = if is_main_active {
-            format!("{GREEN}●{RESET}{main_bg}")
+            format!("{green}●{RESET}{main_bg}")
         } else {
-            format!("{DIM}○{RESET}{main_bg}")
+            format!("{dim}○{RESET}{main_bg}")
         };
         let mut main_tail = if is_main_active {
             format!(
-                "{AMBER}{}{RESET}{main_bg}",
+                "{amber}{}{RESET}{main_bg}",
                 if main_tool.is_empty() {
                     "chat"
                 } else {
@@ -520,7 +522,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             )
         } else {
             format!(
-                "{DIM}{}{RESET}{main_bg}",
+                "{dim}{}{RESET}{main_bg}",
                 if main_tool.is_empty() {
                     "chat"
                 } else {
@@ -534,13 +536,13 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
             main_tail.push_str(&format!(
-                " {CYAN}{}{RESET}{main_bg}",
+                " {cyan}{}{RESET}{main_bg}",
                 trunc_to_width(bname, 15)
             ));
         }
         sub_rows.push(BoxRow {
-            text: format!("{main_ptr}{main_dot} {BOLD}{WHITE}[main]{RESET}{main_bg} {main_tail}"),
-            bg: main_bg,
+            text: format!("{main_ptr}{main_dot} {BOLD}{white}[main]{RESET}{main_bg} {main_tail}"),
+            bg: main_bg.to_string(),
             tag: Some((1, 0)),
         });
 
@@ -557,10 +559,10 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         };
         sub_rows.push(BoxRow {
             text: format!(
-                "   {DIM}{}",
+                "   {dim}{}",
                 trunc_to_width(&main_sub_txt, inner_w.saturating_sub(1))
             ),
-            bg: main_bg,
+            bg: main_bg.to_string(),
             tag: Some((1, 0)),
         });
 
@@ -568,35 +570,35 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         for (i_ag, ag) in subagents.iter().enumerate() {
             let is_viewed = ag.full_id == active_view_id;
             let is_cur = cursor_idx == Some(i_ag + 1);
-            let row_bg = match (is_viewed, is_cur) {
-                (true, true) => ACTIVE_CURSOR_BG,
-                (true, false) => ACTIVE_VIEW_BG,
-                (false, true) => CURSOR_BG,
+            let row_bg: &str = match (is_viewed, is_cur) {
+                (true, true) => &pal.active_cursor_bg,
+                (true, false) => &pal.active_view_bg,
+                (false, true) => &pal.cursor_bg,
                 (false, false) => "",
             };
             let ptr = if is_cur {
-                format!("{AMBER}❯{RESET}{row_bg}")
+                format!("{amber}❯{RESET}{row_bg}")
             } else if is_viewed {
-                format!("{CYAN}▸{RESET}{row_bg}")
+                format!("{cyan}▸{RESET}{row_bg}")
             } else {
                 " ".to_string()
             };
             let is_done = ag.status != "running";
             let (icon, mut tail_tag) = if !is_done {
                 (
-                    format!("{CYAN}{}{RESET}{row_bg}", SPINNERS[tick % SPINNERS.len()]),
+                    format!("{cyan}{}{RESET}{row_bg}", SPINNERS[tick % SPINNERS.len()]),
                     format!(
-                        "{AMBER}{}{RESET}{row_bg}",
+                        "{amber}{}{RESET}{row_bg}",
                         if ag.tool.is_empty() { "run" } else { &ag.tool }
                     ),
                 )
             } else {
                 let ic = if is_viewed {
-                    format!("{GREEN}●{RESET}{row_bg}")
+                    format!("{green}●{RESET}{row_bg}")
                 } else {
-                    format!("{GREEN}✓{RESET}{row_bg}")
+                    format!("{green}✓{RESET}{row_bg}")
                 };
-                let tc = if is_viewed || is_cur { AMBER } else { DIM };
+                let tc: &str = if is_viewed || is_cur { amber } else { dim };
                 (
                     ic,
                     format!(
@@ -627,20 +629,20 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
                 tail_tag.push_str(&format!(
-                    " {CYAN}{}{RESET}{row_bg}",
+                    " {cyan}{}{RESET}{row_bg}",
                     trunc_to_width(bname, max_file_w.min(13))
                 ));
             }
 
             let left_hdr = format!(
-                "{ptr}{icon} {BOLD}{WHITE}[{}]{RESET}{row_bg} {tail_tag}",
+                "{ptr}{icon} {BOLD}{white}[{}]{RESET}{row_bg} {tail_tag}",
                 ag.short_type
             );
             let hdr_text = if is_done {
                 let lw = display_width(&left_hdr);
                 if lw + 2 <= box_inner_w {
                     let pad = box_inner_w - lw - 2;
-                    let x_col = if is_cur { AMBER } else { DIM };
+                    let x_col: &str = if is_cur { amber } else { dim };
                     format!("{left_hdr}{}{x_col}×{RESET}{row_bg} ", " ".repeat(pad))
                 } else {
                     left_hdr
@@ -652,16 +654,16 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             // Tag `2` = subagent header row (has right-edge clickable `×`), Tag `5` = subagent desc row
             all_agent_rows.push(BoxRow {
                 text: hdr_text,
-                bg: row_bg,
+                bg: row_bg.to_string(),
                 tag: Some((2, i_ag)),
             });
             let desc_line = format!("{} · {}", cached_cfg.sub_model_short, ag.desc);
             all_agent_rows.push(BoxRow {
                 text: format!(
-                    "   {DIM}{}",
+                    "   {dim}{}",
                     trunc_to_width(&desc_line, inner_w.saturating_sub(1))
                 ),
-                bg: row_bg,
+                bg: row_bg.to_string(),
                 tag: Some((5, i_ag)),
             });
         }
@@ -686,18 +688,18 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             while sub_rows.len() + 1 < mid_interior {
                 sub_rows.push(BoxRow {
                     text: String::new(),
-                    bg: "",
+                    bg: String::new(),
                     tag: None,
                 });
             }
             let clear_plain = format!(" ↑↓ ⏎ · x del · c clear {}", done_cnt);
             let clear_styled = if display_width(&clear_plain) <= box_inner_w {
                 format!(
-                    " {DIM}↑↓ ⏎ · [{AMBER}x{DIM}] del · [{AMBER}c{DIM}] clear {}{RESET}",
+                    " {dim}↑↓ ⏎ · [{amber}x{dim}] del · [{amber}c{dim}] clear {}{RESET}",
                     done_cnt
                 )
             } else {
-                format!(" {DIM}[{AMBER}c{DIM}] × clear {} done{RESET}", done_cnt)
+                format!(" {dim}[{amber}c{dim}] × clear {} done{RESET}", done_cnt)
             };
             sub_rows.push(BoxRow {
                 text: if display_width(&clear_styled) <= box_inner_w {
@@ -705,7 +707,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 } else {
                     trunc_to_width(&clear_plain, inner_w)
                 },
-                bg: "",
+                bg: String::new(),
                 tag: Some((3, 0)),
             });
         }
@@ -733,7 +735,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         let mid_panel = PanelSpec {
             title: "SUBAGENTS".to_string(),
             badge: sub_badge,
-            accent: CYAN,
+            accent: cyan.clone(),
             rows: sub_rows,
             fixed_height: Some(mid_h),
             weight: 0.88,
@@ -742,11 +744,11 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
 
         // ── 3. BOTTOM PANEL: SHARED SINGLE-INSTANCE TELEMETRY OSCILLOSCOPE CURVES ──
         telemetry.sample();
-        let bot_rows = build_telemetry_panel_rows(&telemetry, inner_w, bot_h);
+        let bot_rows = build_telemetry_panel_rows(&telemetry, inner_w, bot_h, pal);
         let bot_panel = PanelSpec {
             title: telemetry.cpu_brand.to_uppercase(),
             badge: format!("{}C · {:.0}GB", telemetry.cpu_cores, telemetry.total_mem_gb),
-            accent: MINT,
+            accent: mint.clone(),
             rows: bot_rows,
             fixed_height: Some(bot_h),
             weight: 1.12,
@@ -757,6 +759,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         render_multi_panel_grid(
             geom,
             &panels,
+            pal,
             &mut frame_buf,
             &mut row_tag_map,
             &mut prev_rows,
