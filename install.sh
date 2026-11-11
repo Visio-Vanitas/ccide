@@ -10,7 +10,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${0:A:h}"
-PLUGIN_VERSION="0.3.0"
+PLUGIN_VERSION="0.4.0"
 HOME_DIR="$HOME"
 CLAUDE_DIR="$HOME_DIR/.claude"
 CACHE_DIR="$HOME_DIR/.cache/cc-ide"
@@ -78,22 +78,31 @@ if [[ "$MODE" == "--patch-only" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 1. Build Native Rust Engine (`ccide-core`)
+# 1. Build or Fetch Native Rust Engine (`ccide-core`)
 # ------------------------------------------------------------------------------
-log_step "1/7 Compiling native Rust engine (ccide-core) for $OS_NAME..."
-if [[ ! -x "$CARGO_BIN" ]]; then
-  echo "Error: cargo not found in PATH or ~/.rustup" >&2
-  exit 1
-fi
-(
-  cd "$PROJECT_ROOT"
-  RUSTFLAGS="-C target-cpu=native" "$CARGO_BIN" build --release --quiet
-)
+log_step "1/7 Building native Rust engine (ccide-core) for $OS_NAME..."
 mkdir -p "$PROJECT_ROOT/bin" "$CLAUDE_DIR/bin" "/tmp/.cc-ide"
-cp -f "$PROJECT_ROOT/target/release/ccide-core" "$PROJECT_ROOT/bin/ccide-core"
-[[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$PROJECT_ROOT/bin/ccide-core" >/dev/null 2>&1 || true
-ln -sf "$PROJECT_ROOT/bin/ccide-core" "$CLAUDE_DIR/bin/ccide-core"
-log_ok "Built $PROJECT_ROOT/bin/ccide-core ($(du -h "$PROJECT_ROOT/bin/ccide-core" | awk '{print $1}'))"
+if [[ -x "$CARGO_BIN" ]]; then
+  (
+    cd "$PROJECT_ROOT"
+    RUSTFLAGS="${CCIDE_RUSTFLAGS:--C target-cpu=native}" "$CARGO_BIN" build --release --quiet
+  )
+  cp -f "$PROJECT_ROOT/target/release/ccide-core" "$PROJECT_ROOT/bin/ccide-core"
+  [[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$PROJECT_ROOT/bin/ccide-core" >/dev/null 2>&1 || true
+  ln -sf "$PROJECT_ROOT/bin/ccide-core" "$CLAUDE_DIR/bin/ccide-core"
+  log_ok "Compiled $PROJECT_ROOT/bin/ccide-core ($(du -h "$PROJECT_ROOT/bin/ccide-core" | awk '{print $1}'))"
+else
+  log_step "cargo not found locally; fetching prebuilt ccide-core from GitHub Releases..."
+  chmod +x "$PROJECT_ROOT/scripts/ensure-ccide-core.sh"
+  sh "$PROJECT_ROOT/scripts/ensure-ccide-core.sh" --help >/dev/null 2>&1 || true
+  if [[ -x "$CLAUDE_DIR/bin/ccide-core" ]]; then
+    cp -f "$CLAUDE_DIR/bin/ccide-core" "$PROJECT_ROOT/bin/ccide-core"
+    log_ok "Downloaded prebuilt ccide-core -> $CLAUDE_DIR/bin/ccide-core"
+  else
+    echo "Error: cargo not found and no prebuilt release binary available yet." >&2
+    exit 1
+  fi
+fi
 
 # ------------------------------------------------------------------------------
 # 2. Install Assets, Scripts, CLI Launchers & Yazi Configuration
@@ -102,7 +111,7 @@ log_step "2/7 Installing vector logo assets, scripts & CLI launchers..."
 mkdir -p "$CACHE_DIR/logos" "$CACHE_DIR/status" "$CLAUDE_DIR/scripts" "$HOME_DIR/.local/bin" "$HOME_DIR/.config/yazi"
 cp -f "$PROJECT_ROOT/assets/adaptive_quadrant_logos.json" "$CACHE_DIR/logos/adaptive_quadrant_logos.json"
 
-for script_name in ccide_daemon.py iterm2_workspace.py pane-runner.sh patch_claude_binary.py cc_tui_lib.py ccide; do
+for script_name in ccide_daemon.py iterm2_workspace.py pane-runner.sh patch_claude_binary.py cc_tui_lib.py ccide ensure-ccide-core.sh; do
   chmod +x "$PROJECT_ROOT/scripts/$script_name"
   ln -sf "$PROJECT_ROOT/scripts/$script_name" "$CLAUDE_DIR/scripts/$script_name"
 done
@@ -271,6 +280,8 @@ log_step "5/7 Applying native claude.exe patches..."
 CLAUDE_BIN_FOUND="$(discover_claude_exe)"
 if [[ -n "$CLAUDE_BIN_FOUND" ]]; then
   "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/patch_claude_binary.py" || true
+  STAMP_VAL="$(stat -f '%i:%z:%m' "$CLAUDE_BIN_FOUND" 2>/dev/null || stat -c '%i:%s:%Y' "$CLAUDE_BIN_FOUND" 2>/dev/null || echo "")"
+  [[ -n "$STAMP_VAL" ]] && printf '%s' "$STAMP_VAL" > "$CACHE_DIR/claude_bin.stamp"
 fi
 
 # ------------------------------------------------------------------------------

@@ -3,13 +3,14 @@
 //! Only seeks and reads newly appended bytes when a `.jsonl` transcript grows,
 //! avoiding full-file re-reads on every TUI frame.
 
-use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::collections::{HashMap, HashSet};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::json::extract_json_str;
+use crate::tui::width::floor_char_boundary;
 
 pub struct JsonlTracker {
     pub jpath: Option<PathBuf>,
@@ -92,7 +93,7 @@ fn parse_jsonl_line_for_tools(
     while let Some(rel) = line[search_pos..].find("\"type\":\"tool_use\"") {
         let start = search_pos + rel;
         search_pos = start + 17;
-        let slice_end = line.floor_char_boundary((start + 900).min(line.len()));
+        let slice_end = floor_char_boundary(line, (start + 900).min(line.len()));
         let chunk = &line[start..slice_end];
         if let Some(tname) = extract_json_str(chunk, "name") {
             if last_file.is_empty() {
@@ -145,24 +146,22 @@ pub fn update_jsonl_tracker(
             // Track `/model` command output or assistant message model in main transcript
             if let Some(pos) = line.find("Set model to ") {
                 let rest = &line[pos + 13..];
-                let cleaned = rest
-                    .trim_start_matches("\\u0060")
-                    .trim_start_matches('`');
+                let cleaned = rest.trim_start_matches("\\u0060").trim_start_matches('`');
                 let m: String = cleaned
                     .chars()
-                    .take_while(|&c| {
-                        c != '`' && c != '\\' && c != ' ' && c != '<' && c != '"'
-                    })
+                    .take_while(|&c| c != '`' && c != '\\' && c != ' ' && c != '<' && c != '"')
                     .collect();
                 if !m.is_empty() {
                     tracker.last_model = m;
                 }
-            } else if (line.contains("\"role\":\"assistant\"")
-                || line.contains("\"type\":\"message\""))
-                && let Some(m) = extract_json_str(line, "model")
-                && !m.is_empty()
+            } else if line.contains("\"role\":\"assistant\"")
+                || line.contains("\"type\":\"message\"")
             {
-                tracker.last_model = m;
+                if let Some(m) = extract_json_str(line, "model") {
+                    if !m.is_empty() {
+                        tracker.last_model = m;
+                    }
+                }
             }
 
             parse_jsonl_line_for_tools(
@@ -260,6 +259,40 @@ pub fn get_main_session_file_ops(
     (transcript_tool, transcript_file, transcript_model)
 }
 
+pub fn load_dismissed_subagents(home: &str, session_id: &str) -> HashSet<String> {
+    let mut set = HashSet::new();
+    if session_id.is_empty() {
+        return set;
+    }
+    let p = format!("{}/.cache/cc-ide/dismissed_{}.txt", home, session_id);
+    if let Ok(txt) = fs::read_to_string(p) {
+        for line in txt.lines() {
+            let id = line.trim();
+            if !id.is_empty() {
+                set.insert(id.to_string());
+            }
+        }
+    }
+    set
+}
+
+pub fn append_dismissed_subagents(home: &str, session_id: &str, ids: &[String]) {
+    if session_id.is_empty() || ids.is_empty() {
+        return;
+    }
+    let dir = format!("{}/.cache/cc-ide", home);
+    let _ = fs::create_dir_all(&dir);
+    let existing = load_dismissed_subagents(home, session_id);
+    let p = format!("{}/dismissed_{}.txt", dir, session_id);
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(p) {
+        for id in ids {
+            if !id.is_empty() && !existing.contains(id) {
+                let _ = writeln!(f, "{}", id);
+            }
+        }
+    }
+}
+
 pub fn get_session_subagents(
     home: &str,
     session_id: &str,
@@ -274,6 +307,7 @@ pub fn get_session_subagents(
         return vec![];
     };
 
+    let dismissed = load_dismissed_subagents(home, session_id);
     let claude_projects_prefix = format!("{}/.claude/projects/", home);
     let now_s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -295,7 +329,7 @@ pub fn get_session_subagents(
         }
     }
     metas.sort_by_key(|b| std::cmp::Reverse(b.0));
-    metas.truncate(12);
+    metas.truncate(64);
 
     let mut items = Vec::with_capacity(metas.len());
     for (mtime_ms, mpath) in metas {
@@ -335,6 +369,9 @@ pub fn get_session_subagents(
         let age_s = now_s.saturating_sub(j_mtime_s);
 
         let is_done = mtxt.contains("\"finished\"") || tr.done_from_tail || age_s > 25;
+        if is_done && dismissed.contains(&agent_id) {
+            continue;
+        }
         let status = if is_done { "done" } else { "running" };
         let raw_type =
             extract_json_str(&mtxt, "agentType").unwrap_or_else(|| "general-purpose".to_string());
@@ -357,10 +394,8 @@ pub fn get_session_subagents(
         });
     }
 
-    let mut chron: Vec<(u64, String)> = items
-        .iter()
-        .map(|x| (x.ctime, x.full_id.clone()))
-        .collect();
+    let mut chron: Vec<(u64, String)> =
+        items.iter().map(|x| (x.ctime, x.full_id.clone())).collect();
     chron.sort_by_key(|a| a.0);
     for it in &mut items {
         if let Some(pos) = chron.iter().position(|x| x.1 == it.full_id) {

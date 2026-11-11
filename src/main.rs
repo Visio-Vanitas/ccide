@@ -32,10 +32,7 @@ fn main() {
                     .unwrap_or_default()
             });
             let yazi_id = args.get(3).map(|s| s.as_str()).unwrap_or("");
-            let shell_pid = args
-                .get(4)
-                .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(0);
+            let shell_pid = args.get(4).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
             commands::sidebar::run(&target_dir, yazi_id, shell_pid);
         }
         "yazi-hook" => commands::yazi_hook::run(),

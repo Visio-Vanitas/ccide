@@ -10,7 +10,7 @@
 pub mod chart;
 
 #[cfg(target_os = "macos")]
-use std::ffi::{CString, c_char, c_int, c_uint, c_void};
+use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::fs;
 use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,10 +18,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::ffi::getloadavg;
 #[cfg(target_os = "macos")]
 use crate::ffi::{
-    CFDictionaryGetValue, CFNumberGetValue, CFRelease, CFStringCreateWithCString, HostCpuLoadInfo,
-    IOIteratorNext, IOObjectRelease, IORegistryEntryCreateCFProperties,
-    IOServiceGetMatchingServices, IOServiceMatching, IfMsghdr2, host_page_size, host_statistics,
-    host_statistics64, mach_host_self, sysctl, sysctl_string, sysctl_u64,
+    host_page_size, host_statistics, host_statistics64, mach_host_self, sysctl, sysctl_string,
+    sysctl_u64, CFDictionaryGetValue, CFNumberGetValue, CFRelease, CFStringCreateWithCString,
+    HostCpuLoadInfo, IOIteratorNext, IOObjectRelease, IORegistryEntryCreateCFProperties,
+    IOServiceGetMatchingServices, IOServiceMatching, IfMsghdr2,
 };
 
 const SHARED_TELEMETRY_PATH: &str = "/tmp/.cc-ide/hw_telemetry_v1.bin";
@@ -190,11 +190,11 @@ impl TelemetrySampler {
         let now_ms = now_epoch_ms();
         let existing = read_shared_snapshot();
 
-        if let Some(ref snap) = existing
-            && now_ms.saturating_sub(snap.updated_at_ms) < GLOBAL_SAMPLE_INTERVAL_MS
-        {
-            self.apply_snapshot(snap);
-            return;
+        if let Some(ref snap) = existing {
+            if now_ms.saturating_sub(snap.updated_at_ms) < GLOBAL_SAMPLE_INTERVAL_MS {
+                self.apply_snapshot(snap);
+                return;
+            }
         }
 
         let mut snap = existing.unwrap_or(SharedTelemetrySnapshot {
@@ -261,12 +261,8 @@ impl TelemetrySampler {
 
                 let mut u32_buf = [0u32; 40];
                 let mut vcnt: c_uint = 38;
-                if host_statistics64(
-                    self.host,
-                    4,
-                    u32_buf.as_mut_ptr() as *mut c_void,
-                    &mut vcnt,
-                ) == 0
+                if host_statistics64(self.host, 4, u32_buf.as_mut_ptr() as *mut c_void, &mut vcnt)
+                    == 0
                 {
                     let wired = u32_buf[3] as u64;
                     let purgeable = u32_buf[22] as u64;
@@ -352,19 +348,20 @@ fn detect_linux_hw_info() -> (String, usize, f64) {
                 cores += 1;
             } else if (line.starts_with("model name") || line.starts_with("Hardware"))
                 && brand == "LINUX"
-                && let Some((_, val)) = line.split_once(':')
             {
-                let v = val.trim();
-                let up = v.to_ascii_uppercase();
-                brand = if up.contains("EPYC") {
-                    "AMD EPYC".to_string()
-                } else if up.contains("RYZEN") {
-                    "AMD RYZEN".to_string()
-                } else if up.contains("XEON") {
-                    "INTEL XEON".to_string()
-                } else {
-                    v.chars().take(12).collect()
-                };
+                if let Some((_, val)) = line.split_once(':') {
+                    let v = val.trim();
+                    let up = v.to_ascii_uppercase();
+                    brand = if up.contains("EPYC") {
+                        "AMD EPYC".to_string()
+                    } else if up.contains("RYZEN") {
+                        "AMD RYZEN".to_string()
+                    } else if up.contains("XEON") {
+                        "INTEL XEON".to_string()
+                    } else {
+                        v.chars().take(12).collect()
+                    };
+                }
             }
         }
     }
@@ -375,10 +372,10 @@ fn detect_linux_hw_info() -> (String, usize, f64) {
     if let Ok(meminfo) = fs::read_to_string("/proc/meminfo") {
         for line in meminfo.lines() {
             if let Some(rest) = line.strip_prefix("MemTotal:") {
-                if let Some(kb_str) = rest.split_whitespace().next()
-                    && let Ok(kb) = kb_str.parse::<u64>()
-                {
-                    mem_gb = (kb as f64) / (1024.0 * 1024.0);
+                if let Some(kb_str) = rest.split_whitespace().next() {
+                    if let Ok(kb) = kb_str.parse::<u64>() {
+                        mem_gb = (kb as f64) / (1024.0 * 1024.0);
+                    }
                 }
                 break;
             }
@@ -395,36 +392,37 @@ fn sample_linux_metrics(
     now_ms: u64,
 ) {
     // 1. CPU ticks from `/proc/stat`
-    if let Ok(stat) = fs::read_to_string("/proc/stat")
-        && let Some(first) = stat.lines().next()
-        && first.starts_with("cpu ")
-    {
-        let nums: Vec<u64> = first
-            .split_whitespace()
-            .skip(1)
-            .filter_map(|x| x.parse::<u64>().ok())
-            .collect();
-        if nums.len() >= 4 {
-            let user = nums[0];
-            let nice = nums[1];
-            let sys = nums[2]
-                + nums.get(5).copied().unwrap_or(0)
-                + nums.get(6).copied().unwrap_or(0)
-                + nums.get(7).copied().unwrap_or(0);
-            let idle = nums[3] + nums.get(4).copied().unwrap_or(0);
-            let t = [user as u32, sys as u32, idle as u32, nice as u32];
-            if snap.prev_cpu_ticks != [0; 4] {
-                let du = t[0].wrapping_sub(snap.prev_cpu_ticks[0]) as u64;
-                let ds = t[1].wrapping_sub(snap.prev_cpu_ticks[1]) as u64;
-                let di = t[2].wrapping_sub(snap.prev_cpu_ticks[2]) as u64;
-                let dn = t[3].wrapping_sub(snap.prev_cpu_ticks[3]) as u64;
-                let tot = du + ds + di + dn;
-                if tot > 0 {
-                    snap.cpu_pct =
-                        (100.0 * ((du + ds + dn) as f64) / (tot as f64)).clamp(0.0, 100.0);
+    if let Ok(stat) = fs::read_to_string("/proc/stat") {
+        if let Some(first) = stat.lines().next() {
+            if first.starts_with("cpu ") {
+                let nums: Vec<u64> = first
+                    .split_whitespace()
+                    .skip(1)
+                    .filter_map(|x| x.parse::<u64>().ok())
+                    .collect();
+                if nums.len() >= 4 {
+                    let user = nums[0];
+                    let nice = nums[1];
+                    let sys = nums[2]
+                        + nums.get(5).copied().unwrap_or(0)
+                        + nums.get(6).copied().unwrap_or(0)
+                        + nums.get(7).copied().unwrap_or(0);
+                    let idle = nums[3] + nums.get(4).copied().unwrap_or(0);
+                    let t = [user as u32, sys as u32, idle as u32, nice as u32];
+                    if snap.prev_cpu_ticks != [0; 4] {
+                        let du = t[0].wrapping_sub(snap.prev_cpu_ticks[0]) as u64;
+                        let ds = t[1].wrapping_sub(snap.prev_cpu_ticks[1]) as u64;
+                        let di = t[2].wrapping_sub(snap.prev_cpu_ticks[2]) as u64;
+                        let dn = t[3].wrapping_sub(snap.prev_cpu_ticks[3]) as u64;
+                        let tot = du + ds + di + dn;
+                        if tot > 0 {
+                            snap.cpu_pct =
+                                (100.0 * ((du + ds + dn) as f64) / (tot as f64)).clamp(0.0, 100.0);
+                        }
+                    }
+                    snap.prev_cpu_ticks = t;
                 }
             }
-            snap.prev_cpu_ticks = t;
         }
     }
 
@@ -491,27 +489,31 @@ fn sample_linux_metrics(
     }
 
     // 5. GPU from sysfs (`gpu_busy_percent`) or cached non-blocking `nvidia-smi`
-    if let Ok(busy) = fs::read_to_string("/sys/class/drm/card0/device/gpu_busy_percent")
-        && let Ok(pct) = busy.trim().parse::<f64>()
-    {
-        snap.gpu_pct = pct.clamp(0.0, 100.0);
-    } else if std::path::Path::new("/proc/driver/nvidia/version").exists() {
+    let mut got_sysfs_gpu = false;
+    if let Ok(busy) = fs::read_to_string("/sys/class/drm/card0/device/gpu_busy_percent") {
+        if let Ok(pct) = busy.trim().parse::<f64>() {
+            snap.gpu_pct = pct.clamp(0.0, 100.0);
+            got_sysfs_gpu = true;
+        }
+    }
+    if !got_sysfs_gpu && std::path::Path::new("/proc/driver/nvidia/version").exists() {
         let nv_cache = "/tmp/.cc-ide/nvidia_stat.txt";
-        if let Ok(txt) = fs::read_to_string(nv_cache)
-            && let Some(line) = txt.lines().next()
-            && let Some((u_s, m_s)) = line.split_once(',')
-        {
-            if let Ok(u) = u_s.trim().parse::<f64>() {
-                snap.gpu_pct = u.clamp(0.0, 100.0);
-            }
-            if let Ok(mb) = m_s.trim().parse::<f64>() {
-                snap.gpu_vram_gb = mb / 1024.0;
+        if let Ok(txt) = fs::read_to_string(nv_cache) {
+            if let Some(line) = txt.lines().next() {
+                if let Some((u_s, m_s)) = line.split_once(',') {
+                    if let Ok(u) = u_s.trim().parse::<f64>() {
+                        snap.gpu_pct = u.clamp(0.0, 100.0);
+                    }
+                    if let Ok(mb) = m_s.trim().parse::<f64>() {
+                        snap.gpu_vram_gb = mb / 1024.0;
+                    }
+                }
             }
         }
         let need_spawn = fs::metadata(nv_cache)
             .and_then(|m| m.modified())
             .ok()
-            .and_then(|t| t. duration_since(UNIX_EPOCH).ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| now_ms.saturating_sub(d.as_millis() as u64) > 1500)
             .unwrap_or(true);
         if need_spawn {
@@ -542,30 +544,33 @@ fn sample_gpu_iokit() -> (f64, f64) {
         let mut gpu_pct = 0.0f64;
         let mut vram_gb = 0.0f64;
 
-        let k_perf = CFStringCreateWithCString(
-            ptr::null(),
-            c"PerformanceStatistics".as_ptr() as *const c_char,
-            0x08000100,
-        );
-        let k_dev = CFStringCreateWithCString(
-            ptr::null(),
-            c"Device Utilization %".as_ptr() as *const c_char,
-            0x08000100,
-        );
-        let k_ren = CFStringCreateWithCString(
-            ptr::null(),
-            c"Renderer Utilization %".as_ptr() as *const c_char,
-            0x08000100,
-        );
-        let k_inuse = CFStringCreateWithCString(
-            ptr::null(),
-            c"In use system memory".as_ptr() as *const c_char,
-            0x08000100,
-        );
-        let k_alloc = CFStringCreateWithCString(
-            ptr::null(),
-            c"Alloc system memory".as_ptr() as *const c_char,
-            0x08000100,
+        #[allow(clippy::manual_c_str_literals)]
+        let (k_perf, k_dev, k_ren, k_inuse, k_alloc) = (
+            CFStringCreateWithCString(
+                ptr::null(),
+                b"PerformanceStatistics\0".as_ptr() as *const c_char,
+                0x08000100,
+            ),
+            CFStringCreateWithCString(
+                ptr::null(),
+                b"Device Utilization %\0".as_ptr() as *const c_char,
+                0x08000100,
+            ),
+            CFStringCreateWithCString(
+                ptr::null(),
+                b"Renderer Utilization %\0".as_ptr() as *const c_char,
+                0x08000100,
+            ),
+            CFStringCreateWithCString(
+                ptr::null(),
+                b"In use system memory\0".as_ptr() as *const c_char,
+                0x08000100,
+            ),
+            CFStringCreateWithCString(
+                ptr::null(),
+                b"Alloc system memory\0".as_ptr() as *const c_char,
+                0x08000100,
+            ),
         );
 
         loop {

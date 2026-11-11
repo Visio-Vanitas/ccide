@@ -38,6 +38,10 @@ LAZYGIT_BIN="$(command -v lazygit || true)"
 MACMON_BIN="$(command -v macmon || command -v btop || command -v htop || true)"
 CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
 [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
+if [[ ! -x "$CCIDE_CORE_BIN" && -f "$SCRIPT_DIR/ensure-ccide-core.sh" ]]; then
+  sh "$SCRIPT_DIR/ensure-ccide-core.sh" --help >/dev/null 2>&1 || true
+  [[ -x "$HOME/.claude/bin/ccide-core" ]] && CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
+fi
 
 case "$ROLE" in
   yazi)

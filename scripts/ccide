@@ -19,7 +19,7 @@ KEEP_PANES=0
 BACKEND="${CCIDE_BACKEND:-auto}"
 TARGET_DIR="$PWD"
 CLAUDE_ARGS=()
- ORIG_ARGS=("$@")
+ORIG_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,6 +33,14 @@ while [[ $# -gt 0 ]]; do
     --backend)
       BACKEND="${2:-auto}"
       shift 2
+      ;;
+    --clear-subagents|--clear-done)
+      shift
+      SCRIPT_DIR="${0:A:h}"
+      REPO_ROOT="${SCRIPT_DIR:h}"
+      CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
+      [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
+      exec "$CCIDE_CORE_BIN" workspace clear-subagents "${1:-}"
       ;;
     --ssh)
       shift
@@ -64,10 +72,11 @@ Adaptive 3-Tier Workspace Backends:
   --tmux           Force Tier 3: Universal tmux 3-column layout (`tmux -L ccide`)
   --ssh <host>     Connect to <host> with SSH ControlMaster ready for native iTerm2 splits
 
-Layout Options:
-  --no-git         Hide bottom-left Lazygit pane (Yazi full height on left)
-  --width <pct>    Left column width percentage (default: 30)
-  --keep-panes     Keep companion panes open after Claude exits
+Layout & Subagent Options:
+  --no-git           Hide bottom-left Lazygit pane (Yazi full height on left)
+  --width <pct>      Left column width percentage (default: 30)
+  --keep-panes       Keep companion panes open after Claude exits
+  --clear-subagents  Dismiss all completed subagents across open sidebars
 EOF
       exit 0
       ;;
@@ -88,8 +97,9 @@ fi
 if [[ -z "${TMUX:-}" && ( "$BACKEND" == "tmux" || ( "$BACKEND" == "auto" && "$IS_ITERM" -eq 0 ) ) ]]; then
   if command -v tmux >/dev/null 2>&1 && [[ -z "${CLAUDECODE:-}" ]]; then
     SESSION_NAME="ccide-${PWD:t}-$$"
+    QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
     exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-      "export CCIDE_BACKEND=tmux; exec '$0' --tmux ${ORIG_ARGS[*]}"
+      "export CCIDE_BACKEND=tmux; exec ${(q)0} --tmux ${QUOTED_ORIG}"
   fi
 fi
 
@@ -116,6 +126,10 @@ SCRIPT_DIR="${0:A:h}"
 REPO_ROOT="${SCRIPT_DIR:h}"
 CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
 [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
+if [[ ! -x "$CCIDE_CORE_BIN" && -f "$SCRIPT_DIR/ensure-ccide-core.sh" ]]; then
+  sh "$SCRIPT_DIR/ensure-ccide-core.sh" --help >/dev/null 2>&1 || true
+  [[ -x "$HOME/.claude/bin/ccide-core" ]] && CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
+fi
 
 PANE_SPEC=""
 if [[ -x "$CCIDE_CORE_BIN" ]]; then
@@ -126,8 +140,9 @@ fi
 # If SSH OSC 1337 timed out and we are not yet in tmux, bootstrap `tmux -L ccide` automatically
 if [[ -z "$PANE_SPEC" && -z "${TMUX:-}" && -n "${SSH_CONNECTION:-}" && -z "${CLAUDECODE:-}" ]] && command -v tmux >/dev/null 2>&1; then
   SESSION_NAME="ccide-${PWD:t}-$$"
+  QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
   exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-    "export CCIDE_BACKEND=tmux; exec '$0' --tmux ${ORIG_ARGS[*]}"
+    "export CCIDE_BACKEND=tmux; exec ${(q)0} --tmux ${QUOTED_ORIG}"
 fi
 
 if [[ -n "${CLAUDECODE:-}" ]]; then
@@ -139,6 +154,33 @@ if [[ -n "${CLAUDECODE:-}" ]]; then
 fi
 
 export CC_YAZI_ID="$YAZI_CLIENT_ID"
+
+# Auto-repatch Claude Code binary seamlessly if it was auto-updated since last launch
+auto_ensure_claude_patched() {
+  local c_cli real_c target_exe cur_stamp stamp_file patcher py_bin
+  c_cli="$(command -v claude || true)"
+  [[ -n "$c_cli" ]] || return 0
+  real_c="$(realpath "$c_cli" 2>/dev/null || readlink -f "$c_cli" 2>/dev/null || echo "$c_cli")"
+  target_exe="$(dirname "$real_c")/bin/claude.exe"
+  [[ -f "$target_exe" ]] || target_exe="$real_c"
+  [[ -f "$target_exe" && -w "$target_exe" ]] || return 0
+
+  stamp_file="$CACHE_DIR/claude_bin.stamp"
+  cur_stamp="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
+  if [[ -n "$cur_stamp" && -f "$stamp_file" && "$(cat "$stamp_file" 2>/dev/null)" == "$cur_stamp" ]]; then
+    return 0
+  fi
+
+  patcher="$HOME/.claude/scripts/patch_claude_binary.py"
+  [[ -f "$patcher" ]] || patcher="$SCRIPT_DIR/patch_claude_binary.py"
+  py_bin="$(command -v python3 || true)"
+  if [[ -f "$patcher" && -n "$py_bin" ]]; then
+    "$py_bin" -I "$patcher" --binary "$target_exe" >/dev/null 2>&1 || true
+    cur_stamp="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
+    [[ -n "$cur_stamp" ]] && printf '%s' "$cur_stamp" > "$stamp_file"
+  fi
+}
+auto_ensure_claude_patched
 
 cleanup() {
   if [[ "$KEEP_PANES" -eq 0 && -n "${PANE_SPEC:-}" && -x "$CCIDE_CORE_BIN" ]]; then

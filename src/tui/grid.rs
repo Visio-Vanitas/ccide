@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::ffi::{TIOCGWINSZ, Winsize, ioctl};
+use crate::ffi::{ioctl, Winsize, TIOCGWINSZ};
 use crate::tui::width::display_width;
 use crate::tui::{BOLD, DIM, GRAY, RESET};
 
@@ -157,13 +157,13 @@ pub fn allocate_panel_heights(total_rows: usize, specs: &[PanelSpec]) -> Vec<usi
     }
 
     let sum_h: usize = heights.iter().sum();
-    if sum_h != total_rows
-        && let Some(&last_idx) = flex_indices.last().or(Some(&(n - 1)))
-    {
-        if total_rows >= sum_h {
-            heights[last_idx] += total_rows - sum_h;
-        } else {
-            heights[last_idx] = heights[last_idx].saturating_sub(sum_h - total_rows).max(3);
+    if sum_h != total_rows {
+        if let Some(&last_idx) = flex_indices.last().or(Some(&(n - 1))) {
+            if total_rows >= sum_h {
+                heights[last_idx] += total_rows - sum_h;
+            } else {
+                heights[last_idx] = heights[last_idx].saturating_sub(sum_h - total_rows).max(3);
+            }
         }
     }
     heights
@@ -235,5 +235,157 @@ pub fn render_multi_panel_grid(
             emit_row(bot_r, format_bottom_border(geom.cols));
         }
         cur_row = bot_r + 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(fixed_height: Option<usize>, weight: f64) -> PanelSpec {
+        PanelSpec {
+            title: "T".to_string(),
+            badge: String::new(),
+            accent: "",
+            rows: Vec::new(),
+            fixed_height,
+            weight,
+            raw_interior: false,
+        }
+    }
+
+    /// Smallest `total_rows` for which the exact-sum invariant is guaranteed.
+    ///
+    /// Every flex panel claims at least 4 rows and every fixed panel at least
+    /// 3, so below this floor the layout clamps to minimum box heights and may
+    /// legitimately exceed `total_rows`. Real terminals are always far larger.
+    const EXACT_SUM_FLOOR: usize = 32;
+
+    #[test]
+    fn zero_panels_yield_no_heights() {
+        assert!(allocate_panel_heights(40, &[]).is_empty());
+    }
+
+    #[test]
+    fn single_flex_panel_takes_all_rows() {
+        let heights = allocate_panel_heights(40, &[spec(None, 1.0)]);
+        assert_eq!(heights, vec![40]);
+        assert_eq!(heights.iter().sum::<usize>(), 40);
+    }
+
+    #[test]
+    fn exact_row_sum_for_flex_only_split() {
+        let specs = [spec(None, 1.0), spec(None, 1.0), spec(None, 1.0)];
+        let heights = allocate_panel_heights(60, &specs);
+        assert_eq!(heights.iter().sum::<usize>(), 60);
+        assert_eq!(heights.len(), 3);
+    }
+
+    #[test]
+    fn exact_row_sum_with_fixed_and_flex_mix() {
+        let specs = [
+            spec(Some(3), 1.0),
+            spec(None, 2.0),
+            spec(Some(10), 1.0),
+            spec(None, 3.0),
+            spec(None, 1.0),
+        ];
+        for total in [EXACT_SUM_FLOOR, 33, 47, 65, 80, 120] {
+            let heights = allocate_panel_heights(total, &specs);
+            assert_eq!(
+                heights.iter().sum::<usize>(),
+                total,
+                "total={total} heights={heights:?}"
+            );
+            assert_eq!(heights.len(), specs.len());
+        }
+    }
+
+    #[test]
+    fn exact_row_sum_across_many_totals_and_shapes() {
+        let shapes: Vec<Vec<PanelSpec>> = vec![
+            vec![spec(None, 1.0), spec(None, 1.0)],
+            vec![spec(None, 1.0), spec(None, 2.0), spec(None, 5.0)],
+            vec![spec(Some(5), 1.0), spec(None, 1.0)],
+            vec![spec(Some(7), 1.0), spec(Some(7), 1.0), spec(None, 1.0)],
+            vec![
+                spec(None, 0.1),
+                spec(None, 0.1),
+                spec(None, 0.1),
+                spec(None, 0.1),
+            ],
+        ];
+        for specs in &shapes {
+            for total in EXACT_SUM_FLOOR..=200 {
+                let heights = allocate_panel_heights(total, specs);
+                assert_eq!(
+                    heights.iter().sum::<usize>(),
+                    total,
+                    "total={total} heights={heights:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn heights_are_clamped_below_minimum_rows() {
+        // Below the aggregate floor the result may exceed `total_rows`, but every
+        // panel still gets at least its minimum box height.
+        for total in 1usize..EXACT_SUM_FLOOR {
+            let specs = [spec(None, 1.0), spec(None, 1.0)];
+            let heights = allocate_panel_heights(total, &specs);
+            assert!(heights.iter().all(|&h| h >= 3), "total={total} {heights:?}");
+        }
+    }
+
+    #[test]
+    fn fixed_heights_are_clamped_to_minimum_three() {
+        let specs = [spec(Some(0), 1.0), spec(Some(1), 1.0), spec(None, 1.0)];
+        let heights = allocate_panel_heights(40, &specs);
+        assert!(heights[0] >= 3);
+        assert!(heights[1] >= 3);
+        assert_eq!(heights.iter().sum::<usize>(), 40);
+    }
+
+    #[test]
+    fn weights_influence_distribution_when_rows_allow() {
+        let specs = [spec(None, 1.0), spec(None, 3.0)];
+        let heights = allocate_panel_heights(100, &specs);
+        assert_eq!(heights.iter().sum::<usize>(), 100);
+        assert!(
+            heights[1] > heights[0],
+            "expected weighted split, got {heights:?}"
+        );
+    }
+
+    #[test]
+    fn zero_or_negative_weights_are_treated_as_minimum() {
+        let specs = [spec(None, 0.0), spec(None, -5.0), spec(None, 1.0)];
+        let heights = allocate_panel_heights(60, &specs);
+        assert_eq!(heights.iter().sum::<usize>(), 60);
+        assert!(heights[0] >= 4);
+        assert!(heights[1] >= 4);
+    }
+
+    #[test]
+    fn tiny_total_above_floor_still_sums_exactly() {
+        for total in 8usize..=EXACT_SUM_FLOOR {
+            let specs = [spec(None, 1.0), spec(None, 1.0)];
+            let heights = allocate_panel_heights(total, &specs);
+            assert_eq!(
+                heights.iter().sum::<usize>(),
+                total,
+                "total={total} heights={heights:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_only_specs_sum_to_total_when_fitting() {
+        let specs = [spec(Some(10), 1.0), spec(Some(20), 1.0)];
+        let heights = allocate_panel_heights(40, &specs);
+        assert_eq!(heights.iter().sum::<usize>(), 40);
+        assert_eq!(heights[0], 10);
+        assert_eq!(heights[1], 30);
     }
 }

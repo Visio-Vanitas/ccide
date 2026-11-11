@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::ffi::notify_sidebar;
 use crate::json::{extract_json_str, extract_json_u64};
 use crate::session::resolve_yazi_id_from_ppid;
+use crate::tui::width::floor_char_boundary;
 
 fn fast_git_summary(cwd: &str) -> String {
     let mut cur = PathBuf::from(cwd);
@@ -23,7 +24,7 @@ fn fast_git_summary(cwd: &str) -> String {
             let trimmed = htxt.trim();
             let branch = trimmed
                 .strip_prefix("ref: refs/heads/")
-                .unwrap_or_else(|| &trimmed[..trimmed.floor_char_boundary(trimmed.len().min(7))]);
+                .unwrap_or_else(|| &trimmed[..floor_char_boundary(trimmed, trimmed.len().min(7))]);
             return format!("\u{e0a0} {}", branch);
         }
         if !cur.pop() {

@@ -1,7 +1,7 @@
 {
   "name": "cc-ide",
   "displayName": "CC-IDE 3-Column Tiling Workspace & Hardware Telemetry",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Cross-platform 3-tier adaptive tiling IDE for Claude Code (Local iTerm2 Daemon + SSH OSC 1337 Native Split Bridge + Universal tmux Engine) with Yazi sync, native subagent view switching, and shared hardware oscilloscope telemetry.",
   "author": {
     "name": "Visio-Vanitas"
