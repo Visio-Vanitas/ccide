@@ -1,0 +1,135 @@
+name: CI Gate
+
+on:
+  push:
+    branches: [dev, preview, main]
+  pull_request:
+    branches: [dev, preview, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch-flow-guard:
+    name: Enforce dev -> preview -> main Flow
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify PR into main originates from preview
+        run: |
+          echo "PR head_ref=${{ github.head_ref }} -> base_ref=${{ github.base_ref }}"
+          if [ "${{ github.head_ref }}" != "preview" ]; then
+            echo "::error::Direct PRs into 'main' must originate from 'preview' (enforced pipeline: dev -> preview -> main)."
+            exit 1
+          fi
+
+  rust-msrv-and-lint:
+    name: Rust 1.70 LTS MSRV & Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.70.0 (LTS MSRV)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.70.0
+
+      - name: Verify MSRV 1.70.0 Compilation & Unit Tests
+        run: |
+          cargo +1.70.0 check --locked --all-targets
+          cargo +1.70.0 test --locked
+
+      - name: Install Rust Stable (rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check Rust Formatting & Strict Clippy (-D warnings)
+        run: |
+          cargo +stable fmt --all -- --check
+          cargo +stable clippy --all-targets -- -D warnings
+
+  build-matrix:
+    name: Build & Test (${{ matrix.target }})
+    needs: [rust-msrv-and-lint]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Stable Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux aarch64 Cross-Linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+      - name: Build Release Binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Run Native Target Tests
+        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo test --release --target ${{ matrix.target }}
+
+  scripts-and-patcher:
+    name: Shell, Manifest & Dynamic Patcher Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zsh
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends zsh
+
+      - name: Validate Shell & Python Scripts
+        run: |
+          sh -n scripts/ensure-ccide-core.sh
+          zsh -n install.sh
+          zsh -n scripts/ccide
+          zsh -n scripts/pane-runner.sh
+          python3 -m py_compile scripts/patch_claude_binary.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/cc_tui_lib.py
+
+      - name: Validate Plugin & Marketplace JSON Manifests
+        run: |
+          python3 - <<'PY'
+          import json
+          for p in [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "hooks/hooks.json", "assets/adaptive_quadrant_logos.json"]:
+              with open(p, encoding="utf-8") as f:
+                  json.load(f)
+              print("OK:", p)
+          PY
+
+      - name: Run Dynamic Patcher Mutation & Structural Unit Tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Verify Live Upstream @anthropic-ai/claude-code Compatibility (preview/main)
+        if: github.ref == 'refs/heads/preview' || github.ref == 'refs/heads/main' || github.base_ref == 'preview' || github.base_ref == 'main'
+        run: |
+          mkdir -p /tmp/cc-upstream
+          npm install --prefix /tmp/cc-upstream @anthropic-ai/claude-code@latest --no-audit --no-fund
+          CAND_EXE="$(find /tmp/cc-upstream -type f -size +5M \( -name 'claude.exe' -o -name 'claude' -o -name 'cli.js' \) | sort | head -n 1)"
+          echo "Resolved upstream Claude Code artifact: $CAND_EXE"
+          test -n "$CAND_EXE"
+          python3 scripts/patch_claude_binary.py --verify --binary "$CAND_EXE"

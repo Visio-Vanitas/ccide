@@ -17,6 +17,7 @@ use std::path::PathBuf;
 
 use crate::ffi::{getppid, is_descendant_of, is_pid_alive};
 use crate::json::{extract_json_str, extract_json_u64};
+use crate::tui::width::floor_char_boundary;
 use crate::tui::{BLUE, CORAL, CYAN, LAVENDER, MINT};
 
 #[derive(Clone)]
@@ -54,7 +55,7 @@ pub fn short_model_label(raw: &str) -> String {
     if base.len() <= 18 {
         base.to_string()
     } else {
-        base[..base.floor_char_boundary(18)].to_string()
+        base[..floor_char_boundary(base, 18)].to_string()
     }
 }
 
@@ -101,10 +102,10 @@ pub fn load_config_models(
     let mut live_mtime = std::time::UNIX_EPOCH;
     if !session_id.is_empty() {
         let spath = format!("{}/live_sess_{}.json", cache_dir, session_id);
-        if let Ok(meta) = fs::metadata(&spath)
-            && let Ok(mt) = meta.modified()
-        {
-            live_mtime = mt;
+        if let Ok(meta) = fs::metadata(&spath) {
+            if let Ok(mt) = meta.modified() {
+                live_mtime = mt;
+            }
         }
         if let Ok(stxt) = fs::read_to_string(&spath) {
             session_raw_model = extract_json_str(&stxt, "model").filter(|m| !m.is_empty());
@@ -118,13 +119,13 @@ pub fn load_config_models(
             if let Ok(rd) = fs::read_dir(&projects_dir) {
                 for entry in rd.flatten() {
                     let jp = entry.path().join(format!("{}.jsonl", session_id));
-                    if let Ok(meta) = fs::metadata(&jp)
-                        && let Ok(j_mt) = meta.modified()
-                    {
-                        if j_mt > live_mtime {
-                            jsonl_newer = true;
+                    if let Ok(meta) = fs::metadata(&jp) {
+                        if let Ok(j_mt) = meta.modified() {
+                            if j_mt > live_mtime {
+                                jsonl_newer = true;
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
             }
@@ -252,9 +253,10 @@ pub fn resolve_isolated_session_id(
         for e in &alive_entries {
             if let Ok(bound_yid) =
                 fs::read_to_string(format!("{}/session_{}.yazi", cache_dir, e.session_id))
-                && bound_yid.trim() == tab_yazi_id
             {
-                return (e.session_id.clone(), e.pid);
+                if bound_yid.trim() == tab_yazi_id {
+                    return (e.session_id.clone(), e.pid);
+                }
             }
         }
     }
@@ -288,11 +290,14 @@ pub fn resolve_yazi_id_from_ppid(cache_dir: &str) -> String {
             if let Some(yid) = fname
                 .strip_prefix("tab_shell_")
                 .and_then(|s| s.strip_suffix(".txt"))
-                && let Ok(stxt) = fs::read_to_string(&p)
-                && let Ok(spid) = stxt.trim().parse::<u32>()
-                && is_descendant_of(ppid, spid)
             {
-                return yid.to_string();
+                if let Ok(stxt) = fs::read_to_string(&p) {
+                    if let Ok(spid) = stxt.trim().parse::<u32>() {
+                        if is_descendant_of(ppid, spid) {
+                            return yid.to_string();
+                        }
+                    }
+                }
             }
         }
     }

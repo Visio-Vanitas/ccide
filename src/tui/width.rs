@@ -1,4 +1,17 @@
-//! East-Asian (CJK) display column width measurement and ANSI-aware truncation.
+//! East-Asian (CJK) display column width measurement, UTF-8 safe boundary slicing, and ANSI-aware truncation.
+
+/// LTS-compatible equivalent of `str::floor_char_boundary` (compatible with Rust 1.70 LTS).
+pub fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        s.len()
+    } else {
+        let mut i = index;
+        while i > 0 && !s.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    }
+}
 
 /// Returns the terminal column width (`0`, `1`, or `2`) of a single Unicode scalar value.
 pub fn char_display_width(ch: char) -> usize {
@@ -81,4 +94,122 @@ pub fn trunc_to_width(s: &str, max_cols: usize) -> String {
     }
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn floor_boundary_clamps_past_end() {
+        assert_eq!(floor_char_boundary("abc", 99), 3);
+        assert_eq!(floor_char_boundary("", 0), 0);
+        assert_eq!(floor_char_boundary("abc", 3), 3);
+    }
+
+    #[test]
+    fn floor_boundary_snaps_inside_multibyte_cjk() {
+        // '级' is U+7EA7, encoded as 3 bytes (E7 BA A7).
+        let s = "a级b";
+        assert_eq!(s.len(), 5);
+        assert_eq!(floor_char_boundary(s, 0), 0);
+        assert_eq!(floor_char_boundary(s, 1), 1); // on 'a'
+        for idx in 2..4 {
+            assert_eq!(floor_char_boundary(s, idx), 1, "inside '级' at {idx}");
+        }
+        assert_eq!(floor_char_boundary(s, 4), 4); // on 'b'
+    }
+
+    #[test]
+    fn floor_boundary_snaps_inside_emoji() {
+        // '🚀' is U+1F680, encoded as 4 bytes (F0 9F 9A 80).
+        let s = "x🚀";
+        assert_eq!(s.len(), 5);
+        for idx in 2..4 {
+            assert_eq!(floor_char_boundary(s, idx), 1, "inside emoji at {idx}");
+        }
+        assert_eq!(floor_char_boundary(s, 5), 5);
+        // Result must always be a valid char boundary.
+        for idx in 0..=s.len() {
+            assert!(s.is_char_boundary(floor_char_boundary(s, idx)));
+        }
+    }
+
+    #[test]
+    fn char_width_categories() {
+        assert_eq!(char_display_width('a'), 1);
+        assert_eq!(char_display_width('级'), 2);
+        assert_eq!(char_display_width('🚀'), 2);
+        assert_eq!(char_display_width('\u{0301}'), 0); // combining accent
+        assert_eq!(char_display_width('\u{200B}'), 0); // zero-width space
+        assert_eq!(char_display_width('\x1b'), 0); // control
+    }
+
+    #[test]
+    fn display_width_plain_and_cjk() {
+        assert_eq!(display_width("abc"), 3);
+        assert_eq!(display_width("初级"), 4);
+        assert_eq!(display_width("a级"), 3);
+        assert_eq!(display_width(""), 0);
+    }
+
+    #[test]
+    fn display_width_ignores_csi_sequences() {
+        assert_eq!(display_width("\x1b[31mred\x1b[0m"), 3);
+        assert_eq!(display_width("\x1b[1;38;2;68;74;94m级\x1b[0m"), 2);
+        assert_eq!(display_width("\x1b[2J"), 0);
+    }
+
+    #[test]
+    fn display_width_ignores_osc_sequences() {
+        assert_eq!(display_width("\x1b]0;title\x07ok"), 2);
+        assert_eq!(display_width("\x1b]8;;http://x\x07link\x1b]8;;\x07"), 4);
+        // Unterminated OSC swallows the remainder rather than counting it.
+        assert_eq!(display_width("\x1b]unterminated"), 0);
+    }
+
+    #[test]
+    fn trunc_to_width_zero_returns_empty() {
+        assert_eq!(trunc_to_width("abc", 0), "");
+        assert_eq!(trunc_to_width("级级", 0), "");
+    }
+
+    #[test]
+    fn trunc_to_width_keeps_string_that_fits() {
+        assert_eq!(trunc_to_width("abc", 3), "abc");
+        assert_eq!(trunc_to_width("级级", 4), "级级");
+        assert_eq!(trunc_to_width("", 5), "");
+    }
+
+    #[test]
+    fn trunc_to_width_appends_ellipsis_and_respects_budget() {
+        let out = trunc_to_width("abcdef", 4);
+        assert_eq!(out, "abc…");
+        assert_eq!(display_width(&out), 4);
+
+        // CJK: budget 3 -> 1 column reserved for '…', only one wide glyph fits.
+        let out = trunc_to_width("级级级", 3);
+        assert_eq!(out, "级…");
+        assert!(display_width(&out) <= 3);
+
+        // Budget of 2 fits no wide glyph before the ellipsis.
+        let out = trunc_to_width("级级", 2);
+        assert_eq!(out, "…");
+        assert_eq!(display_width(&out), 1);
+    }
+
+    #[test]
+    fn trunc_to_width_output_never_exceeds_budget() {
+        let samples = ["hello world", "初级终端渲染", "a🚀b🚀c", "mixed 级 text 🚀"];
+        for s in samples {
+            for max in 1..=display_width(s) + 2 {
+                let out = trunc_to_width(s, max);
+                assert!(
+                    display_width(&out) <= max,
+                    "trunc_to_width({s:?}, {max}) -> {out:?} (width {})",
+                    display_width(&out)
+                );
+            }
+        }
+    }
 }

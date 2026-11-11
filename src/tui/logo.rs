@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::fs;
 
-use crate::tui::RESET;
 use crate::tui::grid::{BoxRow, PanelSpec, TermGeom};
 use crate::tui::width::display_width;
+use crate::tui::RESET;
 
 /// Loads pre-rendered resolution-adaptive 2x2 Quadrant logos (`adaptive_quadrant_logos.json`)
 /// for `gemini`, `deepseek`, `claude`, `openai`, and `grok`.
@@ -17,46 +17,46 @@ pub fn load_adaptive_logos(home: &str) -> HashMap<String, Vec<String>> {
             let key = format!("\"{}\":", fam);
             if let Some(pos) = txt.find(&key) {
                 let rest = &txt[pos + key.len()..];
-                if let Some(arr_start) = rest.find('[')
-                    && let Some(arr_end) = rest[arr_start..].find(']')
-                {
-                    let arr_body = &rest[arr_start + 1..arr_start + arr_end];
-                    let mut lines = Vec::new();
-                    let mut cur = String::new();
-                    let mut in_str = false;
-                    let mut chars = arr_body.chars();
-                    while let Some(c) = chars.next() {
-                        if !in_str {
-                            if c == '"' {
-                                in_str = true;
-                                cur.clear();
-                            }
-                        } else if c == '\\' {
-                            if let Some(esc) = chars.next() {
-                                match esc {
-                                    'u' => {
-                                        let hex: String = chars.by_ref().take(4).collect();
-                                        if let Ok(code) = u32::from_str_radix(&hex, 16)
-                                            && let Some(ch) = char::from_u32(code)
-                                        {
-                                            cur.push(ch);
-                                        }
-                                    }
-                                    'n' => cur.push('\n'),
-                                    '"' => cur.push('"'),
-                                    '\\' => cur.push('\\'),
-                                    other => cur.push(other),
+                if let Some(arr_start) = rest.find('[') {
+                    if let Some(arr_end) = rest[arr_start..].find(']') {
+                        let arr_body = &rest[arr_start + 1..arr_start + arr_end];
+                        let mut lines = Vec::new();
+                        let mut cur = String::new();
+                        let mut in_str = false;
+                        let mut chars = arr_body.chars();
+                        while let Some(c) = chars.next() {
+                            if !in_str {
+                                if c == '"' {
+                                    in_str = true;
+                                    cur.clear();
                                 }
+                            } else if c == '\\' {
+                                if let Some(esc) = chars.next() {
+                                    match esc {
+                                        'u' => {
+                                            let hex: String = chars.by_ref().take(4).collect();
+                                            if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                                                if let Some(ch) = char::from_u32(code) {
+                                                    cur.push(ch);
+                                                }
+                                            }
+                                        }
+                                        'n' => cur.push('\n'),
+                                        '"' => cur.push('"'),
+                                        '\\' => cur.push('\\'),
+                                        other => cur.push(other),
+                                    }
+                                }
+                            } else if c == '"' {
+                                in_str = false;
+                                lines.push(cur.clone());
+                            } else {
+                                cur.push(c);
                             }
-                        } else if c == '"' {
-                            in_str = false;
-                            lines.push(cur.clone());
-                        } else {
-                            cur.push(c);
                         }
-                    }
-                    if !lines.is_empty() {
-                        map.insert(fam.to_string(), lines);
+                        if !lines.is_empty() {
+                            map.insert(fam.to_string(), lines);
+                        }
                     }
                 }
             }

@@ -9,7 +9,7 @@ use std::ffi::{c_double, c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "macos")]
-use std::ffi::{CString, c_char, c_uint};
+use std::ffi::{c_char, c_uint, CString};
 #[cfg(target_os = "macos")]
 use std::ptr;
 
@@ -33,22 +33,26 @@ pub const SIGUSR2: c_int = 12;
 /// Sends `SIGUSR2` to the sidebar process registered for `session_id` or `yazi_id`
 /// so the Right Sidebar wakes from `poll()` in `< 0.05ms` with zero polling overhead.
 pub fn notify_sidebar(session_id: &str, yazi_id: &str) {
-    if !session_id.is_empty()
-        && let Ok(txt) = std::fs::read_to_string(format!("/tmp/.cc-ide/sb_{}.pid", session_id))
-        && let Ok(pid) = txt.trim().parse::<i32>()
-        && pid > 1
-    {
-        unsafe {
-            let _ = kill(pid, SIGUSR2);
+    if !session_id.is_empty() {
+        if let Ok(txt) = std::fs::read_to_string(format!("/tmp/.cc-ide/sb_{}.pid", session_id)) {
+            if let Ok(pid) = txt.trim().parse::<i32>() {
+                if pid > 1 {
+                    unsafe {
+                        let _ = kill(pid, SIGUSR2);
+                    }
+                }
+            }
         }
     }
-    if !yazi_id.is_empty()
-        && let Ok(txt) = std::fs::read_to_string(format!("/tmp/.cc-ide/sb_yazi_{}.pid", yazi_id))
-        && let Ok(pid) = txt.trim().parse::<i32>()
-        && pid > 1
-    {
-        unsafe {
-            let _ = kill(pid, SIGUSR2);
+    if !yazi_id.is_empty() {
+        if let Ok(txt) = std::fs::read_to_string(format!("/tmp/.cc-ide/sb_yazi_{}.pid", yazi_id)) {
+            if let Ok(pid) = txt.trim().parse::<i32>() {
+                if pid > 1 {
+                    unsafe {
+                        let _ = kill(pid, SIGUSR2);
+                    }
+                }
+            }
         }
     }
 }
@@ -97,7 +101,7 @@ pub struct Termios {
 }
 
 impl Termios {
-    pub const fn zeroed() -> Self {
+    pub fn zeroed() -> Self {
         unsafe { std::mem::zeroed() }
     }
 
@@ -187,7 +191,7 @@ pub struct IfMsghdr2 {
 }
 
 #[cfg_attr(target_os = "macos", link(name = "System"))]
-unsafe extern "C" {
+extern "C" {
     pub fn ioctl(fd: c_int, request: u64, ...) -> c_int;
     pub fn tcgetattr(fd: c_int, termios_p: *mut Termios) -> c_int;
     pub fn tcsetattr(fd: c_int, optional_actions: c_int, termios_p: *const Termios) -> c_int;
@@ -247,7 +251,7 @@ unsafe extern "C" {
 #[allow(clippy::duplicated_attributes)]
 #[link(name = "IOKit", kind = "framework")]
 #[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
+extern "C" {
     pub fn IOServiceMatching(name: *const c_char) -> *mut c_void;
     pub fn IOServiceGetMatchingServices(
         main_port: c_uint,
@@ -269,7 +273,7 @@ unsafe extern "C" {
         encoding: u32,
     ) -> *const c_void;
     pub fn CFNumberGetValue(number: *const c_void, the_type: isize, value_ptr: *mut c_void)
-    -> bool;
+        -> bool;
     pub fn CFRelease(cf: *const c_void);
 }
 
@@ -287,7 +291,11 @@ pub fn get_ppid_of(pid: u32) -> Option<u32> {
     unsafe {
         let mut buf = [0u32; 34]; // 136 bytes = sizeof(proc_bsdinfo), pbi_ppid is at index 4
         let ret = proc_pidinfo(pid as c_int, 3, 0, buf.as_mut_ptr() as *mut c_void, 136);
-        if ret <= 0 { None } else { Some(buf[4]) }
+        if ret <= 0 {
+            None
+        } else {
+            Some(buf[4])
+        }
     }
 }
 
@@ -328,7 +336,13 @@ pub fn sysctl_string(name: &str) -> Option<String> {
     unsafe {
         let c_name = CString::new(name).ok()?;
         let mut len: usize = 0;
-        if sysctlbyname(c_name.as_ptr(), ptr::null_mut(), &mut len, ptr::null_mut(), 0) != 0
+        if sysctlbyname(
+            c_name.as_ptr(),
+            ptr::null_mut(),
+            &mut len,
+            ptr::null_mut(),
+            0,
+        ) != 0
             || len == 0
         {
             return None;

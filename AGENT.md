@@ -1,12 +1,12 @@
 # `cc-ide` (`ccide-core`) — Architecture & Agent Maintenance Guide
 
 ## 1. Overview
-`cc-ide` (v0.3.0) is a high-performance, cross-platform native engine for the 3-column iTerm2 + Claude Code tiling workspace:
+`cc-ide` (v0.4.0) is a high-performance, cross-platform native engine for the 3-column iTerm2 + Claude Code tiling workspace. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses no nightly features, and builds out of the box on LTS Linux distributions and macOS:
 - **Left Column (30%)**: `Yazi` File Tree (top) + `Lazygit` Diff (bottom), locked to zero terminal scrollback (`scrollback_lines = 0`).
 - **Center Column (54%)**: `Claude Code` Main Workspace (with native `viewing-agent` switching and clean bottom chrome).
 - **Right Column (16%)**: `ccide-core sidebar` 3-Tier Interactive TUI:
   1. **Top Panel**: Resolution-adaptive 2x2 Quadrant model logo (`GEMINI`, `DEEPSEEK`, `CLAUDE`, `OPENAI`, `GROK`), switching dynamically between the Main Model (`settings.model`) and the Subagent Model (`settings.env.CLAUDE_CODE_SUBAGENT_MODEL`) when viewing a subagent.
-  2. **Middle Panel (`SUBAGENTS`)**: Permanent top `● [main]` item + session-isolated subagents. Clicking any item drives Claude Code's native `viewing-agent` state machine (`YU` / `EL`) and links `Yazi` file-tree reveals to the selected session.
+  2. **Middle Panel (`SUBAGENTS`)**: Permanent top `● [main]` item + session-isolated subagents. Clicking any item drives Claude Code's native `viewing-agent` state machine and links `Yazi` file-tree reveals to the selected session.
   3. **Bottom Panel (`M4 PRO` / host CPU)**: Multi-row (`8 × height` sub-pixel) oscilloscope curves for `CPU`, `GPU`, `MEM`, and `NET`, sampled cross-platform.
 
 The workspace is **adaptive**: the same binary selects one of three split backends depending on the host terminal and transport — local iTerm2 daemon (Tier 1), SSH + client iTerm2 native split (Tier 2), or a universal `tmux` engine (Tier 3). See §4.
@@ -17,22 +17,28 @@ The workspace is **adaptive**: the same binary selects one of three split backen
 ```text
 ccide/
 ├── AGENT.md                  # Architecture & maintenance guide (symlinked as CLAUDE.md)
-├── Cargo.toml                # Rust 2024 edition, fat LTO, stripped release profile
+├── .github/
+│   └── workflows/
+│       ├── ci.yml            # CI Gate: 1.70.0 MSRV, fmt/clippy, 4-target matrix, scripts & patcher tests
+│       ├── release.yml       # Release: preview RC (`v0.4.0-rc.<n>`) + immutable stable (`v0.4.0`) + SHA256SUMS
+│       └── cc-compat-watch.yml # Daily npm @anthropic-ai/claude-code compatibility probe (dedup issues)
+├── Cargo.toml                # Rust Edition 2021, MSRV 1.70, fat LTO, stripped release profile
 ├── install.sh                # One-Click Installer, Plugin Configurator & Binary Patcher
 ├── .claude-plugin/
 │   ├── marketplace.json      # Official Claude Code Marketplace manifest ("cc-ide")
-│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.3.0)
+│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.4.0)
 ├── hooks/
 │   └── hooks.json            # Official Plugin Hooks (PostToolUse, SubagentStart, SubagentStop -> ccide-core yazi-hook)
 ├── skills/
 │   ├── ccide/SKILL.md        # `/cc-ide:ccide` workspace controller skill
 │   └── rebalance/SKILL.md    # `/cc-ide:rebalance` 30%|54%|16% layout rebalancer skill
 ├── scripts/
-│   ├── ccide                 # Adaptive 3-Tier launcher (backend auto-detect, tmux bootstrap, SSH ControlMaster)
+│   ├── ccide                 # Adaptive 3-Tier launcher (backend auto-detect, tmux bootstrap, SSH ControlMaster, auto-repatch)
+│   ├── ensure-ccide-core.sh  # POSIX on-demand resolver: downloads + SHA256-verifies prebuilt GitHub Release binary
 │   ├── ccide_daemon.py       # iTerm2 AutoLaunch warm daemon (Unix socket + OSC 1337 SSH bridge)
 │   ├── iterm2_workspace.py   # Cold fallback: iTerm2 Python API 3-column tiling & view-switch controller
 │   ├── pane-runner.sh        # Cross-platform companion TUI pane runner (yazi, lazygit, macmon, sidebar)
-│   ├── patch_claude_binary.py# Idempotent claude.exe binary patcher (SIGUSR2 + subagent retention + clean bottom)
+│   ├── patch_claude_binary.py# Version-independent structural patcher (Bun trailer parser + invariant anchors)
 │   └── cc_tui_lib.py         # Python TUI & quadrant logo generator library
 ├── assets/
 │   └── adaptive_quadrant_logos.json # Pre-rendered 2x2 Quadrant vector logos
@@ -92,14 +98,22 @@ ccide/
 
 ### 3.4 Event-Driven Hook & Signal Architecture (`SIGUSR2`, Zero Idle Polling)
 - **Bidirectional Kernel Signal (`SIGUSR2 = 31` on macOS, `12` on Linux)**:
-  1. **Right Sidebar -> Claude Code (`src/commands/sidebar.rs` -> `claude.exe`)**:
-     - Clicking `● [main]` or any `[subagent]` writes `/tmp/.cc-ide/req_<sessionId>.json` and calls `kill(claude_pid, SIGUSR2)`.
-     - Inside `claude.exe` (patched via `~/.claude/scripts/patch_claude_binary.py`), a `process.on("SIGUSR2", ...)` listener wakes up in `< 0.05ms`, registers completed subagents on demand via `svs(..., taskRegistry)`, and invokes `YU(id, Qt)` or `EL(Qt)` without any background timer polling.
+  1. **Right Sidebar -> Claude Code (`src/commands/sidebar.rs` -> Claude Code binary)**:
+     - Clicking `● [main]` or any `[subagent]` writes `/tmp/.cc-ide/req_pid_<process.pid>.json` and calls `kill(claude_pid, SIGUSR2)`.
+     - Inside Claude Code (patched via `~/.claude/scripts/patch_claude_binary.py`), a `process.on("SIGUSR2", ...)` listener wakes up in `< 0.05ms`, registers completed subagents on demand via the resolved `adoptAgent` function, and invokes the resolved `enterView` / `exitView` functions without any background timer polling.
   2. **Claude Code -> Right Sidebar (`claude.exe` / Hooks / `statusline` -> `ccide-core sidebar`)**:
-     - `ccide-core sidebar` registers `signal(SIGUSR2, handle_sigusr2)` and writes its PID to `/tmp/.cc-ide/sb_<sessionId>.pid` and `/tmp/.cc-ide/sb_yazi_<yaziId>.pid`.
-     - Whenever `/model` or `viewingAgentTaskId` changes inside `claude.exe`, or whenever `SubagentStart`, `SubagentStop`, `PostToolUse`, or `statusline` runs, `notify_sidebar()` sends `SIGUSR2` to wake `ccide-core sidebar` from `poll()` in `< 0.05ms`.
+     - `ccide-core sidebar` registers `signal(SIGUSR2, handle_sigusr2)` and writes its PID to `/tmp/.cc-ide/sb_pid_<process.pid>.pid`.
+     - Whenever `/model` or `viewingAgentTaskId` changes inside Claude Code, or whenever `SubagentStart`, `SubagentStop`, `PostToolUse`, or `statusline` runs, `notify_sidebar()` sends `SIGUSR2` to wake `ccide-core sidebar` from `poll()` in `< 0.05ms`.
   3. **Row-Level Diffing (`src/tui/grid.rs`)**:
      - `render_multi_panel_grid()` diffs each row against `prev_rows` and only writes ANSI sequences for rows that actually changed (`0` bytes written for `Panel 1` and `Panel 2` when idle).
+
+### 3.5 Version-Independent Structural Binary Patching (`scripts/patch_claude_binary.py`)
+The patcher adapts to every Claude Code upgrade without hardcoded offsets or minified names:
+1. **Dynamic Bun Standalone Trailer Parsing**: Locates the `\n---- Bun! ----\n` marker on both **macOS Mach-O** and **Linux ELF** binaries, reads the preceding 32-byte header (`<QII`: `byte_count`, `mod_off`, `mod_len`), derives the base offset, and walks the `StandaloneModuleGraph` table (`52`-byte entries, `<13I`) to enumerate JS modules under `/$bunfs/`. After patching, the `bytecode_*` fields and `0x100` flag are cleared only for affected modules, so Bun recompiles them instead of executing stale cached bytecode.
+2. **Unminified Invariant String Anchors**: `discover_runtime_symbols()` regex-resolves `enterView` / `exitView` / `adoptAgent` from telemetry literals (`"tengu_transcript_view_enter"`, `"tengu_transcript_view_exit"`, `"local_agent"` + `"(resumed agent)"`). All other patches anchor on stable literals (`"in_process_teammate"`, `"quietlyParked"`, `".evictTerminal("`, `"local_workflow"`, `"PromptHintPart"`, `key:"mode"`). Only 4 patches are required (`subagent_retention_timers`, `transcript_view_retention`, `keep_completed_visible`, `sigusr2_view_switch_hook`); the UI cleanups are optional.
+3. **Zero-Minifier-Dependency IPC**: The injected hook communicates via `process.pid`-scoped files — `/tmp/.cc-ide/req_pid_<pid>.json`, `cur_pid_<pid>.txt`, and `sb_pid_<pid>.pid` — so no minified variable name is ever hardcoded into the IPC contract.
+4. **Idempotent Install & Auto-Repatch**: `apply_patches()` backs up the pristine binary once, writes atomically (`.tmp` + `rename`), and ad-hoc `codesign`s on macOS. `scripts/ccide`'s `auto_ensure_claude_patched()` fingerprints the binary (`inode:size:mtime` -> `~/.cache/cc-ide/claude_bin.stamp`) and silently re-runs the patcher on the first launch after an upstream update.
+5. **Compatibility Guard**: `--verify` runs entirely in memory and prints a JSON report (`required_ok`, per-patch `applied`/`offset`, resolved symbols, cleared bytecode modules); it exits `1` when a required anchor fails to match, which is exactly what `ci.yml` and `cc-compat-watch.yml` consume.
 
 ---
 
@@ -157,9 +171,9 @@ All shared state lives under `/tmp/.cc-ide/` (mode-restricted socket; plain file
 | `/tmp/.cc-ide/osc_ack_<yazi_id>` | `pane-runner.sh` -> `workspace.rs` | Tier 2 completion handshake |
 | `/tmp/.cc-ide/hw_telemetry_v1.bin` | any sidebar -> all sidebars | shared 500ms telemetry snapshot |
 | `/tmp/.cc-ide/sys_telemetry.cache` | sampler -> `statusline` | `CPU ..%  GPU ..%  RAM ..%` |
-| `/tmp/.cc-ide/cur_<sessionId>.txt` | `claude.exe` -> sidebar | current viewing-agent view |
-| `/tmp/.cc-ide/req_<sessionId>.json` | sidebar -> `claude.exe` | view-switch request |
-| `/tmp/.cc-ide/sb_<sessionId>.pid`, `sb_yazi_<yaziId>.pid` | sidebar | `SIGUSR2` targets |
+| `/tmp/.cc-ide/cur_pid_<pid>.txt` | Claude Code -> sidebar | current viewing-agent view |
+| `/tmp/.cc-ide/req_pid_<pid>.json` | sidebar -> Claude Code | view-switch request |
+| `/tmp/.cc-ide/sb_pid_<pid>.pid` | sidebar | `SIGUSR2` target |
 | `/tmp/.cc-ide/nvidia_stat.txt` | Linux NVIDIA probe | cached GPU utilization/VRAM |
 | `~/.cache/cc-ide/tab_shell_<yazi_id>.txt` | workspace/daemon | tab shell PID for isolation |
 | `~/.cache/cc-ide/live_sess_<sessionId>.json` | `statusline` | per-session main model |
@@ -173,11 +187,35 @@ All build, plugin registration, daemon setup, binary patching, validation, and h
 # Full one-click build, plugin install, claude.exe patch, validation & hot-reload:
 ./install.sh
 
-# Re-apply only the claude.exe binary patch (e.g. after updating Claude Code):
+# Re-apply only the Claude Code binary patch (usually automatic on the next `ccide` launch):
 ./install.sh --patch-only
 
 # Restore original claude.exe from backup (claude.exe.bak) and stop the daemon:
 ./install.sh --uninstall
 ```
 
-Installer side effects worth knowing: it symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/`, (re)writes `~/.ssh/ccide_config` and the `Include` line in `~/.ssh/config`, (re)starts the daemon, and packages the plugin into `~/.claude/plugins/cache/cc-ide/cc-ide/0.3.0/`.
+Installer side effects worth knowing: it symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/`, (re)writes `~/.ssh/ccide_config` and the `Include` line in `~/.ssh/config`, (re)starts the daemon, and packages the plugin into `~/.claude/plugins/cache/cc-ide/cc-ide/0.4.0/`. When `cargo` is absent it falls back to `scripts/ensure-ccide-core.sh` to download the prebuilt release binary.
+
+---
+
+## 7. Toolchain, Release & CI/CD (`dev -> preview -> main`)
+
+### 7.1 MSRV & Toolchain Policy
+- `Cargo.toml` pins `edition = "2021"` and `rust-version = "1.70"`. There is **zero** dependency on nightly or post-1.70 compiler features, and the crate has **no external dependencies** (the only `[[package]]` in `Cargo.lock` is `ccide-core` itself), so it builds out of the box on LTS Linux distributions and macOS.
+- CI proves the floor with a real toolchain: `dtolnay/rust-toolchain@master` with `toolchain: 1.70.0`, then `cargo +1.70.0 check --all-targets` and `cargo +1.70.0 test`. Stable is used only for `rustfmt` and `clippy --all-targets -- -D warnings`.
+- **Note for maintainers**: `Cargo.lock` is currently written as lockfile `version = 4`, which cargo 1.70 cannot parse ("lock file version `4` was found"). A v3 lockfile (identical content here, since there are no dependencies) is what the 1.70 CI job needs; regenerate with an older cargo or rewrite the header before the MSRV job can run as committed.
+
+### 7.2 Promotion Flow (enforced by `.github/workflows/ci.yml`)
+1. **`dev`** — feature work; pushes and PRs run the full gate (no release).
+2. **`preview`** — a PR from `dev`; on merge, `ci.yml` adds a live `npm install @anthropic-ai/claude-code@latest` + `patch_claude_binary.py --verify` step, and `release.yml` publishes a pre-release tag `v0.4.0-rc.<run_number>` (`prerelease: true`, `make_latest: false`).
+3. **`main`** — a PR from `preview` only; the `branch-flow-guard` job fails any PR whose `head_ref` is not `preview`. On merge, `release.yml` publishes the immutable stable tag `v0.4.0` (`make_latest: true`).
+
+`release.yml` builds four archives (`ccide-core-<triple>.tar.gz` for `aarch64`/`x86_64` × macOS/Linux), computes `SHA256SUMS.txt`, and attaches both to the release — the same assets `scripts/ensure-ccide-core.sh` resolves and verifies at install time.
+
+### 7.3 Daily Upstream Compatibility Probe (`.github/workflows/cc-compat-watch.yml`)
+Runs daily at `03:17 UTC` (and on `workflow_dispatch`). It resolves the newest `@anthropic-ai/claude-code` version from npm, runs `patch_claude_binary.py --verify` against the downloaded bundle, and on failure opens a `[Compat Alert] Claude Code v<ver> upstream bundle layout changed` issue with the JSON report — deduplicated against existing open issues for the same version.
+
+---
+
+## 8. Roadmap
+- **v1.0**: first-class **PowerShell (`pwsh`) support** for Windows Terminal and WezTerm, including a native PowerShell pane runner and Windows packaging, while preserving the `30% | 54% | 16%` layout contract.
