@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::ffi::notify_sidebar;
 use crate::json::{extract_json_str, extract_json_u64};
 use crate::session::resolve_yazi_id_from_ppid;
+use crate::tui::palette::Palette;
 use crate::tui::width::floor_char_boundary;
 
 fn fast_git_summary(cwd: &str) -> String {
@@ -73,17 +74,21 @@ pub fn run() {
         raw_mode = "bypass".to_string();
     }
 
-    let (mode_word, bg0, fg0) = if raw_mode.contains("bypass") || raw_mode.contains("skip") {
-        ("bypass", 131, 255)
-    } else if raw_mode.contains("auto") {
-        ("auto", 61, 255)
-    } else if raw_mode.contains("plan") {
-        ("plan", 30, 255)
-    } else if raw_mode.contains("accept") {
-        ("accept", 29, 255)
-    } else {
-        ("manual", 239, 252)
-    };
+    let pal = Palette::load(&home);
+    let sl = &pal.statusline;
+
+    let (mode_word, c_mode_bg, c_mode_fg) =
+        if raw_mode.contains("bypass") || raw_mode.contains("skip") {
+            ("bypass", sl.bypass_bg, sl.bypass_fg)
+        } else if raw_mode.contains("auto") {
+            ("auto", sl.auto_bg, sl.auto_fg)
+        } else if raw_mode.contains("plan") {
+            ("plan", sl.plan_bg, sl.plan_fg)
+        } else if raw_mode.contains("accept") {
+            ("accept", sl.accept_bg, sl.accept_fg)
+        } else {
+            ("manual", sl.manual_bg, sl.manual_fg)
+        };
 
     let used_pct = extract_json_u64(&input, "used_percentage").unwrap_or(0);
     let in_tok = extract_json_u64(&input, "input_tokens").unwrap_or(0);
@@ -98,12 +103,12 @@ pub fn run() {
     let tokens_k = total_in / 1000;
     let compact_k = win_size * 50 / 100_000;
 
-    let (bg2, fg2) = if used_pct >= 40 {
-        (131, 255)
+    let (c_ctx_bg, c_ctx_fg) = if used_pct >= 40 {
+        (sl.ctx_crit_bg, sl.ctx_crit_fg)
     } else if used_pct >= 25 {
-        (136, 255)
+        (sl.ctx_warn_bg, sl.ctx_warn_fg)
     } else {
-        (240, 253)
+        (sl.ctx_ok_bg, sl.ctx_ok_fg)
     };
     let ctx_text = format!("CTX {}k/{}k ({}%)", tokens_k, compact_k, used_pct);
     let git_text = fast_git_summary(&cwd);
@@ -145,7 +150,27 @@ pub fn run() {
     }
     notify_sidebar(&session_id, &yid);
 
+    let s0_bg = c_mode_bg.bg_ansi();
+    let s0_fg = c_mode_fg.fg_ansi();
+    let s0_sep = c_mode_bg.fg_ansi();
+
+    let s1_bg = sl.model_bg.bg_ansi();
+    let s1_fg = sl.model_fg.fg_ansi();
+    let s1_sep = sl.model_bg.fg_ansi();
+
+    let s2_bg = c_ctx_bg.bg_ansi();
+    let s2_fg = c_ctx_fg.fg_ansi();
+    let s2_sep = c_ctx_bg.fg_ansi();
+
+    let s3_bg = sl.git_bg.bg_ansi();
+    let s3_fg = sl.git_fg.fg_ansi();
+    let s3_sep = sl.git_bg.fg_ansi();
+
+    let s4_bg = sl.sys_bg.bg_ansi();
+    let s4_fg = sl.sys_fg.fg_ansi();
+    let s4_sep = sl.sys_bg.fg_ansi();
+
     println!(
-        "\x1b[48;5;{bg0}m\x1b[38;5;{fg0}m \x1b[1m{mode_word} \x1b[22m\x1b[48;5;24m\x1b[38;5;{bg0}m\u{e0b0}\x1b[48;5;24m\x1b[38;5;255m \x1b[1m{model} \x1b[22m\x1b[48;5;{bg2}m\x1b[38;5;24m\u{e0b0}\x1b[48;5;{bg2}m\x1b[38;5;{fg2}m {ctx_text} \x1b[48;5;237m\x1b[38;5;{bg2}m\u{e0b0}\x1b[48;5;237m\x1b[38;5;250m {git_text} \x1b[48;5;235m\x1b[38;5;237m\u{e0b0}\x1b[48;5;235m\x1b[38;5;247m {sys_text} \x1b[0m\x1b[38;5;235m\u{e0b0}\x1b[0m"
+        "{s0_bg}{s0_fg} \x1b[1m{mode_word} \x1b[22m{s1_bg}{s0_sep}\u{e0b0}{s1_bg}{s1_fg} \x1b[1m{model} \x1b[22m{s2_bg}{s1_sep}\u{e0b0}{s2_bg}{s2_fg} {ctx_text} {s3_bg}{s2_sep}\u{e0b0}{s3_bg}{s3_fg} {git_text} {s4_bg}{s3_sep}\u{e0b0}{s4_bg}{s4_fg} {sys_text} \x1b[0m{s4_sep}\u{e0b0}\x1b[0m"
     );
 }

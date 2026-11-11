@@ -25,8 +25,47 @@ use std::time::{Duration, Instant};
 use crate::ffi::{getppid, is_pid_alive, kill, SIGUSR2};
 use crate::json::{extract_json_str, extract_json_u64};
 use crate::session::transcript::{append_dismissed_subagents, get_session_subagents};
+use crate::tui::palette::{render_palette_template, resolve_palette_path, Palette, PRESET_NAMES};
+use crate::tui::RESET;
 
-pub const DAEMON_SOCK_PATH: &str = "/tmp/.cc-ide/iterm_daemon.sock";
+fn wake_all_sidebars() {
+    if let Ok(rd) = fs::read_dir("/tmp/.cc-ide") {
+        for entry in rd.flatten() {
+            let fname = entry.file_name();
+            let name = fname.to_string_lossy();
+            if name.starts_with("sb_") && name.ends_with(".pid") {
+                if let Ok(ptxt) = fs::read_to_string(entry.path()) {
+                    if let Ok(pid) = ptxt.trim().parse::<i32>() {
+                        if pid > 1 {
+                            unsafe {
+                                let _ = kill(pid, SIGUSR2);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn replace_preset_in_jsonc(existing: &str, new_preset: &str) -> Option<String> {
+    let needle = "\"preset\"";
+    let pos = existing.find(needle)?;
+    let after_key = &existing[pos + needle.len()..];
+    let colon_off = after_key.find(':')?;
+    let after_colon = &after_key[colon_off + 1..];
+    let q1_off = after_colon.find('"')?;
+    let rest_val = &after_colon[q1_off + 1..];
+    let q2_off = rest_val.find('"')?;
+
+    let val_start = pos + needle.len() + colon_off + 1 + q1_off + 1;
+    let val_end = val_start + q2_off;
+    let mut out = String::with_capacity(existing.len() + 16);
+    out.push_str(&existing[..val_start]);
+    out.push_str(new_preset);
+    out.push_str(&existing[val_end..]);
+    Some(out)
+}
 
 fn escape_json(s: &str) -> String {
     s.replace('\\', "\\\\")
@@ -39,6 +78,8 @@ fn escape_json(s: &str) -> String {
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
+
+pub const DAEMON_SOCK_PATH: &str = "/tmp/.cc-ide/iterm_daemon.sock";
 
 /// Sends a newline-delimited JSON request to the warm local iTerm2 daemon over Unix Domain Socket.
 pub fn send_daemon_ipc(json_line: &str, timeout_ms: u64) -> Option<String> {
@@ -652,24 +693,90 @@ pub fn run(args: &[String]) {
             }
 
             // Wake all live sidebars via SIGUSR2 so the list updates in < 1ms
-            if let Ok(rd) = fs::read_dir("/tmp/.cc-ide") {
-                for entry in rd.flatten() {
-                    let fname = entry.file_name();
-                    let name = fname.to_string_lossy();
-                    if name.starts_with("sb_") && name.ends_with(".pid") {
-                        if let Ok(ptxt) = fs::read_to_string(entry.path()) {
-                            if let Ok(pid) = ptxt.trim().parse::<i32>() {
-                                if pid > 1 {
-                                    unsafe {
-                                        let _ = kill(pid, SIGUSR2);
-                                    }
-                                }
-                            }
+            wake_all_sidebars();
+            println!("Cleared {} completed subagent(s).", total_cleared);
+        }
+        "theme" | "palette" => {
+            let sub = args.get(3).map(|s| s.as_str()).unwrap_or("list");
+            let cfg_path = resolve_palette_path(&home);
+
+            match sub {
+                "path" => {
+                    println!("{}", cfg_path.display());
+                }
+                "init" => {
+                    if !cfg_path.exists() {
+                        if let Some(parent) = cfg_path.parent() {
+                            let _ = fs::create_dir_all(parent);
                         }
+                        let _ = fs::write(&cfg_path, render_palette_template("default"));
+                    }
+                    println!("{}", cfg_path.display());
+                }
+                "reset" => {
+                    if let Some(parent) = cfg_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&cfg_path, render_palette_template("default"));
+                    wake_all_sidebars();
+                    println!("Reset palette to default -> {}", cfg_path.display());
+                }
+                "list" | "" => {
+                    let active = Palette::load(&home);
+                    println!("Palette file : {}", cfg_path.display());
+                    println!("Active preset: {}", active.preset);
+                    println!("Presets:");
+                    for name in PRESET_NAMES {
+                        let p = Palette::from_json_str(&format!("{{\"preset\":\"{}\"}}", name));
+                        let mark = if active.preset == name { "●" } else { " " };
+                        println!(
+                            "  {} {:<18} {}██{} {}██{} {}██{} {}██{} {}██{}",
+                            mark,
+                            name,
+                            p.cyan,
+                            RESET,
+                            p.mint,
+                            RESET,
+                            p.amber,
+                            RESET,
+                            p.coral,
+                            RESET,
+                            p.lavender,
+                            RESET
+                        );
                     }
                 }
+                preset_arg => {
+                    let probe =
+                        Palette::from_json_str(&format!("{{\"preset\":\"{}\"}}", preset_arg));
+                    let is_valid =
+                        preset_arg.eq_ignore_ascii_case("default") || probe.preset != "default";
+                    if !is_valid {
+                        eprintln!(
+                            "Unknown preset '{}'. Available presets: {}",
+                            preset_arg,
+                            PRESET_NAMES.join(", ")
+                        );
+                        std::process::exit(1);
+                    }
+                    if let Some(parent) = cfg_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let updated = if let Ok(existing) = fs::read_to_string(&cfg_path) {
+                        replace_preset_in_jsonc(&existing, &probe.preset)
+                            .unwrap_or_else(|| render_palette_template(&probe.preset))
+                    } else {
+                        render_palette_template(&probe.preset)
+                    };
+                    let _ = fs::write(&cfg_path, updated);
+                    wake_all_sidebars();
+                    println!(
+                        "Switched palette preset to '{}' ({}) and hot-reloaded open sidebars.",
+                        probe.preset,
+                        cfg_path.display()
+                    );
+                }
             }
-            println!("Cleared {} completed subagent(s).", total_cleared);
         }
         _ => {}
     }

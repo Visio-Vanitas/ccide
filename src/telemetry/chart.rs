@@ -2,10 +2,8 @@
 
 use crate::telemetry::TelemetrySampler;
 use crate::tui::grid::BoxRow;
-use crate::tui::{
-    AMBER, BLUE, BOLD, CORAL, CYAN, DIM, GREEN, GRID_DOT, LAVENDER, MINT, RESET, SPARK_BLOCKS,
-    WHITE,
-};
+use crate::tui::palette::Palette;
+use crate::tui::{BOLD, RESET, SPARK_BLOCKS};
 
 pub fn fmt_rate(bps: f64) -> String {
     if bps >= 1024.0 * 1024.0 {
@@ -19,13 +17,14 @@ pub fn fmt_rate(bps: f64) -> String {
 
 /// Renders a `height`-row × `width`-col sub-pixel block curve (`▁▂▃▄▅▆▇█`)
 /// with a faint coordinate reticle (`·`) behind empty cells.
-pub fn render_multirow_curve(
+pub fn render_multirow_curve<'a>(
     samples: &[f64],
     width: usize,
     height: usize,
-    col_low: &'static str,
-    col_mid: &'static str,
-    col_high: &'static str,
+    col_low: &'a str,
+    col_mid: &'a str,
+    col_high: &'a str,
+    grid_dot: &str,
 ) -> Vec<String> {
     let height = height.max(1);
     let width = width.max(8);
@@ -68,7 +67,7 @@ pub fn render_multirow_curve(
                     active_color = "";
                 }
                 if x % 6 == 0 {
-                    s.push_str(GRID_DOT);
+                    s.push_str(grid_dot);
                 } else {
                     s.push(' ');
                 }
@@ -97,11 +96,12 @@ pub fn render_multirow_curve(
     rows_out
 }
 
-/// Builds exact-height `BoxRow`s for the bottom `M4 PRO` Telemetry Panel (`CPU`, `GPU`, `MEM`, `NET`).
+/// Builds exact-height `BoxRow`s for the bottom Telemetry Panel (`CPU`, `GPU`, `MEM`, `NET`).
 pub fn build_telemetry_panel_rows(
     sampler: &TelemetrySampler,
     inner_w: usize,
     panel_height: usize,
+    pal: &Palette,
 ) -> Vec<BoxRow> {
     let avail = panel_height.saturating_sub(2).max(8);
     let curve_w = inner_w.saturating_sub(2).max(10);
@@ -114,47 +114,66 @@ pub fn build_telemetry_panel_rows(
     let h_mem = (curve_budget / 4 + usize::from(curve_budget % 4 >= 3)).max(1);
     let h_net = curve_budget.saturating_sub(h_cpu + h_gpu + h_mem).max(1);
 
-    let div_str = format!(" \x1b[38;2;48;52;70m{}{RESET}", "┄".repeat(curve_w));
+    let white = &pal.text;
+    let dim = &pal.dim;
+    let cyan = &pal.cyan;
+    let green = &pal.green;
+    let amber = &pal.amber;
+    let coral = &pal.coral;
+    let blue = &pal.blue;
+    let mint = &pal.mint;
+    let lavender = &pal.lavender;
+    let grid_dot = &pal.grid_dot;
+
+    let div_str = format!(" {}{}{RESET}", pal.divider, "┄".repeat(curve_w));
     let mut rows = Vec::with_capacity(avail);
 
     // 1. CPU
     let cpu_c = if sampler.cpu_pct >= 80.0 {
-        CORAL
+        coral
     } else if sampler.cpu_pct >= 45.0 {
-        AMBER
+        amber
     } else {
-        MINT
+        mint
     };
     rows.push(BoxRow {
         text: format!(
-            " {cpu_c}●{RESET} {BOLD}{WHITE}CPU{RESET} {DIM}{}C{RESET}  {BOLD}{cpu_c}{:4.1}%{RESET}  {DIM}load {:.2}{RESET}",
+            " {cpu_c}●{RESET} {BOLD}{white}CPU{RESET} {dim}{}C{RESET}  {BOLD}{cpu_c}{:4.1}%{RESET}  {dim}load {:.2}{RESET}",
             sampler.cpu_cores, sampler.cpu_pct, sampler.load_1m
         ),
-        bg: "",
+        bg: String::new(),
         tag: None,
     });
-    for cl in render_multirow_curve(&sampler.cpu_hist, curve_w, h_cpu, MINT, CYAN, CORAL) {
+    for cl in render_multirow_curve(
+        &sampler.cpu_hist,
+        curve_w,
+        h_cpu,
+        mint,
+        cyan,
+        coral,
+        grid_dot,
+    ) {
         rows.push(BoxRow {
             text: format!(" {}", cl),
-            bg: "",
+            bg: String::new(),
             tag: None,
         });
     }
     if use_dividers {
         rows.push(BoxRow {
             text: div_str.clone(),
-            bg: "",
+            bg: String::new(),
             tag: None,
         });
     }
 
     // 2. GPU
     let gpu_c = if sampler.gpu_pct >= 80.0 {
-        CORAL
+        coral
     } else if sampler.gpu_pct >= 45.0 {
-        AMBER
+        amber
     } else {
-        BLUE
+        blue
     };
     #[cfg(target_os = "macos")]
     let gpu_tag = "AGX";
@@ -162,54 +181,70 @@ pub fn build_telemetry_panel_rows(
     let gpu_tag = "DEV";
     rows.push(BoxRow {
         text: format!(
-            " {gpu_c}●{RESET} {BOLD}{WHITE}GPU{RESET} {DIM}{gpu_tag}{RESET}  {BOLD}{gpu_c}{:4.1}%{RESET}  {DIM}vram {:.1}G{RESET}",
+            " {gpu_c}●{RESET} {BOLD}{white}GPU{RESET} {dim}{gpu_tag}{RESET}  {BOLD}{gpu_c}{:4.1}%{RESET}  {dim}vram {:.1}G{RESET}",
             sampler.gpu_pct, sampler.gpu_vram_gb
         ),
-        bg: "",
+        bg: String::new(),
         tag: None,
     });
-    for cl in render_multirow_curve(&sampler.gpu_hist, curve_w, h_gpu, BLUE, CYAN, AMBER) {
+    for cl in render_multirow_curve(
+        &sampler.gpu_hist,
+        curve_w,
+        h_gpu,
+        blue,
+        cyan,
+        amber,
+        grid_dot,
+    ) {
         rows.push(BoxRow {
             text: format!(" {}", cl),
-            bg: "",
+            bg: String::new(),
             tag: None,
         });
     }
     if use_dividers {
         rows.push(BoxRow {
             text: div_str.clone(),
-            bg: "",
+            bg: String::new(),
             tag: None,
         });
     }
 
     // 3. MEM
     let mem_c = if sampler.mem_pct >= 85.0 {
-        CORAL
+        coral
     } else if sampler.mem_pct >= 70.0 {
-        AMBER
+        amber
     } else {
-        LAVENDER
+        lavender
     };
     rows.push(BoxRow {
         text: format!(
-            " {mem_c}●{RESET} {BOLD}{WHITE}MEM{RESET} {DIM}{:.0}G{RESET}  {BOLD}{mem_c}{:4.1}%{RESET}  {DIM}{:.1}/{:.0}G{RESET}",
+            " {mem_c}●{RESET} {BOLD}{white}MEM{RESET} {dim}{:.0}G{RESET}  {BOLD}{mem_c}{:4.1}%{RESET}  {dim}{:.1}/{:.0}G{RESET}",
             sampler.total_mem_gb, sampler.mem_pct, sampler.mem_used_gb, sampler.total_mem_gb
         ),
-        bg: "",
+        bg: String::new(),
         tag: None,
     });
-    for cl in render_multirow_curve(&sampler.mem_hist, curve_w, h_mem, LAVENDER, AMBER, CORAL) {
+    for cl in render_multirow_curve(
+        &sampler.mem_hist,
+        curve_w,
+        h_mem,
+        lavender,
+        amber,
+        coral,
+        grid_dot,
+    ) {
         rows.push(BoxRow {
             text: format!(" {}", cl),
-            bg: "",
+            bg: String::new(),
             tag: None,
         });
     }
     if use_dividers {
         rows.push(BoxRow {
             text: div_str,
-            bg: "",
+            bg: String::new(),
             tag: None,
         });
     }
@@ -219,18 +254,26 @@ pub fn build_telemetry_panel_rows(
     let tx_s = fmt_rate(sampler.net_tx_bps);
     rows.push(BoxRow {
         text: format!(
-            " {CYAN}●{RESET} {BOLD}{WHITE}NET{RESET} {GREEN}▼{:>4}{RESET} {AMBER}▲{:>4}{RESET} {DIM}pk {}/s{RESET}",
+            " {cyan}●{RESET} {BOLD}{white}NET{RESET} {green}▼{:>4}{RESET} {amber}▲{:>4}{RESET} {dim}pk {}/s{RESET}",
             rx_s,
             tx_s,
             fmt_rate(sampler.net_peak_bps)
         ),
-        bg: "",
+        bg: String::new(),
         tag: None,
     });
-    for cl in render_multirow_curve(&sampler.net_hist, curve_w, h_net, CYAN, MINT, GREEN) {
+    for cl in render_multirow_curve(
+        &sampler.net_hist,
+        curve_w,
+        h_net,
+        cyan,
+        mint,
+        green,
+        grid_dot,
+    ) {
         rows.push(BoxRow {
             text: format!(" {}", cl),
-            bg: "",
+            bg: String::new(),
             tag: None,
         });
     }

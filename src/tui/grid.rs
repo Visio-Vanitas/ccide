@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 
 use crate::ffi::{ioctl, Winsize, TIOCGWINSZ};
+use crate::tui::palette::Palette;
 use crate::tui::width::display_width;
-use crate::tui::{BOLD, DIM, GRAY, RESET};
+use crate::tui::{BOLD, RESET};
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -56,21 +57,29 @@ pub fn get_terminal_geometry() -> TermGeom {
 #[derive(Clone)]
 pub struct BoxRow {
     pub text: String,
-    pub bg: &'static str,
-    pub tag: Option<(u8, usize)>, // 1 = main, 2 = subagent
+    pub bg: String,
+    pub tag: Option<(u8, usize)>,
 }
 
 pub struct PanelSpec {
     pub title: String,
     pub badge: String,
-    pub accent: &'static str,
+    pub accent: String,
     pub rows: Vec<BoxRow>,
     pub fixed_height: Option<usize>,
     pub weight: f64,
     pub raw_interior: bool,
 }
 
-pub fn format_top_border(cols: usize, title: &str, badge: &str, accent: &str) -> String {
+pub fn format_top_border(
+    cols: usize,
+    title: &str,
+    badge: &str,
+    accent: &str,
+    pal: &Palette,
+) -> String {
+    let border = &pal.border;
+    let dim = &pal.dim;
     let t_clean = format!(" {} ", title.trim());
     let b_clean = if badge.trim().is_empty() {
         String::new()
@@ -83,35 +92,37 @@ pub fn format_top_border(cols: usize, title: &str, badge: &str, accent: &str) ->
     let dashes = inner.saturating_sub(1 + t_w + b_w + if b_w > 0 { 1 } else { 0 });
     if b_w > 0 {
         format!(
-            "{GRAY}╭─{RESET}{BOLD}{accent}{t_clean}{RESET}{GRAY}{}{RESET}{DIM}{b_clean}{RESET}{GRAY}─╮{RESET}",
+            "{border}╭─{RESET}{BOLD}{accent}{t_clean}{RESET}{border}{}{RESET}{dim}{b_clean}{RESET}{border}─╮{RESET}",
             "─".repeat(dashes)
         )
     } else {
         format!(
-            "{GRAY}╭─{RESET}{BOLD}{accent}{t_clean}{RESET}{GRAY}{}╮{RESET}",
+            "{border}╭─{RESET}{BOLD}{accent}{t_clean}{RESET}{border}{}╮{RESET}",
             "─".repeat(dashes)
         )
     }
 }
 
-pub fn format_bottom_border(cols: usize) -> String {
-    format!("{GRAY}╰{}╯{RESET}", "─".repeat(cols.saturating_sub(2)))
+pub fn format_bottom_border(cols: usize, pal: &Palette) -> String {
+    let border = &pal.border;
+    format!("{border}╰{}╯{RESET}", "─".repeat(cols.saturating_sub(2)))
 }
 
-pub fn format_boxed_row(cols: usize, row: &BoxRow) -> String {
+pub fn format_boxed_row(cols: usize, row: &BoxRow, pal: &Palette) -> String {
+    let border = &pal.border;
     let inner_w = cols.saturating_sub(2);
     let vis_w = display_width(&row.text);
     let pad = inner_w.saturating_sub(vis_w);
     if !row.bg.is_empty() {
         format!(
-            "{GRAY}│{RESET}{}{}{}{RESET}{GRAY}│{RESET}",
+            "{border}│{RESET}{}{}{}{RESET}{border}│{RESET}",
             row.bg,
             row.text,
             " ".repeat(pad)
         )
     } else {
         format!(
-            "{GRAY}│{RESET}{}{}{RESET}{GRAY}│{RESET}",
+            "{border}│{RESET}{}{}{RESET}{border}│{RESET}",
             row.text,
             " ".repeat(pad)
         )
@@ -174,6 +185,7 @@ pub fn allocate_panel_heights(total_rows: usize, specs: &[PanelSpec]) -> Vec<usi
 pub fn render_multi_panel_grid(
     geom: TermGeom,
     panels: &[PanelSpec],
+    pal: &Palette,
     out_buf: &mut String,
     row_tag_map: &mut HashMap<usize, (u8, usize)>,
     prev_rows: &mut Vec<String>,
@@ -185,6 +197,7 @@ pub fn render_multi_panel_grid(
         prev_rows.resize(geom.rows + 1, String::new());
     }
 
+    let border = &pal.border;
     let heights = allocate_panel_heights(geom.rows, panels);
     let mut cur_row = 1usize;
 
@@ -205,26 +218,26 @@ pub fn render_multi_panel_grid(
 
         emit_row(
             top_r,
-            format_top_border(geom.cols, &sp.title, &sp.badge, sp.accent),
+            format_top_border(geom.cols, &sp.title, &sp.badge, &sp.accent, pal),
         );
 
         if sp.raw_interior {
             for r in (top_r + 1)..bot_r {
                 emit_row(
                     r,
-                    format!("{GRAY}│{RESET}\x1b[{};{}H{GRAY}│{RESET}", r, geom.cols),
+                    format!("{border}│{RESET}\x1b[{};{}H{border}│{RESET}", r, geom.cols),
                 );
             }
         } else {
             let empty_row = BoxRow {
                 text: String::new(),
-                bg: "",
+                bg: String::new(),
                 tag: None,
             };
             for i in 0..interior_cnt {
                 let r = top_r + 1 + i;
                 let brow = sp.rows.get(i).unwrap_or(&empty_row);
-                emit_row(r, format_boxed_row(geom.cols, brow));
+                emit_row(r, format_boxed_row(geom.cols, brow, pal));
                 if let Some(t) = brow.tag {
                     row_tag_map.insert(r, t);
                 }
@@ -232,7 +245,7 @@ pub fn render_multi_panel_grid(
         }
 
         if bot_r > top_r {
-            emit_row(bot_r, format_bottom_border(geom.cols));
+            emit_row(bot_r, format_bottom_border(geom.cols, pal));
         }
         cur_row = bot_r + 1;
     }
@@ -246,7 +259,7 @@ mod tests {
         PanelSpec {
             title: "T".to_string(),
             badge: String::new(),
-            accent: "",
+            accent: String::new(),
             rows: Vec::new(),
             fixed_height,
             weight,

@@ -18,35 +18,32 @@ use std::path::PathBuf;
 use crate::ffi::{getppid, is_descendant_of, is_pid_alive};
 use crate::json::{extract_json_str, extract_json_u64};
 use crate::tui::width::floor_char_boundary;
-use crate::tui::{BLUE, CORAL, CYAN, LAVENDER, MINT};
 
 #[derive(Clone)]
 pub struct ConfigModels {
     pub main_family: &'static str,
-    pub main_accent: &'static str,
     pub main_model_short: String,
     pub sub_family: &'static str,
-    pub sub_accent: &'static str,
     pub sub_model_short: String,
 }
 
-pub fn classify_model_family(model_str: &str) -> (&'static str, &'static str) {
+pub fn classify_model_family(model_str: &str) -> &'static str {
     let low = model_str.to_ascii_lowercase();
     if low.contains("gemini") || low.contains("argon") {
-        ("gemini", BLUE)
+        "gemini"
     } else if low.contains("deepseek") {
-        ("deepseek", CYAN)
+        "deepseek"
     } else if low.contains("gpt")
         || low.contains("o1")
         || low.contains("o3")
         || low.contains("o4")
         || low.contains("openai")
     {
-        ("openai", MINT)
+        "openai"
     } else if low.contains("grok") {
-        ("grok", LAVENDER)
+        "grok"
     } else {
-        ("claude", CORAL)
+        "claude"
     }
 }
 
@@ -156,15 +153,13 @@ pub fn load_config_models(
         .unwrap_or_else(|| resolved_main.clone());
     let resolved_sub = map_alias_with_settings(&raw_sub, &content);
 
-    let (main_family, main_accent) = classify_model_family(&resolved_main);
-    let (sub_family, sub_accent) = classify_model_family(&resolved_sub);
+    let main_family = classify_model_family(&resolved_main);
+    let sub_family = classify_model_family(&resolved_sub);
 
     ConfigModels {
         main_family,
-        main_accent,
         main_model_short: short_model_label(&resolved_main),
         sub_family,
-        sub_accent,
         sub_model_short: short_model_label(&resolved_sub),
     }
 }

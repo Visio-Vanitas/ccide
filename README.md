@@ -44,8 +44,9 @@
 - **Tier 3 — Universal `tmux` Engine (`tmux -L ccide`)**:
   Works in any terminal emulator (**Ghostty, WezTerm, Kitty, Alacritty, VS Code terminal**) or over multi-hop SSH jump hosts, automatically falling back if Tier 2 does not ACK within `450 ms`.
 
-### 4. Zero-Subprocess Hardware Oscilloscope & Dynamic Model Sprites
+### 4. Zero-Subprocess Hardware Oscilloscope, Dynamic Model Sprites & Custom Palettes
 - **Resolution-Adaptive 2×2 Quadrant Model Logos**: Dynamically renders vector logos (`GEMINI`, `DEEPSEEK`, `CLAUDE`, `OPENAI`, `GROK`), switching between your session's active Main Model (`/model`) and your configured Subagent Model (`CLAUDE_CODE_SUBAGENT_MODEL`) when inspecting a subagent.
+- **Independent Color Palette (`~/.config/cc-ide/palette.json`)**: Customize every TUI border, row/cursor highlight, oscilloscope curve, model accent, optional monochrome logo tint (`"tint_logo": true`), and Powerline `statusline` segment via JSONC (`#RRGGBB`, `#RGB`, `rgb(r,g,b)`, or ANSI 256-color) with live hot-reload and 6 built-in presets (`ccide --theme <default|catppuccin-mocha|tokyo-night|nord|gruvbox-dark|dracula>`).
 - **Shared 500ms Hardware Telemetry Snapshot (`/tmp/.cc-ide/hw_telemetry_v1.bin`)**:
   - **macOS (`arm64` / `x86_64`)**: Direct C FFI against `Mach host_statistics64`, `IOKit IOAccelerator` (`AGX` GPU utilization & VRAM), and BSD `sysctl(NET_RT_IFLIST2)`.
   - **Linux (`x86_64` / `aarch64`)**: Zero-dependency `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, and `sysfs` / non-blocking `nvidia-smi`.

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 
 use crate::tui::grid::{BoxRow, PanelSpec, TermGeom};
+use crate::tui::palette::{tint_ansi_logo_line, Palette};
 use crate::tui::width::display_width;
 use crate::tui::RESET;
 
@@ -70,13 +71,14 @@ pub fn build_top_logo_panel(
     geom: TermGeom,
     logos: &HashMap<String, Vec<String>>,
     family: &str,
-    accent: &'static str,
     badge: String,
+    pal: &Palette,
 ) -> (PanelSpec, usize) {
+    let (accent, accent_rgb) = pal.family_accent(family);
     let mut logo_rows = Vec::new();
     logo_rows.push(BoxRow {
         text: String::new(),
-        bg: "",
+        bg: String::new(),
         tag: None,
     });
     if let Some(art) = logos.get(family) {
@@ -84,29 +86,34 @@ pub fn build_top_logo_panel(
         let pad_left = geom.cols.saturating_sub(2).saturating_sub(vis_w) / 2;
         let prefix = " ".repeat(pad_left);
         for line in art {
+            let rendered = if pal.tint_logo {
+                tint_ansi_logo_line(line, accent_rgb)
+            } else {
+                line.clone()
+            };
             logo_rows.push(BoxRow {
-                text: format!("{}{}{RESET}", prefix, line),
-                bg: "",
+                text: format!("{}{}{RESET}", prefix, rendered),
+                bg: String::new(),
                 tag: None,
             });
         }
     } else {
         logo_rows.push(BoxRow {
             text: format!("  {accent}{}{RESET}", family.to_uppercase()),
-            bg: "",
+            bg: String::new(),
             tag: None,
         });
     }
     logo_rows.push(BoxRow {
         text: String::new(),
-        bg: "",
+        bg: String::new(),
         tag: None,
     });
     let top_h = logo_rows.len() + 2;
     let panel = PanelSpec {
         title: family.to_uppercase(),
         badge,
-        accent,
+        accent: accent.to_string(),
         rows: logo_rows,
         fixed_height: Some(top_h),
         weight: 1.0,

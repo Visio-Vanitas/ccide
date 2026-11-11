@@ -108,8 +108,11 @@ fi
 # 2. Install Assets, Scripts, CLI Launchers & Yazi Configuration
 # ------------------------------------------------------------------------------
 log_step "2/7 Installing vector logo assets, scripts & CLI launchers..."
-mkdir -p "$CACHE_DIR/logos" "$CACHE_DIR/status" "$CLAUDE_DIR/scripts" "$HOME_DIR/.local/bin" "$HOME_DIR/.config/yazi"
+mkdir -p "$CACHE_DIR/logos" "$CACHE_DIR/status" "$CLAUDE_DIR/scripts" "$HOME_DIR/.local/bin" "$HOME_DIR/.config/yazi" "$HOME_DIR/.config/cc-ide"
 cp -f "$PROJECT_ROOT/assets/adaptive_quadrant_logos.json" "$CACHE_DIR/logos/adaptive_quadrant_logos.json"
+if [[ ! -f "$HOME_DIR/.config/cc-ide/palette.json" ]]; then
+  cp -f "$PROJECT_ROOT/assets/palette.json" "$HOME_DIR/.config/cc-ide/palette.json"
+fi
 
 for script_name in ccide_daemon.py iterm2_workspace.py pane-runner.sh patch_claude_binary.py cc_tui_lib.py ccide ensure-ccide-core.sh; do
   chmod +x "$PROJECT_ROOT/scripts/$script_name"
