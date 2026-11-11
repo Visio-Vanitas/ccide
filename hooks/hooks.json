@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'if [ -x \"${CLAUDE_PLUGIN_ROOT}/bin/ccide-core\" ]; then exec \"${CLAUDE_PLUGIN_ROOT}/bin/ccide-core\" yazi-hook; elif [ -x \"$HOME/.claude/bin/ccide-core\" ]; then exec \"$HOME/.claude/bin/ccide-core\" yazi-hook; elif command -v ccide-core >/dev/null 2>&1; then exec ccide-core yazi-hook; fi'",
-            "timeout": 5
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.sh\" yazi-hook",
+            "timeout": 15
           }
         ]
       }
@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'if [ -x \"${CLAUDE_PLUGIN_ROOT}/bin/ccide-core\" ]; then exec \"${CLAUDE_PLUGIN_ROOT}/bin/ccide-core\" yazi-hook; elif [ -x \"$HOME/.claude/bin/ccide-core\" ]; then exec \"$HOME/.claude/bin/ccide-core\" yazi-hook; elif command -v ccide-core >/dev/null 2>&1; then exec ccide-core yazi-hook; fi'",
-            "timeout": 5
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.sh\" yazi-hook",
+            "timeout": 15
           }
         ]
       }
@@ -28,8 +28,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'if [ -x \"${CLAUDE_PLUGIN_ROOT}/bin/ccide-core\" ]; then exec \"${CLAUDE_PLUGIN_ROOT}/bin/ccide-core\" yazi-hook; elif [ -x \"$HOME/.claude/bin/ccide-core\" ]; then exec \"$HOME/.claude/bin/ccide-core\" yazi-hook; elif command -v ccide-core >/dev/null 2>&1; then exec ccide-core yazi-hook; fi'",
-            "timeout": 5
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.sh\" yazi-hook",
+            "timeout": 15
           }
         ]
       }

@@ -22,13 +22,64 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::ffi::getppid;
+use crate::ffi::{getppid, is_pid_alive, kill, SIGUSR2};
+use crate::json::{extract_json_str, extract_json_u64};
+use crate::session::transcript::{append_dismissed_subagents, get_session_subagents};
+use crate::tui::palette::{render_palette_template, resolve_palette_path, Palette, PRESET_NAMES};
+use crate::tui::RESET;
 
-pub const DAEMON_SOCK_PATH: &str = "/tmp/.cc-ide/iterm_daemon.sock";
+fn wake_all_sidebars() {
+    if let Ok(rd) = fs::read_dir("/tmp/.cc-ide") {
+        for entry in rd.flatten() {
+            let fname = entry.file_name();
+            let name = fname.to_string_lossy();
+            if name.starts_with("sb_") && name.ends_with(".pid") {
+                if let Ok(ptxt) = fs::read_to_string(entry.path()) {
+                    if let Ok(pid) = ptxt.trim().parse::<i32>() {
+                        if pid > 1 {
+                            unsafe {
+                                let _ = kill(pid, SIGUSR2);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn replace_preset_in_jsonc(existing: &str, new_preset: &str) -> Option<String> {
+    let needle = "\"preset\"";
+    let pos = existing.find(needle)?;
+    let after_key = &existing[pos + needle.len()..];
+    let colon_off = after_key.find(':')?;
+    let after_colon = &after_key[colon_off + 1..];
+    let q1_off = after_colon.find('"')?;
+    let rest_val = &after_colon[q1_off + 1..];
+    let q2_off = rest_val.find('"')?;
+
+    let val_start = pos + needle.len() + colon_off + 1 + q1_off + 1;
+    let val_end = val_start + q2_off;
+    let mut out = String::with_capacity(existing.len() + 16);
+    out.push_str(&existing[..val_start]);
+    out.push_str(new_preset);
+    out.push_str(&existing[val_end..]);
+    Some(out)
+}
 
 fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+pub const DAEMON_SOCK_PATH: &str = "/tmp/.cc-ide/iterm_daemon.sock";
 
 /// Sends a newline-delimited JSON request to the warm local iTerm2 daemon over Unix Domain Socket.
 pub fn send_daemon_ipc(json_line: &str, timeout_ms: u64) -> Option<String> {
@@ -58,11 +109,11 @@ pub fn send_daemon_ipc(json_line: &str, timeout_ms: u64) -> Option<String> {
 /// so the client iTerm2 `AutoLaunch` daemon receives it even across an SSH session.
 pub fn emit_osc1337(json_payload: &str) -> bool {
     let seq = format!("\x1b]1337;Custom=id=ccide:{}\x07", json_payload);
-    if let Ok(mut tty) = OpenOptions::new().write(true).open("/dev/tty")
-        && tty.write_all(seq.as_bytes()).is_ok()
-    {
-        let _ = tty.flush();
-        return true;
+    if let Ok(mut tty) = OpenOptions::new().write(true).open("/dev/tty") {
+        if tty.write_all(seq.as_bytes()).is_ok() {
+            let _ = tty.flush();
+            return true;
+        }
     }
     let mut out = std::io::stdout();
     if out.write_all(seq.as_bytes()).is_ok() {
@@ -73,9 +124,7 @@ pub fn emit_osc1337(json_payload: &str) -> bool {
 }
 
 fn ensure_daemon_started(home: &str) {
-    if Path::new(DAEMON_SOCK_PATH).exists()
-        && send_daemon_ipc("{\"op\":\"ping\"}", 80).is_some()
-    {
+    if Path::new(DAEMON_SOCK_PATH).exists() && send_daemon_ipc("{\"op\":\"ping\"}", 80).is_some() {
         return;
     }
     let py = find_python_bin(home);
@@ -185,16 +234,17 @@ fn run_tmux_open(
 ) -> Option<String> {
     // Close any previous side panes for this `yazi_id`
     let panes_file = format!("/tmp/.cc-ide/panes_{}.txt", yazi_id);
-    if let Ok(prev) = fs::read_to_string(&panes_file)
-        && let Some(rest) = prev.trim().strip_prefix("tmux:")
-        && let Some((_center, sides)) = rest.split_once(':')
-    {
-        for sp in sides.split(',').filter(|s| !s.is_empty()) {
-            let _ = Command::new("tmux")
-                .args(["kill-pane", "-t", sp])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+    if let Ok(prev) = fs::read_to_string(&panes_file) {
+        if let Some(rest) = prev.trim().strip_prefix("tmux:") {
+            if let Some((_center, sides)) = rest.split_once(':') {
+                for sp in sides.split(',').filter(|s| !s.is_empty()) {
+                    let _ = Command::new("tmux")
+                        .args(["kill-pane", "-t", sp])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+            }
         }
     }
 
@@ -231,7 +281,12 @@ fn run_tmux_open(
     let mut created_sides = Vec::new();
 
     // 1. Split Left Column (`yazi`) before center pane
-    let yazi_cmd = format!("'{}' yazi '{}' {}", runner, target_dir, yazi_id);
+    let yazi_cmd = format!(
+        "{} yazi {} {}",
+        sh_quote(&runner),
+        sh_quote(target_dir),
+        sh_quote(yazi_id)
+    );
     if let Ok(out) = Command::new("tmux")
         .args([
             "split-window",
@@ -248,64 +303,67 @@ fn run_tmux_open(
             &yazi_cmd,
         ])
         .output()
-        && let Ok(s) = String::from_utf8(out.stdout)
     {
-        let left_top = s.trim().to_string();
-        if !left_top.is_empty() {
-            created_sides.push(left_top.clone());
-            let mut left_bottom = left_top;
+        if let Ok(s) = String::from_utf8(out.stdout) {
+            let left_top = s.trim().to_string();
+            if !left_top.is_empty() {
+                created_sides.push(left_top.clone());
+                let mut left_bottom = left_top;
 
-            if show_git {
-                let git_cmd = format!("'{}' lazygit '{}'", runner, git_root);
-                if let Ok(gout) = Command::new("tmux")
-                    .args([
-                        "split-window",
-                        "-v",
-                        "-t",
-                        &left_bottom,
-                        "-l",
-                        "50%",
-                        "-c",
-                        git_root,
-                        "-P",
-                        "-F",
-                        "#{pane_id}",
-                        &git_cmd,
-                    ])
-                    .output()
-                    && let Ok(gs) = String::from_utf8(gout.stdout)
-                {
-                    let gp = gs.trim().to_string();
-                    if !gp.is_empty() {
-                        created_sides.push(gp.clone());
-                        left_bottom = gp;
+                if show_git {
+                    let git_cmd = format!("{} lazygit {}", sh_quote(&runner), sh_quote(git_root));
+                    if let Ok(gout) = Command::new("tmux")
+                        .args([
+                            "split-window",
+                            "-v",
+                            "-t",
+                            &left_bottom,
+                            "-l",
+                            "50%",
+                            "-c",
+                            git_root,
+                            "-P",
+                            "-F",
+                            "#{pane_id}",
+                            &git_cmd,
+                        ])
+                        .output()
+                    {
+                        if let Ok(gs) = String::from_utf8(gout.stdout) {
+                            let gp = gs.trim().to_string();
+                            if !gp.is_empty() {
+                                created_sides.push(gp.clone());
+                                left_bottom = gp;
+                            }
+                        }
                     }
                 }
-            }
 
-            if show_mon {
-                let mon_cmd = format!("'{}' macmon '{}'", runner, target_dir);
-                if let Ok(mout) = Command::new("tmux")
-                    .args([
-                        "split-window",
-                        "-v",
-                        "-t",
-                        &left_bottom,
-                        "-l",
-                        "35%",
-                        "-c",
-                        target_dir,
-                        "-P",
-                        "-F",
-                        "#{pane_id}",
-                        &mon_cmd,
-                    ])
-                    .output()
-                    && let Ok(ms) = String::from_utf8(mout.stdout)
-                {
-                    let mp = ms.trim().to_string();
-                    if !mp.is_empty() {
-                        created_sides.push(mp);
+                if show_mon {
+                    let mon_cmd = format!("{} macmon {}", sh_quote(&runner), sh_quote(target_dir));
+                    if let Ok(mout) = Command::new("tmux")
+                        .args([
+                            "split-window",
+                            "-v",
+                            "-t",
+                            &left_bottom,
+                            "-l",
+                            "35%",
+                            "-c",
+                            target_dir,
+                            "-P",
+                            "-F",
+                            "#{pane_id}",
+                            &mon_cmd,
+                        ])
+                        .output()
+                    {
+                        if let Ok(ms) = String::from_utf8(mout.stdout) {
+                            let mp = ms.trim().to_string();
+                            if !mp.is_empty() {
+                                created_sides.push(mp);
+                            }
+                        }
                     }
                 }
             }
@@ -315,8 +373,11 @@ fn run_tmux_open(
     // 2. Split Right Column (`sidebar`) after center pane
     if show_right && right_cols > 0 {
         let sb_cmd = format!(
-            "'{}' sidebar '{}' {} {}",
-            runner, target_dir, yazi_id, shell_pid
+            "{} sidebar {} {} {}",
+            sh_quote(&runner),
+            sh_quote(target_dir),
+            sh_quote(yazi_id),
+            shell_pid
         );
         if let Ok(rout) = Command::new("tmux")
             .args([
@@ -334,11 +395,12 @@ fn run_tmux_open(
                 &sb_cmd,
             ])
             .output()
-            && let Ok(rs) = String::from_utf8(rout.stdout)
         {
-            let rp = rs.trim().to_string();
-            if !rp.is_empty() {
-                created_sides.push(rp);
+            if let Ok(rs) = String::from_utf8(rout.stdout) {
+                let rp = rs.trim().to_string();
+                if !rp.is_empty() {
+                    created_sides.push(rp);
+                }
             }
         }
     }
@@ -446,13 +508,14 @@ pub fn run(args: &[String]) {
                         if show_right { "1" } else { "0" },
                     ])
                     .output()
-                    && out.status.success()
                 {
-                    let ids = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    let spec = format!("iterm:{}", ids);
-                    let _ = fs::write(&panes_file, &spec);
-                    println!("{}", spec);
-                    return;
+                    if out.status.success() {
+                        let ids = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        let spec = format!("iterm:{}", ids);
+                        let _ = fs::write(&panes_file, &spec);
+                        println!("{}", spec);
+                        return;
+                    }
                 }
             }
 
@@ -492,20 +555,13 @@ pub fn run(args: &[String]) {
             }
 
             // ── TIER 3: Universal `tmux` 3-Column Tiling Engine ──
-            if in_tmux
-                && let Some(spec) = run_tmux_open(
-                    &home,
-                    target_dir,
-                    yazi_id,
-                    show_git,
-                    show_mon,
-                    left_pct,
-                    git_root,
-                    show_right,
+            if in_tmux {
+                if let Some(spec) = run_tmux_open(
+                    &home, target_dir, yazi_id, show_git, show_mon, left_pct, git_root, show_right,
                     shell_pid,
-                )
-            {
-                println!("{}", spec);
+                ) {
+                    println!("{}", spec);
+                }
             }
         }
         "close" => {
@@ -597,6 +653,130 @@ pub fn run(args: &[String]) {
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(0);
             focus_center_after_view_switch(&home, yazi_id, session_id, view_id, footer_rank);
+        }
+        "clear-subagents" | "clear-done" => {
+            let explicit_sid = args.get(3).cloned().unwrap_or_default();
+            let mut target_sids: Vec<(String, String)> = Vec::new();
+            if !explicit_sid.is_empty() && explicit_sid != "--all" {
+                target_sids.push((explicit_sid, ".".to_string()));
+            } else {
+                let sess_dir = format!("{}/.claude/sessions", home);
+                if let Ok(rd) = fs::read_dir(&sess_dir) {
+                    for entry in rd.flatten() {
+                        if let Ok(txt) = fs::read_to_string(entry.path()) {
+                            let pid = extract_json_u64(&txt, "pid").unwrap_or(0) as u32;
+                            if is_pid_alive(pid) {
+                                if let Some(sid) = extract_json_str(&txt, "sessionId") {
+                                    let cwd = extract_json_str(&txt, "cwd")
+                                        .unwrap_or_else(|| ".".to_string());
+                                    target_sids.push((sid, cwd));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut total_cleared = 0usize;
+            let mut trackers = std::collections::HashMap::new();
+            for (sid, cwd) in &target_sids {
+                let items = get_session_subagents(&home, sid, cwd, &mut trackers);
+                let done_ids: Vec<String> = items
+                    .into_iter()
+                    .filter(|a| a.status != "running")
+                    .map(|a| a.full_id)
+                    .collect();
+                if !done_ids.is_empty() {
+                    total_cleared += done_ids.len();
+                    append_dismissed_subagents(&home, sid, &done_ids);
+                }
+            }
+
+            // Wake all live sidebars via SIGUSR2 so the list updates in < 1ms
+            wake_all_sidebars();
+            println!("Cleared {} completed subagent(s).", total_cleared);
+        }
+        "theme" | "palette" => {
+            let sub = args.get(3).map(|s| s.as_str()).unwrap_or("list");
+            let cfg_path = resolve_palette_path(&home);
+
+            match sub {
+                "path" => {
+                    println!("{}", cfg_path.display());
+                }
+                "init" => {
+                    if !cfg_path.exists() {
+                        if let Some(parent) = cfg_path.parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+                        let _ = fs::write(&cfg_path, render_palette_template("default"));
+                    }
+                    println!("{}", cfg_path.display());
+                }
+                "reset" => {
+                    if let Some(parent) = cfg_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&cfg_path, render_palette_template("default"));
+                    wake_all_sidebars();
+                    println!("Reset palette to default -> {}", cfg_path.display());
+                }
+                "list" | "" => {
+                    let active = Palette::load(&home);
+                    println!("Palette file : {}", cfg_path.display());
+                    println!("Active preset: {}", active.preset);
+                    println!("Presets:");
+                    for name in PRESET_NAMES {
+                        let p = Palette::from_json_str(&format!("{{\"preset\":\"{}\"}}", name));
+                        let mark = if active.preset == name { "●" } else { " " };
+                        println!(
+                            "  {} {:<18} {}██{} {}██{} {}██{} {}██{} {}██{}",
+                            mark,
+                            name,
+                            p.cyan,
+                            RESET,
+                            p.mint,
+                            RESET,
+                            p.amber,
+                            RESET,
+                            p.coral,
+                            RESET,
+                            p.lavender,
+                            RESET
+                        );
+                    }
+                }
+                preset_arg => {
+                    let probe =
+                        Palette::from_json_str(&format!("{{\"preset\":\"{}\"}}", preset_arg));
+                    let is_valid =
+                        preset_arg.eq_ignore_ascii_case("default") || probe.preset != "default";
+                    if !is_valid {
+                        eprintln!(
+                            "Unknown preset '{}'. Available presets: {}",
+                            preset_arg,
+                            PRESET_NAMES.join(", ")
+                        );
+                        std::process::exit(1);
+                    }
+                    if let Some(parent) = cfg_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let updated = if let Ok(existing) = fs::read_to_string(&cfg_path) {
+                        replace_preset_in_jsonc(&existing, &probe.preset)
+                            .unwrap_or_else(|| render_palette_template(&probe.preset))
+                    } else {
+                        render_palette_template(&probe.preset)
+                    };
+                    let _ = fs::write(&cfg_path, updated);
+                    wake_all_sidebars();
+                    println!(
+                        "Switched palette preset to '{}' ({}) and hot-reloaded open sidebars.",
+                        probe.preset,
+                        cfg_path.display()
+                    );
+                }
+            }
         }
         _ => {}
     }

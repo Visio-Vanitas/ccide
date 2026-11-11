@@ -5,6 +5,8 @@ description: Open, rebalance, or reinstall the 3-column Claude Code tiling works
 
 # `/cc-ide:ccide` — 3-Column Adaptive Tiling Workspace Controller
 
+`cc-ide` **v0.4.0** runs a zero-dependency Rust engine (`ccide-core`, **Rust Edition 2021, MSRV `1.70`**) and is installed through a `dev -> preview -> main` release pipeline. No `cargo` is required on the host: `scripts/ensure-ccide-core.sh` downloads and SHA256-verifies the matching GitHub Release binary on demand.
+
 Manage the `cc-ide` workspace in the current tab or across all open windows/tabs. The launcher picks a backend automatically:
 
 | Tier | When | Mechanism |
@@ -33,10 +35,24 @@ Manage the `cc-ide` workspace in the current tab or across all open windows/tabs
    ccide-core workspace close [<pane_spec>] [<yazi_id>]
    ```
 
-4. **Rebuild, re-patch `claude.exe`, and hot-reload all sidebars (from the cloned `ccide` repository)**:
+4. **Rebuild, re-patch the Claude Code binary, and hot-reload all sidebars (from the cloned `ccide` repository)**:
    ```bash
    ./install.sh
    ```
+   The Claude Code binary patch is version-independent (dynamic Bun trailer parsing + invariant string anchors) and is re-applied automatically by `ccide` on the first launch after any Claude Code update — `./install.sh --patch-only` is only needed for a forced re-patch.
+
+5. **Fetch / refresh the prebuilt engine without `cargo`** (used automatically by marketplace installs and `install.sh` fallback):
+   ```bash
+   scripts/ensure-ccide-core.sh --help
+   ```
+   Resolves `$CLAUDE_PLUGIN_ROOT/bin`, `~/.claude/bin`, then `PATH`; otherwise downloads `ccide-core-<triple>.tar.gz` from the latest GitHub Release and verifies it against `SHA256SUMS.txt`.
+
+## Release channels
+
+- `dev` — development; CI gate only (`rustc 1.70.0` MSRV, fmt/clippy, 4-target matrix, patcher tests).
+- `preview` — merges via PR from `dev`; publishes a **pre-release** (`v0.4.0-rc.<run_number>`) after live npm `@anthropic-ai/claude-code@latest` patch verification.
+- `main` — merges via PR from `preview` only (enforced by CI); publishes the **immutable stable** `v0.4.0` release.
+- A daily `cc-compat-watch.yml` probe (`03:17 UTC`) tests the patcher against the newest published Claude Code and opens a deduplicated `[Compat Alert]` issue if it breaks.
 
 ## Health checks
 

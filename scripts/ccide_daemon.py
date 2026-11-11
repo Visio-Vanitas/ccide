@@ -333,11 +333,14 @@ async def handle_open(
                     f.write("ok")
             except Exception:
                 pass
-        runner = os.path.expanduser("~/.claude/scripts/pane-runner.sh")
-        yazi_cmd = f"'{runner}' yazi '{target_dir}' {yazi_id}"
-        git_cmd = f"'{runner}' lazygit '{git_root}'"
-        mon_cmd = f"'{runner}' macmon '{target_dir}'"
-        sidebar_cmd = f"'{runner}' sidebar '{target_dir}' {yazi_id} {shell_pid}"
+        runner = shlex.quote(os.path.expanduser("~/.claude/scripts/pane-runner.sh"))
+        q_dir = shlex.quote(target_dir)
+        q_git = shlex.quote(git_root or target_dir)
+        q_yid = shlex.quote(str(yazi_id))
+        yazi_cmd = f"{runner} yazi {q_dir} {q_yid}"
+        git_cmd = f"{runner} lazygit {q_git}"
+        mon_cmd = f"{runner} macmon {q_dir}"
+        sidebar_cmd = f"{runner} sidebar {q_dir} {q_yid} {int(shell_pid)}"
         local_cwd = target_dir
 
     created_ids = []

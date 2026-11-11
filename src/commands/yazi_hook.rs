@@ -108,9 +108,18 @@ pub fn run() {
             .unwrap_or_else(|_| "main".to_string())
             .trim()
             .to_string();
-    if !session_id.is_empty()
-        && let Ok(cur_native) = fs::read_to_string(format!("/tmp/.cc-ide/cur_{}.txt", session_id))
-    {
+    let ppid = unsafe { crate::ffi::getppid() as u32 };
+    let pid_cur = if ppid > 1 {
+        fs::read_to_string(format!("/tmp/.cc-ide/cur_pid_{}.txt", ppid)).ok()
+    } else {
+        None
+    };
+    let sess_cur = if !session_id.is_empty() {
+        fs::read_to_string(format!("/tmp/.cc-ide/cur_{}.txt", session_id)).ok()
+    } else {
+        None
+    };
+    if let Some(cur_native) = pid_cur.or(sess_cur) {
         let cn = cur_native.lines().next().unwrap_or("").trim();
         if !cn.is_empty() {
             active_view = cn.to_string();
