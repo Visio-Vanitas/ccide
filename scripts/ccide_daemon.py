@@ -539,6 +539,83 @@ async def main(connection):
         connection, on_custom_escape, None
     )
 
+    # 1b. Real-Time Unfocused Selection & Read-Only Focus Guard:
+    #     - `VariableMonitor(SESSION, "selection")` fires immediately even when focus is in the Center
+    #       Claude Code pane and the user drags directly across `[AI] Companion` (Sprite Logo / Telemetry)
+    #       or `[SYS] macmon`, clearing the selection in `< 0.5ms` via `async_set_selection(Selection([]))`.
+    #     - `FocusMonitor` bounces focus back to Center Claude Code if `[SYS] macmon` is clicked.
+    watched_selection_sessions: set[str] = set()
+
+    async def watch_session_selection(sess_id: str):
+        if not sess_id or sess_id in watched_selection_sessions:
+            return
+        watched_selection_sessions.add(sess_id)
+        try:
+            async with iterm2.VariableMonitor(
+                connection, iterm2.VariableScopes.SESSION, "selection", sess_id
+            ) as mon:
+                while True:
+                    val = await mon.async_get()
+                    if not val:
+                        continue
+                    sess = app.get_session_by_id(sess_id)
+                    if sess is None:
+                        break
+                    name = sess.name or ""
+                    if any(tag in name for tag in ("[AI] Companion", "[SYS] macmon", "[PET] clawd")):
+                        try:
+                            await sess.async_set_selection(iterm2.Selection([]))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        finally:
+            watched_selection_sessions.discard(sess_id)
+
+    for w in app.terminal_windows:
+        for t in w.tabs:
+            for s in t.sessions:
+                asyncio.create_task(watch_session_selection(s.session_id))
+
+    async def monitor_new_sessions():
+        try:
+            async with iterm2.NewSessionMonitor(connection) as mon:
+                while True:
+                    new_sid = await mon.async_get()
+                    if new_sid:
+                        asyncio.create_task(watch_session_selection(new_sid))
+        except Exception:
+            pass
+
+    asyncio.create_task(monitor_new_sessions())
+
+    async def guard_readonly_pane_focus():
+        try:
+            async with iterm2.FocusMonitor(connection) as monitor:
+                while True:
+                    update = await monitor.async_get_next_update()
+                    changed = update.active_session_changed
+                    if not changed or not changed.session_id:
+                        continue
+                    sess = app.get_session_by_id(changed.session_id)
+                    if sess is None:
+                        continue
+                    name = sess.name or ""
+                    if "[SYS] macmon" in name or "[PET] clawd" in name:
+                        for w in app.terminal_windows:
+                            for t in w.tabs:
+                                if sess in t.sessions:
+                                    for cand in t.sessions:
+                                        yid = await cand.async_get_variable("user.cc_yazi_id")
+                                        if yid:
+                                            await cand.async_activate()
+                                            break
+                                    break
+        except Exception:
+            pass
+
+    asyncio.create_task(guard_readonly_pane_focus())
+
     # 2. Start Local Unix Domain Socket Server (`/tmp/.cc-ide/iterm_daemon.sock`)
     if os.path.exists(SOCK_PATH):
         try:

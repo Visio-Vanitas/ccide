@@ -10,7 +10,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${0:A:h}"
-PLUGIN_VERSION="0.4.0"
+PLUGIN_VERSION="0.5.0"
 HOME_DIR="$HOME"
 CLAUDE_DIR="$HOME_DIR/.claude"
 CACHE_DIR="$HOME_DIR/.cache/cc-ide"
@@ -85,7 +85,7 @@ mkdir -p "$PROJECT_ROOT/bin" "$CLAUDE_DIR/bin" "/tmp/.cc-ide"
 if [[ -x "$CARGO_BIN" ]]; then
   (
     cd "$PROJECT_ROOT"
-    RUSTFLAGS="${CCIDE_RUSTFLAGS:--C target-cpu=native}" "$CARGO_BIN" build --release --quiet
+    RUSTFLAGS="${CCIDE_RUSTFLAGS:--C target-cpu=native}" "$CARGO_BIN" build --release --locked --quiet
   )
   cp -f "$PROJECT_ROOT/target/release/ccide-core" "$PROJECT_ROOT/bin/ccide-core"
   [[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$PROJECT_ROOT/bin/ccide-core" >/dev/null 2>&1 || true
@@ -110,23 +110,237 @@ fi
 log_step "2/7 Installing vector logo assets, scripts & CLI launchers..."
 mkdir -p "$CACHE_DIR/logos" "$CACHE_DIR/status" "$CLAUDE_DIR/scripts" "$HOME_DIR/.local/bin" "$HOME_DIR/.config/yazi" "$HOME_DIR/.config/cc-ide"
 cp -f "$PROJECT_ROOT/assets/adaptive_quadrant_logos.json" "$CACHE_DIR/logos/adaptive_quadrant_logos.json"
+cp -f "$PROJECT_ROOT/assets/lazygit.yml" "$HOME_DIR/.config/cc-ide/lazygit.yml"
+cp -f "$PROJECT_ROOT/assets/glow-style.json" "$HOME_DIR/.config/cc-ide/glow-style.json"
 if [[ ! -f "$HOME_DIR/.config/cc-ide/palette.json" ]]; then
   cp -f "$PROJECT_ROOT/assets/palette.json" "$HOME_DIR/.config/cc-ide/palette.json"
 fi
+if [[ ! -f "$HOME_DIR/.config/cc-ide/viewer.json" ]]; then
+  cp -f "$PROJECT_ROOT/assets/viewer.json" "$HOME_DIR/.config/cc-ide/viewer.json"
+fi
 
-for script_name in ccide_daemon.py iterm2_workspace.py pane-runner.sh patch_claude_binary.py cc_tui_lib.py ccide ensure-ccide-core.sh; do
+for script_name in ccide_daemon.py iterm2_workspace.py pane-runner.sh lazygit-pager.sh lazygit-log.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py cc_tui_lib.py ccide ensure-ccide-core.sh; do
   chmod +x "$PROJECT_ROOT/scripts/$script_name"
   ln -sf "$PROJECT_ROOT/scripts/$script_name" "$CLAUDE_DIR/scripts/$script_name"
 done
 ln -sf "$PROJECT_ROOT/scripts/ccide" "$HOME_DIR/.local/bin/cc-ide"
 ln -sf "$PROJECT_ROOT/scripts/ccide" "$HOME_DIR/.local/bin/ccide"
+ln -sf "$PROJECT_ROOT/scripts/lazygit-log.py" "$HOME_DIR/.local/bin/lazygit-log.py"
 
-if [[ ! -f "$HOME_DIR/.config/yazi/yazi.toml" ]] || ! grep -q "mouse_events" "$HOME_DIR/.config/yazi/yazi.toml"; then
-  cat <<'EOF' > "$HOME_DIR/.config/yazi/yazi.toml"
+YAZI_TOML="$HOME_DIR/.config/yazi/yazi.toml"
+if [[ ! -f "$YAZI_TOML" ]] || ! grep -q "mouse_events" "$YAZI_TOML"; then
+  cat <<'EOF' > "$YAZI_TOML"
 [mgr]
 mouse_events = ["click", "scroll", "touch", "move", "drag"]
 scrolloff = 4
 EOF
+fi
+
+# Install Yazi horizontal-panning plugin (`hscroll.yazi` — Magic Mouse swipe + Shift/Alt+Left/Right)
+HSCROLL_PLUGIN_DIR="$HOME_DIR/.config/yazi/plugins/hscroll.yazi"
+mkdir -p "$HSCROLL_PLUGIN_DIR"
+cp -f "$PROJECT_ROOT/assets/yazi-hscroll.lua" "$HSCROLL_PLUGIN_DIR/main.lua"
+
+# Configure Yazi (`yazi.toml`, `init.lua`, `keymap.toml`) and Lazygit user config upgrades cleanly
+"$PYTHON_BIN" -I - "$YAZI_TOML" "$HOME_DIR" <<'PYEOF'
+import os, re, sys
+
+yazi_toml, home_dir = sys.argv[1], sys.argv[2]
+yazi_dir = os.path.join(home_dir, ".config", "yazi")
+
+with open(yazi_toml, "r", encoding="utf-8") as f:
+    src = f.read()
+
+# Strip any previous cc-ide managed previewers or legacy piper glow/md-render blocks
+clean_yazi = re.sub(
+    r"\n?# Managed by cc-ide:[^\n]*\n(?:.*\n)*?(?=\Z|\n\[(?!\[plugin\.prepend_previewers\]\]))",
+    "",
+    src,
+)
+clean_yazi = re.sub(
+    r"\n*\[\[plugin\.prepend_previewers\]\]\nurl\s*=\s*\"\*\.(?:md|markdown|MD)\"\nrun\s*=\s*'piper --[^'\n]*(?:glow|md-render\.py)[^'\n]*'\n?",
+    "",
+    clean_yazi,
+).rstrip()
+
+# Ensure `mouse_events` includes `"touch"` so Magic Mouse horizontal swipes reach `hscroll.yazi`
+if re.search(r"(?m)^mouse_events\s*=\s*\[([^\]]*)\]", clean_yazi):
+    def _ensure_touch(m):
+        inner = m.group(1)
+        if '"touch"' in inner or "'touch'" in inner:
+            return m.group(0)
+        items = [x.strip() for x in inner.split(",") if x.strip()]
+        items.append('"touch"')
+        return f"mouse_events   = [{', '.join(items)}]"
+    clean_yazi = re.sub(r"(?m)^mouse_events\s*=\s*\[([^\]]*)\]", _ensure_touch, clean_yazi, count=1)
+elif "[mgr]" in clean_yazi:
+    clean_yazi = clean_yazi.replace(
+        "[mgr]",
+        '[mgr]\nmouse_events   = ["click", "scroll", "touch", "move", "drag"]',
+        1,
+    )
+
+previewer_block = (
+    "\n\n# Managed by cc-ide: 120Hz cached & bounds-clamped horizontal previewers\n"
+    "[[plugin.prepend_previewers]]\n"
+    'url = "*.{md,markdown,MD}"\n'
+    'run = "hscroll -- md"\n\n'
+    "[[plugin.prepend_previewers]]\n"
+    'mime = "application/{json,ndjson}"\n'
+    'run = "hscroll -- json"\n\n'
+    "[[plugin.prepend_previewers]]\n"
+    'mime = "text/*"\n'
+    'run = "hscroll -- code"\n\n'
+    "[[plugin.prepend_previewers]]\n"
+    'mime = "application/{mbox,javascript,wine-extension-ini}"\n'
+    'run = "hscroll -- code"\n'
+)
+
+updated = clean_yazi + previewer_block
+if updated != src:
+    with open(yazi_toml, "w", encoding="utf-8") as f:
+        f.write(updated)
+
+# Wire `require("hscroll"):setup()` into `~/.config/yazi/init.lua` without clobbering existing plugins
+init_lua = os.path.join(yazi_dir, "init.lua")
+init_src = ""
+if os.path.isfile(init_lua):
+    with open(init_lua, "r", encoding="utf-8") as f:
+        init_src = f.read()
+if 'require("hscroll")' not in init_src and "require('hscroll')" not in init_src:
+    sep = "\n" if init_src and not init_src.endswith("\n") else ""
+    with open(init_lua, "w", encoding="utf-8") as f:
+        f.write(init_src + sep + 'require("hscroll"):setup()\n')
+
+# Wire keyboard navigation highlight activation & horizontal scroll bindings in `keymap.toml`
+keymap_toml = os.path.join(yazi_dir, "keymap.toml")
+km_src = ""
+if os.path.isfile(keymap_toml):
+    with open(keymap_toml, "r", encoding="utf-8") as f:
+        km_src = f.read()
+
+# Strip any previous cc-ide managed block before writing the current canonical block
+km_clean = re.sub(
+    r"\n?# Managed by cc-ide:[^\n]*\n(?:.*\n)*?(?=\Z|\n# (?!Managed by cc-ide))",
+    "",
+    km_src,
+).rstrip()
+
+block = (
+    "\n# Managed by cc-ide: ergonomic keyboard highlight activation & bounded horizontal panning\n"
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "<Up>"\n'
+    'run  = "plugin hscroll -- key arrow -1"\n'
+    'desc = "Move cursor up (activate highlight)"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "k"\n'
+    'run  = "plugin hscroll -- key arrow -1"\n'
+    'desc = "Move cursor up (activate highlight)"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "<Down>"\n'
+    'run  = "plugin hscroll -- key arrow 1"\n'
+    'desc = "Move cursor down (activate highlight)"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "j"\n'
+    'run  = "plugin hscroll -- key arrow 1"\n'
+    'desc = "Move cursor down (activate highlight)"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "<Left>"\n'
+    'run  = "plugin hscroll -- key leave"\n'
+    'desc = "Go to parent directory (activate highlight)"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "h"\n'
+    'run  = "plugin hscroll -- key leave"\n'
+    'desc = "Go to parent directory (activate highlight)"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "<Right>"\n'
+    'run  = "plugin hscroll -- key enter"\n'
+    'desc = "Enter child directory (activate highlight)"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "l"\n'
+    'run  = "plugin hscroll -- key enter"\n'
+    'desc = "Enter child directory (activate highlight)"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "<S-Left>"\n'
+    'run  = "plugin hscroll -- -4"\n'
+    'desc = "Pan file tree & preview left"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "<S-Right>"\n'
+    'run  = "plugin hscroll -- 4"\n'
+    'desc = "Pan file tree & preview right"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "<A-Left>"\n'
+    'run  = "plugin hscroll -- -4"\n'
+    'desc = "Pan file tree & preview left"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = "<A-Right>"\n'
+    'run  = "plugin hscroll -- 4"\n'
+    'desc = "Pan file tree & preview right"\n\n'
+    "[[mgr.prepend_keymap]]\n"
+    'on   = ["z", "0"]\n'
+    'run  = "plugin hscroll -- reset"\n'
+    'desc = "Reset horizontal pan offset"\n'
+)
+km_out = (km_clean + "\n" if km_clean else "") + block
+if km_out != km_src:
+    with open(keymap_toml, "w", encoding="utf-8") as f:
+        f.write(km_out)
+
+# Upgrade existing user Lazygit config in place if present so open/restarted instances inherit
+# `--col-width={{columnWidth}}`, vertical full-width main split, 2-column branchLogCmd, and zero status telemetry.
+for lg_cfg in (
+    os.path.join(home_dir, "Library", "Application Support", "lazygit", "config.yml"),
+    os.path.join(home_dir, ".config", "lazygit", "config.yml"),
+):
+    if os.path.isfile(lg_cfg):
+        with open(lg_cfg, "r", encoding="utf-8") as f:
+            lg_src = f.read()
+        lg_new = re.sub(
+            r"(pager:\s*[^\n]*lazygit-pager\.sh)(?:\s+--(?:col-)?width=\{\{columnWidth\}\})?",
+            r"\1 --col-width={{columnWidth}}",
+            lg_src,
+        )
+        lg_new = re.sub(r"mainPanelSplitMode:\s*flexible", "mainPanelSplitMode: vertical", lg_new)
+        lg_new = re.sub(r"splitDiff:\s*auto", "splitDiff: never", lg_new)
+        lg_new = re.sub(r"expandFocusedSidePanel:\s*true", "expandFocusedSidePanel: false", lg_new)
+        lg_new = re.sub(
+            r"branchLogCmd:\s*[^\n]*lazygit-log\.py[^\n]*",
+            "branchLogCmd: lazygit-log.py --branch={{branchName}}",
+            lg_new,
+        )
+        lg_new = re.sub(
+            r"-\s*[^\n]*(?:lazygit-status\.sh|lazygit-log\.py[^\n]*)",
+            "- lazygit-log.py --all",
+            lg_new,
+        )
+        if "scrollPastBottom:" not in lg_new and "gui:" in lg_new:
+            lg_new = lg_new.replace("gui:\n", "gui:\n  scrollPastBottom: false\n", 1)
+        if "wrapLinesInStagingView:" not in lg_new and "gui:" in lg_new:
+            lg_new = lg_new.replace("gui:\n", "gui:\n  wrapLinesInStagingView: false\n", 1)
+        if "commitHashLength:" not in lg_new and "gui:" in lg_new:
+            lg_new = lg_new.replace("gui:\n", "gui:\n  commitHashLength: 0\n", 1)
+        if "showGraph:" not in lg_new and "git:\n" in lg_new:
+            lg_new = lg_new.replace("git:\n", "git:\n  log:\n    order: topo-order\n    showGraph: always\n", 1)
+        elif "showGraph:" in lg_new:
+            lg_new = re.sub(r"showGraph:\s*\S+", "showGraph: always", lg_new)
+        if lg_new != lg_src:
+            with open(lg_cfg, "w", encoding="utf-8") as f:
+                f.write(lg_new)
+
+# Strip legacy hardware telemetry from `~/.claude/scripts/lazygit-status.sh` if present
+lg_status = os.path.join(home_dir, ".claude", "scripts", "lazygit-status.sh")
+if os.path.isfile(lg_status) and not os.path.islink(lg_status):
+    with open(lg_status, "r", encoding="utf-8") as f:
+        st_src = f.read()
+    if "M4 PRO TELEMETRY" in st_src:
+        with open(lg_status, "w", encoding="utf-8") as f:
+            f.write(
+                "#!/usr/bin/env sh\n"
+                'exec "$HOME/.claude/scripts/lazygit-log.py" --all "$@"\n'
+            )
+PYEOF
+if command -v ya >/dev/null 2>&1; then
+  ya cache --clear >/dev/null 2>&1 || true
 fi
 log_ok "Synced assets & linked scripts into ~/.claude/scripts/ and ~/.local/bin/ccide"
 
@@ -197,6 +411,20 @@ cp -rf "$PROJECT_ROOT/assets/"* "$PLUGIN_CACHE_DIR/assets/"
 cp -f "$PROJECT_ROOT/bin/ccide-core" "$PLUGIN_CACHE_DIR/bin/ccide-core"
 [[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$PLUGIN_CACHE_DIR/bin/ccide-core" >/dev/null 2>&1 || true
 cp -f "$PROJECT_ROOT/AGENT.md" "$PLUGIN_CACHE_DIR/AGENT.md"
+
+# Keep any prior cached plugin version directories (`0.4.0`, etc.) in sync so already-running
+# Claude Code sessions whose `${CLAUDE_PLUGIN_ROOT}` still references an older version immediately
+# execute the updated `ccide-core yazi-hook` and scripts without requiring a session restart.
+for prev_cache in "$CLAUDE_DIR/plugins/cache/cc-ide/cc-ide"/*; do
+  if [[ -d "$prev_cache" && "$prev_cache" != "$PLUGIN_CACHE_DIR" ]]; then
+    mkdir -p "$prev_cache/bin" "$prev_cache/hooks" "$prev_cache/scripts" "$prev_cache/assets"
+    cp -f "$PROJECT_ROOT/hooks/hooks.json" "$prev_cache/hooks/hooks.json"
+    cp -rf "$PROJECT_ROOT/scripts/"* "$prev_cache/scripts/"
+    cp -rf "$PROJECT_ROOT/assets/"* "$prev_cache/assets/"
+    cp -f "$PROJECT_ROOT/bin/ccide-core" "$prev_cache/bin/ccide-core"
+    [[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$prev_cache/bin/ccide-core" >/dev/null 2>&1 || true
+  fi
+done
 
 "$PYTHON_BIN" -I - "$PROJECT_ROOT" "$PLUGIN_CACHE_DIR" "$PLUGIN_VERSION" <<'PYEOF'
 import datetime, json, os, sys

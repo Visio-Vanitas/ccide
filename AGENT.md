@@ -1,13 +1,13 @@
 # `cc-ide` (`ccide-core`) — Architecture & Agent Maintenance Guide
 
 ## 1. Overview
-`cc-ide` (v0.4.0) is a high-performance, cross-platform native engine for the 3-column iTerm2 + Claude Code tiling workspace. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses no nightly features, and builds out of the box on LTS Linux distributions and macOS:
-- **Left Column (30%)**: `Yazi` File Tree (top) + `Lazygit` Diff (bottom), locked to zero terminal scrollback (`scrollback_lines = 0`).
-- **Center Column (54%)**: `Claude Code` Main Workspace (with native `viewing-agent` switching and clean bottom chrome).
+`cc-ide` (v0.5.0) is a high-performance, cross-platform native engine for the 3-column iTerm2 + Claude Code tiling workspace. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses no nightly features, and builds out of the box on LTS Linux distributions and macOS:
+- **Left Column (30%)**: `Yazi` File Tree (top, synced live on Claude Code `Read`/`Edit`/`Write`/`LSP` tool ops with ergonomic mouse/keyboard highlight discipline & content-bounds-clamped hover scrolling via `assets/yazi-hscroll.lua`) + `Lazygit` Diff (bottom, unwrapped by default via `~/.config/cc-ide/viewer.json` with compact single-column `109│` line numbers via `scripts/lazygit-pager.sh`, full-stream zero-telemetry hash-free commit logs via `scripts/lazygit-log.py`, optional `vi`-style `↪` wrapping when `"wrap": true`, and hover-targeted content-bounds-clamped Magic Mouse scrolling via `scripts/pty-hscroll-bridge.py`), locked to zero terminal scrollback (`scrollback_lines = 0`).
+- **Center Column (54%)**: `Claude Code` Main Workspace (with native `viewing-agent` switching, untouched native `/btw` overlay, and clean bottom chrome).
 - **Right Column (16%)**: `ccide-core sidebar` 3-Tier Interactive TUI:
   1. **Top Panel**: Resolution-adaptive 2x2 Quadrant model logo (`GEMINI`, `DEEPSEEK`, `CLAUDE`, `OPENAI`, `GROK`), switching dynamically between the Main Model (`settings.model`) and the Subagent Model (`settings.env.CLAUDE_CODE_SUBAGENT_MODEL`) when viewing a subagent.
   2. **Middle Panel (`SUBAGENTS`)**: Permanent top `● [main]` item + session-isolated subagents. Clicking any item drives Claude Code's native `viewing-agent` state machine and links `Yazi` file-tree reveals to the selected session.
-  3. **Bottom Panel (`M4 PRO` / host CPU)**: Multi-row (`8 × height` sub-pixel) oscilloscope curves for `CPU`, `GPU`, `MEM`, and `NET`, sampled cross-platform.
+  3. **Bottom Panel (`M4 PRO` / host CPU `⇄` `TASKS` Session Task Progress Board)**: Multi-row (`8 × height` sub-pixel) oscilloscope curves for `CPU`, `GPU`, `MEM`, and `NET`, sampled cross-platform. Automatically swaps to the interactive `TASKS` progress board (`~/.claude/tasks/<sessionId>/*.json`) whenever incomplete (`pending` / `in_progress`) tasks exist, supports manual toggling (`t`/`Tab` or clicking `[HW]`/`[TASK]`), and automatically restores Hardware Telemetry once all tasks complete.
 
 The workspace is **adaptive**: the same binary selects one of three split backends depending on the host terminal and transport — local iTerm2 daemon (Tier 1), SSH + client iTerm2 native split (Tier 2), or a universal `tmux` engine (Tier 3). See §4.
 
@@ -17,31 +17,43 @@ The workspace is **adaptive**: the same binary selects one of three split backen
 ```text
 ccide/
 ├── AGENT.md                  # Architecture & maintenance guide (symlinked as CLAUDE.md)
+├── CHANGELOG.md              # Release history (Keep a Changelog / SemVer)
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml            # CI Gate: 1.70.0 MSRV, fmt/clippy, 4-target matrix, scripts & patcher tests
-│       ├── release.yml       # Release: preview RC (`v0.4.0-rc.<n>`) + immutable stable (`v0.4.0`) + SHA256SUMS
+│       ├── release.yml       # Release: preview RC (`v0.5.0-rc.<n>`) + immutable stable (`v0.5.0`) + SHA256SUMS
 │       └── cc-compat-watch.yml # Daily npm @anthropic-ai/claude-code compatibility probe (dedup issues)
 ├── Cargo.toml                # Rust Edition 2021, MSRV 1.70, fat LTO, stripped release profile
 ├── install.sh                # One-Click Installer, Plugin Configurator & Binary Patcher
 ├── .claude-plugin/
 │   ├── marketplace.json      # Official Claude Code Marketplace manifest ("cc-ide")
-│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.4.0)
+│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.5.0)
 ├── hooks/
 │   └── hooks.json            # Official Plugin Hooks (PostToolUse, SubagentStart, SubagentStop -> ccide-core yazi-hook)
 ├── skills/
 │   ├── ccide/SKILL.md        # `/cc-ide:ccide` workspace controller skill
-│   └── rebalance/SKILL.md    # `/cc-ide:rebalance` 30%|54%|16% layout rebalancer skill
+│   ├── clear/SKILL.md        # `/cc-ide:clear` dismiss completed subagents skill
+│   ├── rebalance/SKILL.md    # `/cc-ide:rebalance` 30%|54%|16% layout rebalancer skill
+│   └── theme/SKILL.md        # `/cc-ide:theme` live JSONC palette & preset switcher skill
 ├── scripts/
 │   ├── ccide                 # Adaptive 3-Tier launcher (backend auto-detect, tmux bootstrap, SSH ControlMaster, auto-repatch)
 │   ├── ensure-ccide-core.sh  # POSIX on-demand resolver: downloads + SHA256-verifies prebuilt GitHub Release binary
 │   ├── ccide_daemon.py       # iTerm2 AutoLaunch warm daemon (Unix socket + OSC 1337 SSH bridge)
 │   ├── iterm2_workspace.py   # Cold fallback: iTerm2 Python API 3-column tiling & view-switch controller
 │   ├── pane-runner.sh        # Cross-platform companion TUI pane runner (yazi, lazygit, macmon, sidebar)
+│   ├── lazygit-pager.sh      # Compact single-column (`109│`) diff pager (unwrapped default, optional vi `↪` wrap)
+│   ├── lazygit-log.py        # Full-stream hash-free `[Author] [Graph] [Subject]` commit log for Lazygit
+│   ├── pty-hscroll-bridge.py # Hover-targeted & content-bounds-clamped PTY Magic Mouse SGR 66/67 bridge
+│   ├── md-render.py          # Yazi & Lazygit Markdown preview renderer (clean H1-H6 glyphs, no raw ###)
 │   ├── patch_claude_binary.py# Version-independent structural patcher (Bun trailer parser + invariant anchors)
 │   └── cc_tui_lib.py         # Python TUI & quadrant logo generator library
 ├── assets/
-│   └── adaptive_quadrant_logos.json # Pre-rendered 2x2 Quadrant vector logos
+│   ├── adaptive_quadrant_logos.json # Pre-rendered 2x2 Quadrant vector logos
+│   ├── glow-style.json       # Custom Glamour dark stylesheet (clean H1-H6 headings without ### prefixes)
+│   ├── lazygit.yml           # Lazygit full-width, hash-free commits, unwrapped default & compact diff overlay
+│   ├── viewer.json           # Line-wrapping JSONC config (`"wrap": false` default, `"wrap_style": "vi"`)
+│   ├── yazi-hscroll.lua      # Yazi Magic Mouse `:touch`, keyboard pan & tool-reveal plugin (`hscroll.yazi`)
+│   └── palette.json          # Commented JSONC color palette template
 ├── bin/                      # Generated by ./install.sh (gitignored)
 │   └── ccide-core            # Compiled native Rust binary (sidebar, yazi-hook, statusline, workspace)
 └── src/
@@ -50,6 +62,8 @@ ccide/
     ├── json.rs               # Zero-dependency JSON field extractors
     ├── tui/
     │   ├── mod.rs            # ANSI color palette & block/spinner constants
+    │   ├── tasks.rs          # Live per-session `TASKS` progress board (`TASKS ⇄ HW` in Panel 3)
+    │   ├── palette.rs        # Customizable JSONC color palette & 6 built-in theme presets
     │   ├── width.rs          # East-Asian (CJK) display column width & safe truncation
     │   ├── grid.rs           # TermGeom, BoxRow, PanelSpec, 4-sided rounded boxes, row-level diffing
     │   └── logo.rs           # Pre-rendered 2x2 Quadrant logo loader & centered panel builder
@@ -174,7 +188,9 @@ All shared state lives under `/tmp/.cc-ide/` (mode-restricted socket; plain file
 | `/tmp/.cc-ide/cur_pid_<pid>.txt` | Claude Code -> sidebar | current viewing-agent view |
 | `/tmp/.cc-ide/req_pid_<pid>.json` | sidebar -> Claude Code | view-switch request |
 | `/tmp/.cc-ide/sb_pid_<pid>.pid` | sidebar | `SIGUSR2` target |
+| `/tmp/.cc-ide/lg_geom_<sid>.txt` | `pty-hscroll-bridge.py` -> pagers | live Lazygit `rows cols main_inner_w` |
 | `/tmp/.cc-ide/nvidia_stat.txt` | Linux NVIDIA probe | cached GPU utilization/VRAM |
+| `~/.claude/tasks/<sessionId>/*.json` | Claude Code -> sidebar | live session `TASKS` progress board |
 | `~/.cache/cc-ide/tab_shell_<yazi_id>.txt` | workspace/daemon | tab shell PID for isolation |
 | `~/.cache/cc-ide/live_sess_<sessionId>.json` | `statusline` | per-session main model |
 
@@ -194,7 +210,7 @@ All build, plugin registration, daemon setup, binary patching, validation, and h
 ./install.sh --uninstall
 ```
 
-Installer side effects worth knowing: it symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/`, (re)writes `~/.ssh/ccide_config` and the `Include` line in `~/.ssh/config`, (re)starts the daemon, and packages the plugin into `~/.claude/plugins/cache/cc-ide/cc-ide/0.4.0/`. When `cargo` is absent it falls back to `scripts/ensure-ccide-core.sh` to download the prebuilt release binary.
+Installer side effects worth knowing: it symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/`, (re)writes `~/.ssh/ccide_config` and the `Include` line in `~/.ssh/config`, (re)starts the daemon, and packages the plugin into `~/.claude/plugins/cache/cc-ide/cc-ide/0.5.0/`. When `cargo` is absent it falls back to `scripts/ensure-ccide-core.sh` to download the prebuilt release binary.
 
 ---
 
@@ -202,13 +218,12 @@ Installer side effects worth knowing: it symlinks `scripts/*` into `~/.claude/sc
 
 ### 7.1 MSRV & Toolchain Policy
 - `Cargo.toml` pins `edition = "2021"` and `rust-version = "1.70"`. There is **zero** dependency on nightly or post-1.70 compiler features, and the crate has **no external dependencies** (the only `[[package]]` in `Cargo.lock` is `ccide-core` itself), so it builds out of the box on LTS Linux distributions and macOS.
-- CI proves the floor with a real toolchain: `dtolnay/rust-toolchain@master` with `toolchain: 1.70.0`, then `cargo +1.70.0 check --all-targets` and `cargo +1.70.0 test`. Stable is used only for `rustfmt` and `clippy --all-targets -- -D warnings`.
-- **Note for maintainers**: `Cargo.lock` is currently written as lockfile `version = 4`, which cargo 1.70 cannot parse ("lock file version `4` was found"). A v3 lockfile (identical content here, since there are no dependencies) is what the 1.70 CI job needs; regenerate with an older cargo or rewrite the header before the MSRV job can run as committed.
+- CI proves the floor with a real toolchain: `dtolnay/rust-toolchain@master` with `toolchain: 1.70.0`, then `cargo +1.70.0 check --locked --all-targets` and `cargo +1.70.0 test --locked` against the v3 `Cargo.lock`. Stable is used only for `rustfmt` and `clippy --all-targets -- -D warnings`.
 
 ### 7.2 Promotion Flow (enforced by `.github/workflows/ci.yml`)
 1. **`dev`** — feature work; pushes and PRs run the full gate (no release).
-2. **`preview`** — a PR from `dev`; on merge, `ci.yml` adds a live `npm install @anthropic-ai/claude-code@latest` + `patch_claude_binary.py --verify` step, and `release.yml` publishes a pre-release tag `v0.4.0-rc.<run_number>` (`prerelease: true`, `make_latest: false`).
-3. **`main`** — a PR from `preview` only; the `branch-flow-guard` job fails any PR whose `head_ref` is not `preview`. On merge, `release.yml` publishes the immutable stable tag `v0.4.0` (`make_latest: true`).
+2. **`preview`** — a PR from `dev`; on merge, `ci.yml` adds a live `npm install @anthropic-ai/claude-code@latest` + `patch_claude_binary.py --verify` step, and `release.yml` publishes a pre-release tag `v0.5.0-rc.<run_number>` (`prerelease: true`, `make_latest: false`).
+3. **`main`** — a PR from `preview` only; the `branch-flow-guard` job fails any PR whose `head_ref` is not `preview`. On merge, `release.yml` publishes the immutable stable tag `v0.5.0` (`make_latest: true`).
 
 `release.yml` builds four archives (`ccide-core-<triple>.tar.gz` for `aarch64`/`x86_64` × macOS/Linux), computes `SHA256SUMS.txt`, and attaches both to the release — the same assets `scripts/ensure-ccide-core.sh` resolves and verifies at install time.
 
