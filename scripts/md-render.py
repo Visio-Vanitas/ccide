@@ -180,37 +180,30 @@ def render_fallback_markdown(md_text: str, width: int, wrap_enabled: bool = Fals
             in_fence = not in_fence
             continue
         if in_fence:
-            expanded = line.expandtabs(4)
-            segs = wrap_plain(expanded, max(12, width - 2)) if wrap_enabled else [expanded]
-            for wl in segs:
-                out.append(f"\x1b[38;5;240m│\x1b[0m \x1b[38;5;115m{wl}\x1b[0m")
+            full_code = f"\x1b[38;5;240m│\x1b[0m \x1b[38;5;115m{line.expandtabs(4)}\x1b[0m"
+            out.extend(wrap_vi_ansi(full_code, width) if wrap_enabled else [full_code])
             continue
         mh = ATX_HEADING_RE.match(line)
         if mh:
             lvl = len(mh.group(1))
             pfx, col, sfx = heading_styles.get(lvl, ("• ", "\x1b[1;36m", ""))
             title = re.sub(r"[`*_]", "", mh.group(2))
-            segs = wrap_plain(title, max(12, width - 3)) if wrap_enabled else [title]
-            for idx, wl in enumerate(segs):
-                lead = pfx if idx == 0 else "  "
-                out.append(f"{col}{lead}{wl}{sfx}\x1b[0m")
+            full_hdr = f"{col}{pfx}{title}{sfx}\x1b[0m"
+            out.extend(wrap_vi_ansi(full_hdr, width) if wrap_enabled else [full_hdr])
             continue
         stripped = line.strip()
         if stripped in ("---", "***", "___"):
             out.append(f"\x1b[38;5;240m{'─' * min(max(16, width - 2), 40)}\x1b[0m")
             continue
         if stripped.startswith(("- ", "* ")):
-            segs = wrap_plain(stripped[2:], max(12, width - 2)) if wrap_enabled else [stripped[2:]]
-            for idx, wl in enumerate(segs):
-                lead = "\x1b[38;5;214m•\x1b[0m " if idx == 0 else "  "
-                out.append(lead + style_inline(wl))
+            full_li = "\x1b[38;5;214m•\x1b[0m " + style_inline(stripped[2:])
+            out.extend(wrap_vi_ansi(full_li, width) if wrap_enabled else [full_li])
             continue
         if not stripped:
             out.append("")
             continue
-        segs = wrap_plain(line, width) if wrap_enabled else [line]
-        for wl in segs:
-            out.append(style_inline(wl))
+        styled_ln = style_inline(line)
+        out.extend(wrap_vi_ansi(styled_ln, width) if wrap_enabled else [styled_ln])
     return "\n".join(out) + "\n"
 
 
