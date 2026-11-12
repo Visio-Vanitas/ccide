@@ -35,30 +35,45 @@ use crate::session::transcript::{
     append_dismissed_subagents, get_main_session_file_ops, get_session_subagents, JsonlTracker,
     SubagentItem,
 };
-use crate::session::{load_config_models, resolve_isolated_session_id, ConfigModels};
+use crate::session::{
+    load_config_models, normalize_path_under_cwd, resolve_isolated_session_id, ConfigModels,
+};
 use crate::telemetry::chart::build_telemetry_panel_rows;
 use crate::telemetry::TelemetrySampler;
 use crate::tui::grid::{get_terminal_geometry, render_multi_panel_grid, BoxRow, PanelSpec};
 use crate::tui::logo::{build_top_logo_panel, load_adaptive_logos};
 use crate::tui::palette::PaletteWatcher;
+use crate::tui::tasks::{build_tasks_panel, SessionTaskCache, TAG_TASK_TOGGLE};
 use crate::tui::width::{display_width, trunc_to_width};
 use crate::tui::{BOLD, RESET, SPINNERS};
 
-fn trigger_yazi_reveal(tab_yazi_id: &str, file_path: &str) {
-    if tab_yazi_id.is_empty() || file_path.is_empty() || !Path::new(file_path).exists() {
+fn trigger_yazi_reveal(home: &str, tab_yazi_id: &str, target_cwd: &str, file_path: &str) {
+    if tab_yazi_id.is_empty() || file_path.is_empty() || !Path::new(file_path).is_file() {
         return;
     }
+    let mapped = normalize_path_under_cwd(file_path, target_cwd);
     let ya_bin = if Path::new("/opt/homebrew/bin/ya").exists() {
         "/opt/homebrew/bin/ya"
     } else {
         "ya"
     };
-    let _ = Command::new(ya_bin)
-        .args(["emit-to", tab_yazi_id, "reveal", file_path])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    let hscroll_plugin = Path::new(home).join(".config/yazi/plugins/hscroll.yazi/main.lua");
+    if hscroll_plugin.exists() {
+        let plugin_arg = format!("reveal '{}'", mapped.replace('\'', "'\\''"));
+        let _ = Command::new(ya_bin)
+            .args(["emit-to", tab_yazi_id, "plugin", "hscroll", &plugin_arg])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    } else {
+        let _ = Command::new(ya_bin)
+            .args(["emit-to", tab_yazi_id, "reveal", &mapped])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
 }
 
 fn write_active_view_state(home: &str, tab_yazi_id: &str, view_id: &str) {
@@ -136,8 +151,8 @@ fn trigger_native_view_switch(
 enum InputEvent {
     LeftClick { col: usize, row: usize },
     SecondaryClick { row: usize },
-    WheelUp,
-    WheelDown,
+    WheelUp { row: usize },
+    WheelDown { row: usize },
     CursorUp,
     CursorDown,
     PageUp,
@@ -147,6 +162,7 @@ enum InputEvent {
     ActivateSelected,
     DismissSelected,
     ClearAllDone,
+    ToggleBottomPanel,
     Escape,
 }
 
@@ -177,8 +193,8 @@ fn parse_input_events(input: &str) -> Vec<InputEvent> {
                                 match btn {
                                     0 => events.push(InputEvent::LeftClick { col, row }),
                                     1 | 2 => events.push(InputEvent::SecondaryClick { row }),
-                                    64 => events.push(InputEvent::WheelUp),
-                                    65 => events.push(InputEvent::WheelDown),
+                                    64 => events.push(InputEvent::WheelUp { row }),
+                                    65 => events.push(InputEvent::WheelDown { row }),
                                     _ => {}
                                 }
                             }
@@ -244,6 +260,7 @@ fn parse_input_events(input: &str) -> Vec<InputEvent> {
                 events.push(InputEvent::DismissSelected);
             }
             b'c' | b'C' => events.push(InputEvent::ClearAllDone),
+            b't' | b'T' | b'\t' => events.push(InputEvent::ToggleBottomPanel),
             b'g' => events.push(InputEvent::Home),
             b'G' => events.push(InputEvent::End),
             _ => {}
@@ -316,7 +333,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
 
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(
-        b"\x1b]1;[AI] Companion & Agents\x07\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[49m\x1b[2J\x1b[3J",
+        b"\x1b]1;[AI] Companion & Agents\x07\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[49m\x1b[2J\x1b[3J",
     );
     let _ = stdout.flush();
 
@@ -333,10 +350,40 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
     let mut active_view_id = "main".to_string();
     let mut cursor_idx: Option<usize> = None;
     let mut sub_scroll_offset = 0usize;
+    let mut task_cache = SessionTaskCache::new();
+    let mut task_scroll_offset = 0usize;
+    // `None` = auto (show TASKS while incomplete tasks exist, return to HW when all complete);
+    // `Some(true)` = user manually toggled to TASKS; `Some(false)` = user manually toggled to HW.
+    let mut panel3_manual_tasks: Option<bool> = None;
+    let mut prev_task_count = 0usize;
+    let mut prev_had_incomplete = false;
+    let mut seen_main_seq: Option<usize> = None;
     let mut last_click_instant = Instant::now() - Duration::from_secs(10);
     let mut tick = 0usize;
 
     write_active_view_state(&home, tab_yazi_id, "main");
+    if !tab_yazi_id.is_empty() {
+        let eff_shell = if shell_pid_arg > 0 {
+            shell_pid_arg
+        } else {
+            fs::read_to_string(format!(
+                "{}/.cache/cc-ide/tab_shell_{}.txt",
+                home, tab_yazi_id
+            ))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0)
+        };
+        let safe_cwd = target_cwd.replace('\\', "\\\\").replace('"', "\\\"");
+        let reg_json = format!(
+            "{{\"pid\":{},\"yazi_id\":\"{}\",\"cwd\":\"{}\",\"shell_pid\":{}}}\n",
+            my_pid_str, tab_yazi_id, safe_cwd, eff_shell
+        );
+        let _ = fs::write(
+            format!("/tmp/.cc-ide/sidebar_tab_{}.json", tab_yazi_id),
+            reg_json,
+        );
+    }
 
     let (mut cached_session_id, mut cached_claude_pid) =
         resolve_isolated_session_id(&home, tab_yazi_id, target_cwd, shell_pid_arg);
@@ -394,6 +441,9 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                     if sid != cached_session_id {
                         sub_trackers.clear();
                         seen_sub_seq.clear();
+                        seen_main_seq = None;
+                        panel3_manual_tasks = None;
+                        task_scroll_offset = 0;
                         let _ = fs::write(format!("/tmp/.cc-ide/sb_{}.pid", sid), &my_pid_str);
                     }
                     if cpid > 1 && cpid != cached_claude_pid {
@@ -404,7 +454,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 }
             }
 
-            let (mt, mf, mut transcript_model) = get_main_session_file_ops(
+            let (mt, mf, mut transcript_model, main_seq) = get_main_session_file_ops(
                 &home,
                 &cached_session_id,
                 tab_yazi_id,
@@ -413,6 +463,12 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             );
             main_tool = mt;
             main_file = mf;
+            if let Some(prev_seq) = seen_main_seq {
+                if main_seq > prev_seq && active_view_id == "main" {
+                    trigger_yazi_reveal(&home, tab_yazi_id, target_cwd, &main_file);
+                }
+            }
+            seen_main_seq = Some(main_seq);
 
             // Check `/tmp/.cc-ide/cur_pid_<pid>.txt` or `cur_<sessionId>.txt` pushed by `claude.exe`
             let pid_cur = if cached_claude_pid > 1 {
@@ -442,7 +498,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                         active_view_id = target_cur.to_string();
                         write_active_view_state(&home, tab_yazi_id, &active_view_id);
                         if active_view_id == "main" {
-                            trigger_yazi_reveal(tab_yazi_id, &main_file);
+                            trigger_yazi_reveal(&home, tab_yazi_id, target_cwd, &main_file);
                         }
                     }
                 }
@@ -457,7 +513,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 let prev = seen_sub_seq.insert(ag.full_id.clone(), ag.file_op_seq);
                 if let Some(p_seq) = prev {
                     if ag.file_op_seq > p_seq && active_view_id == ag.full_id {
-                        trigger_yazi_reveal(tab_yazi_id, &ag.file);
+                        trigger_yazi_reveal(&home, tab_yazi_id, target_cwd, &ag.file);
                     }
                 }
             }
@@ -742,17 +798,60 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             raw_interior: false,
         };
 
-        // ── 3. BOTTOM PANEL: SHARED SINGLE-INSTANCE TELEMETRY OSCILLOSCOPE CURVES ──
+        // ── 3. BOTTOM PANEL: LIVE SESSION `TASKS` BOARD ⇄ SHARED HARDWARE TELEMETRY ──
+        // Keep the shared 500ms telemetry snapshot warm even while `TASKS` is displayed so curve
+        // history has zero gaps when tasks finish and automatically hand back the slot.
         telemetry.sample();
-        let bot_rows = build_telemetry_panel_rows(&telemetry, inner_w, bot_h, pal);
-        let bot_panel = PanelSpec {
-            title: telemetry.cpu_brand.to_uppercase(),
-            badge: format!("{}C · {:.0}GB", telemetry.cpu_cores, telemetry.total_mem_gb),
-            accent: mint.clone(),
-            rows: bot_rows,
-            fixed_height: Some(bot_h),
-            weight: 1.12,
-            raw_interior: false,
+        let session_tasks = task_cache.refresh(&home, &cached_session_id, is_dirty);
+        let task_total = session_tasks.len();
+        let task_done = session_tasks.iter().filter(|t| t.is_completed()).count();
+        let task_running = session_tasks.iter().filter(|t| t.is_in_progress()).count();
+        let has_incomplete_tasks = task_done < task_total;
+
+        // If new tasks were added, or all tasks just finished, return to automatic mode
+        if (task_total > prev_task_count && has_incomplete_tasks)
+            || (prev_had_incomplete && !has_incomplete_tasks)
+        {
+            panel3_manual_tasks = None;
+        }
+        prev_task_count = task_total;
+        prev_had_incomplete = has_incomplete_tasks;
+
+        let show_tasks_panel = if task_total == 0 {
+            false
+        } else {
+            panel3_manual_tasks.unwrap_or(has_incomplete_tasks)
+        };
+
+        let bot_panel = if show_tasks_panel {
+            build_tasks_panel(
+                session_tasks,
+                geom.cols,
+                bot_h,
+                &mut task_scroll_offset,
+                tick,
+                pal,
+            )
+        } else {
+            task_scroll_offset = 0;
+            let bot_rows = build_telemetry_panel_rows(&telemetry, inner_w, bot_h, pal);
+            let hw_badge = if task_total > 0 {
+                format!(
+                    "{}C·{:.0}G [TASK {}/{}]",
+                    telemetry.cpu_cores, telemetry.total_mem_gb, task_done, task_total
+                )
+            } else {
+                format!("{}C · {:.0}GB", telemetry.cpu_cores, telemetry.total_mem_gb)
+            };
+            PanelSpec {
+                title: telemetry.cpu_brand.to_uppercase(),
+                badge: hw_badge,
+                accent: mint.clone(),
+                rows: bot_rows,
+                fixed_height: Some(bot_h),
+                weight: 1.12,
+                raw_interior: false,
+            }
         };
 
         let panels = [top_panel, mid_panel, bot_panel];
@@ -770,7 +869,11 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         }
 
         // Sleep until `SIGUSR2` event, mouse/key input on `stdin_fd`, or 1000ms telemetry tick
-        let timeout_ms = if running_cnt > 0 { 250 } else { 1000 };
+        let timeout_ms = if running_cnt > 0 || (show_tasks_panel && task_running > 0) {
+            250
+        } else {
+            1000
+        };
         let mut pfd = PollFd {
             fd: stdin_fd,
             events: 1,
@@ -785,29 +888,41 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 let raw_in = String::from_utf8_lossy(&in_buf[..n as usize]);
                 let mut clear_all_done = false;
                 let mut dismiss_single_idx: Option<usize> = None;
+                let mut restore_center_focus = false;
+                let mut switched_view_in_batch = false;
+                let panel3_top_row = top_h + mid_h + 1;
 
                 for ev in parse_input_events(&raw_in) {
                     let max_idx = subagents.len();
                     let cur_max_scroll = (subagents.len() * 2).saturating_sub(viewport_h);
 
                     match ev {
+                        InputEvent::ToggleBottomPanel => {
+                            if task_total > 0 {
+                                panel3_manual_tasks = Some(!show_tasks_panel);
+                            }
+                        }
                         InputEvent::Escape => {
-                            cursor_idx = None;
-                            if active_view_id != "main" {
-                                active_view_id = "main".to_string();
-                                last_click_instant = Instant::now();
-                                trigger_native_view_switch(
-                                    &home,
-                                    tab_yazi_id,
-                                    &cached_session_id,
-                                    cached_claude_pid,
-                                    "main",
-                                    "",
-                                    "",
-                                    false,
-                                    0,
-                                );
-                                trigger_yazi_reveal(tab_yazi_id, &main_file);
+                            if show_tasks_panel && !has_incomplete_tasks {
+                                panel3_manual_tasks = Some(false);
+                            } else {
+                                cursor_idx = None;
+                                if active_view_id != "main" {
+                                    active_view_id = "main".to_string();
+                                    last_click_instant = Instant::now();
+                                    trigger_native_view_switch(
+                                        &home,
+                                        tab_yazi_id,
+                                        &cached_session_id,
+                                        cached_claude_pid,
+                                        "main",
+                                        "",
+                                        "",
+                                        false,
+                                        0,
+                                    );
+                                    trigger_yazi_reveal(&home, tab_yazi_id, target_cwd, &main_file);
+                                }
                             }
                         }
                         InputEvent::CursorUp => {
@@ -895,7 +1010,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                                     false,
                                     0,
                                 );
-                                trigger_yazi_reveal(tab_yazi_id, &main_file);
+                                trigger_yazi_reveal(&home, tab_yazi_id, target_cwd, &main_file);
                             } else if let Some(ag) = subagents.get(target - 1) {
                                 active_view_id = ag.full_id.clone();
                                 last_click_instant = Instant::now();
@@ -910,7 +1025,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                                     ag.status != "running",
                                     ag.footer_rank,
                                 );
-                                trigger_yazi_reveal(tab_yazi_id, &ag.file);
+                                trigger_yazi_reveal(&home, tab_yazi_id, target_cwd, &ag.file);
                             }
                         }
                         InputEvent::DismissSelected => {
@@ -924,14 +1039,29 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                         InputEvent::ClearAllDone => {
                             clear_all_done = true;
                         }
-                        InputEvent::WheelUp => {
-                            sub_scroll_offset = sub_scroll_offset.saturating_sub(2);
+                        InputEvent::WheelUp { row: r_wheel } => {
+                            if show_tasks_panel && r_wheel >= panel3_top_row {
+                                task_scroll_offset = task_scroll_offset.saturating_sub(2);
+                            } else if r_wheel < panel3_top_row {
+                                sub_scroll_offset = sub_scroll_offset.saturating_sub(2);
+                            }
                         }
-                        InputEvent::WheelDown => {
-                            sub_scroll_offset = (sub_scroll_offset + 2).min(cur_max_scroll);
+                        InputEvent::WheelDown { row: r_wheel } => {
+                            if show_tasks_panel && r_wheel >= panel3_top_row {
+                                task_scroll_offset = task_scroll_offset.saturating_add(2);
+                            } else if r_wheel < panel3_top_row {
+                                sub_scroll_offset = (sub_scroll_offset + 2).min(cur_max_scroll);
+                            }
                         }
                         InputEvent::SecondaryClick { row: r_clicked } => {
-                            if let Some(&(tkind, tidx)) = row_tag_map.get(&r_clicked) {
+                            restore_center_focus = true;
+                            if r_clicked <= top_h {
+                                // Intercept secondary click on Top Model Sprite (`Panel 1`)
+                            } else if r_clicked >= panel3_top_row {
+                                if task_total > 0 {
+                                    panel3_manual_tasks = Some(!show_tasks_panel);
+                                }
+                            } else if let Some(&(tkind, tidx)) = row_tag_map.get(&r_clicked) {
                                 if tkind == 2 || tkind == 5 {
                                     dismiss_single_idx = Some(tidx);
                                 }
@@ -941,11 +1071,33 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                             col: c_clicked,
                             row: r_clicked,
                         } => {
-                            if let Some(&(tkind, tidx)) = row_tag_map.get(&r_clicked) {
+                            if r_clicked <= top_h {
+                                // Intercept selection/focus on Top Model Sprite (`Panel 1`)
+                                restore_center_focus = true;
+                            } else if r_clicked >= panel3_top_row {
+                                // Intercept selection/focus on Bottom Telemetry / Tasks (`Panel 3`),
+                                // allowing only explicit `[TASK x/y]` / `[HW]` badge clicks to toggle view.
+                                restore_center_focus = true;
+                                if task_total > 0 {
+                                    let clicked_hw_badge = !show_tasks_panel
+                                        && r_clicked == panel3_top_row
+                                        && c_clicked >= geom.cols.saturating_sub(14);
+                                    let clicked_task_toggle = show_tasks_panel
+                                        && (r_clicked == panel3_top_row
+                                            || row_tag_map
+                                                .get(&r_clicked)
+                                                .map(|&(k, _)| k == TAG_TASK_TOGGLE)
+                                                .unwrap_or(false));
+                                    if clicked_hw_badge || clicked_task_toggle {
+                                        panel3_manual_tasks = Some(!show_tasks_panel);
+                                    }
+                                }
+                            } else if let Some(&(tkind, tidx)) = row_tag_map.get(&r_clicked) {
                                 if tkind == 1 {
                                     cursor_idx = Some(0);
                                     active_view_id = "main".to_string();
                                     last_click_instant = Instant::now();
+                                    switched_view_in_batch = true;
                                     trigger_native_view_switch(
                                         &home,
                                         tab_yazi_id,
@@ -957,7 +1109,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                                         false,
                                         0,
                                     );
-                                    trigger_yazi_reveal(tab_yazi_id, &main_file);
+                                    trigger_yazi_reveal(&home, tab_yazi_id, target_cwd, &main_file);
                                 } else if tkind == 2 || tkind == 5 {
                                     // Left-clicking the right-aligned `×` on a completed subagent's header row dismisses it directly
                                     let clicked_close_x = tkind == 2
@@ -968,10 +1120,12 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                                             .unwrap_or(false);
                                     if clicked_close_x {
                                         dismiss_single_idx = Some(tidx);
+                                        restore_center_focus = true;
                                     } else if let Some(ag) = subagents.get(tidx) {
                                         cursor_idx = Some(tidx + 1);
                                         active_view_id = ag.full_id.clone();
                                         last_click_instant = Instant::now();
+                                        switched_view_in_batch = true;
                                         trigger_native_view_switch(
                                             &home,
                                             tab_yazi_id,
@@ -983,11 +1137,21 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                                             ag.status != "running",
                                             ag.footer_rank,
                                         );
-                                        trigger_yazi_reveal(tab_yazi_id, &ag.file);
+                                        trigger_yazi_reveal(
+                                            &home,
+                                            tab_yazi_id,
+                                            target_cwd,
+                                            &ag.file,
+                                        );
                                     }
                                 } else if tkind == 3 {
                                     clear_all_done = true;
+                                    restore_center_focus = true;
+                                } else {
+                                    restore_center_focus = true;
                                 }
+                            } else {
+                                restore_center_focus = true;
                             }
                         }
                     }
@@ -1020,7 +1184,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                                         false,
                                         0,
                                     );
-                                    trigger_yazi_reveal(tab_yazi_id, &main_file);
+                                    trigger_yazi_reveal(&home, tab_yazi_id, target_cwd, &main_file);
                                 }
                             }
                         }
@@ -1045,6 +1209,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                         }
                         if need_reset_main {
                             active_view_id = "main".to_string();
+                            switched_view_in_batch = true;
                             trigger_native_view_switch(
                                 &home,
                                 tab_yazi_id,
@@ -1056,9 +1221,19 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                                 false,
                                 0,
                             );
-                            trigger_yazi_reveal(tab_yazi_id, &main_file);
+                            trigger_yazi_reveal(&home, tab_yazi_id, target_cwd, &main_file);
                         }
                     }
+                }
+
+                if restore_center_focus && !switched_view_in_batch {
+                    focus_center_after_view_switch(
+                        &home,
+                        tab_yazi_id,
+                        &cached_session_id,
+                        &active_view_id,
+                        0,
+                    );
                 }
             }
         }
@@ -1066,7 +1241,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         tick = tick.wrapping_add(1);
     }
 
-    let _ = stdout.write_all(b"\x1b[?1000l\x1b[?1006l\x1b[?1049l\x1b[?25h\x1b[0m\n");
+    let _ = stdout.write_all(b"\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1049l\x1b[?25h\x1b[0m\n");
     let _ = stdout.flush();
     if has_termios {
         unsafe {
@@ -1086,8 +1261,8 @@ mod tests {
         assert_eq!(
             parsed,
             vec![
-                InputEvent::WheelUp,
-                InputEvent::WheelDown,
+                InputEvent::WheelUp { row: 18 },
+                InputEvent::WheelDown { row: 18 },
                 InputEvent::LeftClick { col: 37, row: 14 },
                 InputEvent::SecondaryClick { row: 16 },
             ]

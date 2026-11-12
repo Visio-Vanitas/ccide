@@ -52,6 +52,7 @@ fn resolve_valid_project_file(
     if abs.starts_with(claude_projects_prefix)
         || abs.contains("/tmp/claude-")
         || abs.contains("/.cache/cc-ide/")
+        || abs.contains("/.lib/")
     {
         return None;
     }
@@ -93,7 +94,13 @@ fn parse_jsonl_line_for_tools(
     while let Some(rel) = line[search_pos..].find("\"type\":\"tool_use\"") {
         let start = search_pos + rel;
         search_pos = start + 17;
-        let slice_end = floor_char_boundary(line, (start + 900).min(line.len()));
+        // Bound to the next `tool_use` block (never truncate at 900 bytes, because `Edit`/`Update`
+        // and `Write` often place large `old_string`/`new_string`/`content` fields before `file_path`).
+        let next_tool = line[search_pos..]
+            .find("\"type\":\"tool_use\"")
+            .map(|r| search_pos + r)
+            .unwrap_or(line.len());
+        let slice_end = floor_char_boundary(line, next_tool);
         let chunk = &line[start..slice_end];
         if let Some(tname) = extract_json_str(chunk, "name") {
             if last_file.is_empty() {
@@ -101,18 +108,31 @@ fn parse_jsonl_line_for_tools(
             }
             if matches!(
                 tname.as_str(),
-                "Read" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "Grep" | "Glob"
+                "Read"
+                    | "Edit"
+                    | "Update"
+                    | "FileEdit"
+                    | "StrReplace"
+                    | "Write"
+                    | "MultiEdit"
+                    | "NotebookEdit"
+                    | "LSP"
+                    | "Grep"
+                    | "Glob"
             ) {
                 let cand = extract_json_str(chunk, "file_path")
+                    .or_else(|| extract_json_str(chunk, "filePath"))
                     .or_else(|| extract_json_str(chunk, "notebook_path"))
                     .or_else(|| extract_json_str(chunk, "path"))
                     .unwrap_or_default();
                 if let Some(valid) =
                     resolve_valid_project_file(&cand, target_cwd, claude_projects_prefix)
                 {
-                    *last_file = valid;
-                    *last_tool = tname;
-                    *seq += 1;
+                    if Path::new(&valid).is_file() {
+                        *last_file = valid;
+                        *last_tool = tname;
+                        *seq += 1;
+                    }
                 }
             }
         }
@@ -201,34 +221,36 @@ pub fn get_main_session_file_ops(
     tab_yazi_id: &str,
     target_cwd: &str,
     main_tracker: &mut HashMap<String, JsonlTracker>,
-) -> (String, String, String) {
+) -> (String, String, String, usize) {
+    let claude_projects_prefix = format!("{}/.claude/projects/", home);
     let mut transcript_model = String::new();
     let mut transcript_tool = String::new();
     let mut transcript_file = String::new();
+    let mut transcript_seq = 0usize;
+    let mut jsonl_mtime = SystemTime::UNIX_EPOCH;
 
     if !session_id.is_empty() {
-        let projects_dir = format!("{}/.claude/projects", home);
-        let claude_projects_prefix = format!("{}/", projects_dir);
         let tr = main_tracker
             .entry(session_id.to_string())
             .or_insert_with(|| {
-                let mut found_path = None;
-                if let Ok(rd) = fs::read_dir(&projects_dir) {
+                let mut jp = None;
+                let pdir = format!("{}/.claude/projects", home);
+                if let Ok(rd) = fs::read_dir(&pdir) {
                     for entry in rd.flatten() {
                         let cand = entry.path().join(format!("{}.jsonl", session_id));
                         if cand.is_file() {
-                            found_path = Some(cand);
+                            jp = Some(cand);
                             break;
                         }
                     }
                 }
-                let sz = found_path
+                let sz = jp
                     .as_ref()
                     .and_then(|p| fs::metadata(p).ok())
                     .map(|m| m.len())
                     .unwrap_or(0);
                 JsonlTracker {
-                    jpath: found_path,
+                    jpath: jp,
                     offset: sz.saturating_sub(262_144),
                     last_tool: String::new(),
                     last_file: String::new(),
@@ -238,25 +260,39 @@ pub fn get_main_session_file_ops(
                 }
             });
         if let Some(ref jp) = tr.jpath.clone() {
+            if let Ok(m) = fs::metadata(jp).and_then(|m| m.modified()) {
+                jsonl_mtime = m;
+            }
             update_jsonl_tracker(jp, target_cwd, &claude_projects_prefix, tr);
             transcript_tool = tr.last_tool.clone();
             transcript_file = tr.last_file.clone();
             transcript_model = tr.last_model.clone();
+            transcript_seq = tr.seq;
         }
     }
 
     if !tab_yazi_id.is_empty() {
         let cpath = format!("{}/.cache/cc-ide/main_last_file_{}.json", home, tab_yazi_id);
-        if let Ok(txt) = fs::read_to_string(&cpath) {
-            let fp = extract_json_str(&txt, "file").unwrap_or_default();
-            let tl = extract_json_str(&txt, "tool").unwrap_or_else(|| "active".to_string());
-            if !fp.is_empty() && Path::new(&fp).exists() {
-                return (tl, fp, transcript_model);
+        let cache_mtime = fs::metadata(&cpath)
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        if cache_mtime >= jsonl_mtime || transcript_file.is_empty() {
+            if let Ok(txt) = fs::read_to_string(&cpath) {
+                let fp = extract_json_str(&txt, "file").unwrap_or_default();
+                let tl = extract_json_str(&txt, "tool").unwrap_or_else(|| "active".to_string());
+                if !fp.is_empty() && Path::new(&fp).is_file() {
+                    return (tl, fp, transcript_model, transcript_seq);
+                }
             }
         }
     }
 
-    (transcript_tool, transcript_file, transcript_model)
+    (
+        transcript_tool,
+        transcript_file,
+        transcript_model,
+        transcript_seq,
+    )
 }
 
 pub fn load_dismissed_subagents(home: &str, session_id: &str) -> HashSet<String> {

@@ -1,13 +1,29 @@
 //! Lightweight, zero-dependency JSON field extractors for hot-path `.jsonl` transcripts,
 //! `settings.json`, and `sessions/*.json`.
 
+/// Returns `true` if the byte at `quote_idx` in `src` is preceded by an odd number of `\` bytes.
+fn is_escaped_quote(src: &str, quote_idx: usize) -> bool {
+    let bytes = src.as_bytes();
+    let mut backslashes = 0usize;
+    let mut idx = quote_idx;
+    while idx > 0 && bytes[idx - 1] == b'\\' {
+        backslashes += 1;
+        idx -= 1;
+    }
+    backslashes % 2 == 1
+}
+
 /// Extracts the string value of `"<key>": "<value>"` from a JSON snippet, handling escapes.
 pub fn extract_json_str(src: &str, key: &str) -> Option<String> {
     let needle = format!("\"{}\"", key);
     let mut search_from = 0;
     while let Some(rel_pos) = src[search_from..].find(&needle) {
-        let pos = search_from + rel_pos + needle.len();
+        let match_start = search_from + rel_pos;
+        let pos = match_start + needle.len();
         search_from = pos;
+        if is_escaped_quote(src, match_start) {
+            continue;
+        }
         let rest = src[pos..].trim_start();
         if !rest.starts_with(':') {
             continue;

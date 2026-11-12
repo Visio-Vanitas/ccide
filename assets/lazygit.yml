@@ -1,0 +1,41 @@
+# Managed by cc-ide:
+# - Uses full right-hand main width (`mainPanelSplitMode: vertical`, `splitDiff: never`,
+#   `expandFocusedSidePanel: false`) so `[0]-Log` and `[0]-Patch-` utilize the entire main column.
+# - Clamps vertical scrolling strictly to content bounds (`scrollPastBottom: false`), disables
+#   line wrapping by default (`wrapLinesInStagingView: false`, matching `~/.config/cc-ide/viewer.json`),
+#   and suppresses selection highlight bars on unfocused panels (`inactiveViewSelectedLineBgColor: ["default"]`).
+# - Hides SHA hashes in `[4]-Commits` (`commitHashLength: 0`) so rows start directly from
+#   Author + Commit Graph + Subject while unfocused; full commit metadata appears in `[0]-Patch-`.
+# - Renders `[1]-Status` (`allBranchesLog`) and `[0]-Log` (`branchLogCmd`) as a clean, zero-telemetry
+#   commit graph (`lazygit-log.py`) and `[0]-Patch-` with compact single-column line numbers (`109│`).
+gui:
+  mouseEvents: true
+  scrollHeight: 2
+  scrollPastBottom: false
+  wrapLinesInStagingView: false
+  mainPanelSplitMode: vertical
+  splitDiff: never
+  commitHashLength: 0
+  showBranchCommitHash: false
+  sidePanelWidth: 0.32
+  expandFocusedSidePanel: false
+  statusPanelView: allBranchesLog
+  theme:
+    inactiveViewSelectedLineBgColor:
+      - default
+
+git:
+  log:
+    order: topo-order
+    showGraph: always
+  paging:
+    colorArg: always
+    pager: $HOME/.claude/scripts/lazygit-pager.sh --col-width={{columnWidth}}
+  branchLogCmd: lazygit-log.py --branch={{branchName}}
+  allBranchesLogCmds:
+    - lazygit-log.py --all
+
+keybinding:
+  universal:
+    scrollLeft: H
+    scrollRight: L

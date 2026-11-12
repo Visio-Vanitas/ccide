@@ -355,7 +355,8 @@ def patch_buffer_in_memory(buf: bytearray) -> dict:
                 + b",lt:"
                 + lt_v
                 + b",fs};"
-                + b"if(!g.__cc_h){fs.mkdirSync(d,{recursive:!0});g.__cc_h=()=>{try{let c=g.__cc;if(!c)return;"
+                + b"if(!g.__cc_h){fs.mkdirSync(d,{recursive:!0});"
+                + b"g.__cc_h=()=>{try{let c=g.__cc;if(!c)return;"
                 + b"let rf=`${d}/req_pid_${p}.json`;if(!c.fs.existsSync(rf))return;"
                 + b'let q=JSON.parse(c.fs.readFileSync(rf,"utf8"));c.fs.unlinkSync(rf);'
                 + b'if(!q.id||q.id==="main"){if(c.lt!==void 0)'
@@ -372,7 +373,7 @@ def patch_buffer_in_memory(buf: bytearray) -> dict:
                 + b"}\\n${Object.keys("
                 + te_v
                 + b").length}`;if(g.__cc_s!==st){g.__cc_s=st;fs.writeFileSync(`${d}/cur_pid_${p}.txt`,st);"
-                + b'let sp=`${d}/sb_pid_${p}.pid`;if(fs.existsSync(sp))process.kill(+fs.readFileSync(sp,"utf8"),"SIGUSR2")}}catch{}'
+                + b'let sp=`${d}/sb_pid_${p}.pid`;if(fs.existsSync(sp)){let k=+fs.readFileSync(sp,"utf8");if(k>1)process.kill(k,"SIGUSR2")}}}catch{}'
             )
             return hook
 

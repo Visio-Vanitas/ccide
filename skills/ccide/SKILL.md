@@ -5,7 +5,7 @@ description: Open, rebalance, or reinstall the 3-column Claude Code tiling works
 
 # `/cc-ide:ccide` — 3-Column Adaptive Tiling Workspace Controller
 
-`cc-ide` **v0.4.0** runs a zero-dependency Rust engine (`ccide-core`, **Rust Edition 2021, MSRV `1.70`**) and is installed through a `dev -> preview -> main` release pipeline. No `cargo` is required on the host: `scripts/ensure-ccide-core.sh` downloads and SHA256-verifies the matching GitHub Release binary on demand.
+`cc-ide` **v0.5.0** runs a zero-dependency Rust engine (`ccide-core`, **Rust Edition 2021, MSRV `1.70`**) and is installed through a `dev -> preview -> main` release pipeline. No `cargo` is required on the host: `scripts/ensure-ccide-core.sh` downloads and SHA256-verifies the matching GitHub Release binary on demand.
 
 Manage the `cc-ide` workspace in the current tab or across all open windows/tabs. The launcher picks a backend automatically:
 
@@ -50,8 +50,8 @@ Manage the `cc-ide` workspace in the current tab or across all open windows/tabs
 ## Release channels
 
 - `dev` — development; CI gate only (`rustc 1.70.0` MSRV, fmt/clippy, 4-target matrix, patcher tests).
-- `preview` — merges via PR from `dev`; publishes a **pre-release** (`v0.4.0-rc.<run_number>`) after live npm `@anthropic-ai/claude-code@latest` patch verification.
-- `main` — merges via PR from `preview` only (enforced by CI); publishes the **immutable stable** `v0.4.0` release.
+- `preview` — merges via PR from `dev`; publishes a **pre-release** (`v0.5.0-rc.<run_number>`) after live npm `@anthropic-ai/claude-code@latest` patch verification.
+- `main` — merges via PR from `preview` only (enforced by CI); publishes the **immutable stable** `v0.5.0` release.
 - A daily `cc-compat-watch.yml` probe (`03:17 UTC`) tests the patcher against the newest published Claude Code and opens a deduplicated `[Compat Alert]` issue if it breaks.
 
 ## Health checks
