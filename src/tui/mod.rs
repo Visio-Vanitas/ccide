@@ -6,6 +6,7 @@
 pub mod grid;
 pub mod logo;
 pub mod palette;
+pub mod tasks;
 pub mod width;
 
 pub const RESET: &str = "\x1b[0m";

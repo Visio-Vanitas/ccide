@@ -1,0 +1,8 @@
+{
+  // Viewer layout & line-wrapping configuration (`~/.config/cc-ide/viewer.json`).
+  // - "wrap": false (default) renders diffs, commit graphs, and Markdown previews in full
+  //   without line breaks; pan horizontally via Magic Mouse or keyboard (H/L, Shift/Alt + Left/Right).
+  // - "wrap": true wraps long lines right up to the panel border with vi-style `↪` / `↩` markers.
+  "wrap": false,
+  "wrap_style": "vi"
+}

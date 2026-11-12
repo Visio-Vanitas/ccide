@@ -4,7 +4,7 @@ NVM_NODE_BIN=""
 for d in "$HOME"/.nvm/versions/node/*/bin(N); do
   NVM_NODE_BIN="$d"
 done
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.cargo/bin:$HOME/.local/bin:$HOME/.claude/bin${NVM_NODE_BIN:+:$NVM_NODE_BIN}:$PATH"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.cargo/bin:$HOME/.local/bin:$HOME/.claude/bin:$HOME/.claude/scripts${NVM_NODE_BIN:+:$NVM_NODE_BIN}:$PATH"
 export LANG="en_US.UTF-8"
 export LC_ALL="en_US.UTF-8"
 export COLORTERM="truecolor"
@@ -68,9 +68,26 @@ case "$ROLE" in
       echo "lazygit not found in PATH. Install lazygit (https://github.com/jesseduffield/lazygit) to enable the Git pane."
       exec "${SHELL:-/bin/sh}"
     fi
+    LG_ARGS=(-p "$TARGET_DIR")
+    CCIDE_LG_CFG="$HOME/.config/cc-ide/lazygit.yml"
+    [[ -f "$CCIDE_LG_CFG" ]] || CCIDE_LG_CFG="$REPO_ROOT/assets/lazygit.yml"
+    if [[ "${CCIDE_LAZYGIT_RAW:-0}" != "1" && -f "$CCIDE_LG_CFG" ]]; then
+      LG_USER_DIR="$("$LAZYGIT_BIN" --print-config-dir 2>/dev/null || true)"
+      if [[ -n "$LG_USER_DIR" && -f "$LG_USER_DIR/config.yml" ]]; then
+        LG_ARGS=(-ucf "$LG_USER_DIR/config.yml,$CCIDE_LG_CFG" -p "$TARGET_DIR")
+      else
+        LG_ARGS=(-ucf "$CCIDE_LG_CFG" -p "$TARGET_DIR")
+      fi
+    fi
+    PYTHON_BIN="$(command -v python3 || echo /usr/bin/python3)"
+    HSCROLL_BRIDGE="$SCRIPT_DIR/pty-hscroll-bridge.py"
     while true; do
       clear_terminal_buffers
-      "$LAZYGIT_BIN" -p "$TARGET_DIR" || true
+      if [[ -f "$HSCROLL_BRIDGE" && -x "$PYTHON_BIN" ]]; then
+        "$PYTHON_BIN" "$HSCROLL_BRIDGE" "$LAZYGIT_BIN" "${LG_ARGS[@]}" || true
+      else
+        "$LAZYGIT_BIN" "${LG_ARGS[@]}" || true
+      fi
       sleep 0.2
     done
     ;;

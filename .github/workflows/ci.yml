@@ -109,13 +109,13 @@ jobs:
           zsh -n install.sh
           zsh -n scripts/ccide
           zsh -n scripts/pane-runner.sh
-          python3 -m py_compile scripts/patch_claude_binary.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/cc_tui_lib.py
+          python3 -m py_compile scripts/patch_claude_binary.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/pty-hscroll-bridge.py scripts/md-render.py
 
       - name: Validate Plugin & Marketplace JSON Manifests
         run: |
           python3 - <<'PY'
           import json, re
-          for p in [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "hooks/hooks.json", "assets/adaptive_quadrant_logos.json"]:
+          for p in [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "hooks/hooks.json", "assets/adaptive_quadrant_logos.json", "assets/glow-style.json"]:
               with open(p, encoding="utf-8") as f:
                   json.load(f)
               print("OK:", p)
@@ -124,6 +124,11 @@ jobs:
               pal = json.loads(raw)
               assert "preset" in pal and "ui" in pal and "statusline" in pal
               print("OK: assets/palette.json")
+          with open("assets/viewer.json", encoding="utf-8") as f:
+              raw = re.sub(r"(?m)^\s*//.*$", "", f.read())
+              vw = json.loads(raw)
+              assert vw.get("wrap") is False and vw.get("wrap_style") == "vi"
+              print("OK: assets/viewer.json")
           PY
 
       - name: Run Dynamic Patcher Mutation & Structural Unit Tests

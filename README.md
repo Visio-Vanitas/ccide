@@ -2,9 +2,9 @@
 
 **Native 3-Column Tiling Terminal IDE & Real-Time Subagent / Hardware Telemetry Companion for Claude Code (`macOS` & `Linux`)**
 
-`ccide` transforms **Claude Code** into a zero-polling, sub-millisecond 3-column tiling terminal IDE (`30% Left | 54% Center | 16% Right`) powered by a zero-dependency Rust engine (`ccide-core`, **v0.4.0**) and a 3-tier adaptive workspace controller.
+`ccide` transforms **Claude Code** into a zero-polling, sub-millisecond 3-column tiling terminal IDE (`30% Left | 54% Center | 16% Right`) powered by a zero-dependency Rust engine (`ccide-core`, **v0.5.0**) and a 3-tier adaptive workspace controller.
 
-> **v0.4.0 highlights:** Rust **Edition 2021** with an LTS **MSRV of `1.70`** (no nightly features, no post-1.70 compiler requirements), a **version-independent** Claude Code binary patcher that survives upstream releases, on-demand prebuilt binary downloads for hosts without `cargo`, and a `dev -> preview -> main` CI/CD promotion pipeline.
+> **v0.5.0 highlights:** Live **`TASKS ⇄ Hardware Telemetry` sidebar panel** (automatically surfaces session task progress when incomplete tasks exist, supports `t`/`[HW]` toggling, and restores telemetry on completion), **default-unwrapped full-line Lazygit diffs & hash-free commit graphs** (`~/.config/cc-ide/viewer.json` `"wrap": false` default, optional `vi`-style `↪` wrapping) with compact single-column line numbers (`109│`), **real-time `Yazi` file-tree reveal on `Read`/`LSP`/`Edit`/`Write`** + clean H1–H6 Markdown previews, and **ergonomic hover-targeted, content-bounds-clamped Apple Magic Mouse & keyboard scrolling** across both `Lazygit` and `Yazi`.
 
 ```text
 ┌──────────────────────┬────────────────────────────────────────┬──────────────┐
@@ -31,9 +31,9 @@
 - **Strict Per-Tab Process Tree Isolation**: Resolves each tab's session via kernel process ancestry (`proc_pidinfo(PROC_PIDTBSDINFO)` on macOS, `/proc/<pid>/stat` on Linux) so `SUBAGENTS` lists never cross-contaminate across tabs.
 
 ### 2. Selected-Session-Linked `Yazi` File Tree Sync
-- Driven by `ccide-core yazi-hook` (`PostToolUse` / `SubagentStart` / `SubagentStop`):
-  - When `● [main]` is selected, `Yazi` automatically follows files read or edited by the main agent.
-  - Clicking any `[subagent]` immediately reveals that subagent's active file in `Yazi` and follows its subsequent file operations.
+- **Selected-Session-Linked `Yazi` (`Read`/`LSP`/`Edit` Sync + Clean Markdown Preview) & Full-Stream `Lazygit` Diffs**:
+  - When `● [main]` is selected, `Yazi` (`ccide-core yazi-hook` + `sidebar`) automatically jumps to, highlights, and previews files read (`Read`, `LSP`) or modified (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) by the main agent; clicking any `[subagent]` reveals and tracks that subagent's active files. `scripts/md-render.py` + `assets/glow-style.json` render all H1–H6 Markdown headings cleanly without raw `###` markers.
+  - `Lazygit` runs inside `scripts/pty-hscroll-bridge.py` (`assets/lazygit.yml`) with **unwrapped full-line rendering by default** (configurable via `~/.config/cc-ide/viewer.json`, which preserves `vi`-style `↪` wrapping when `"wrap": true`), **zero-telemetry hash-free `[Author] [Graph] [Subject]` commit logs** (`scripts/lazygit-log.py` + `commitHashLength: 0`), **compact single-column diff line numbers** (`109│` via `scripts/lazygit-pager.sh --col-width={{columnWidth}}`), and **hover-targeted, content-bounds-clamped Apple Magic Mouse + keyboard (`H`/`L`, `Shift`/`Option`+`←`/`→`) scrolling** without unfocused selection bars (mirrored in `Yazi` via `assets/yazi-hscroll.lua`, which suppresses selection highlights in mouse mode and restores them on keyboard input, click, or tool reveal).
 
 ### 3. 3-Tier Adaptive Workspace Engine (Native Metal Splits + Full SSH & Cross-Terminal Support)
 `ccide-core workspace` automatically selects the fastest available layout backend:
@@ -47,10 +47,11 @@
 ### 4. Zero-Subprocess Hardware Oscilloscope, Dynamic Model Sprites & Custom Palettes
 - **Resolution-Adaptive 2×2 Quadrant Model Logos**: Dynamically renders vector logos (`GEMINI`, `DEEPSEEK`, `CLAUDE`, `OPENAI`, `GROK`), switching between your session's active Main Model (`/model`) and your configured Subagent Model (`CLAUDE_CODE_SUBAGENT_MODEL`) when inspecting a subagent.
 - **Independent Color Palette (`~/.config/cc-ide/palette.json`)**: Customize every TUI border, row/cursor highlight, oscilloscope curve, model accent, optional monochrome logo tint (`"tint_logo": true`), and Powerline `statusline` segment via JSONC (`#RRGGBB`, `#RGB`, `rgb(r,g,b)`, or ANSI 256-color) with live hot-reload and 6 built-in presets (`ccide --theme <default|catppuccin-mocha|tokyo-night|nord|gruvbox-dark|dracula>`).
-- **Shared 500ms Hardware Telemetry Snapshot (`/tmp/.cc-ide/hw_telemetry_v1.bin`)**:
+- **Shared 500ms Hardware Telemetry & Auto-Swapping `TASKS` Progress Board**:
   - **macOS (`arm64` / `x86_64`)**: Direct C FFI against `Mach host_statistics64`, `IOKit IOAccelerator` (`AGX` GPU utilization & VRAM), and BSD `sysctl(NET_RT_IFLIST2)`.
   - **Linux (`x86_64` / `aarch64`)**: Zero-dependency `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, and `sysfs` / non-blocking `nvidia-smi`.
   - Sampled at most once per `500 ms` globally across the machine and shared across all open tabs in `< 2 µs` (`0.0%` idle CPU per tab).
+  - **Live Session `TASKS ⇄ HW` Panel**: Whenever incomplete tasks exist in `~/.claude/tasks/<sessionId>/`, the Bottom-Right slot automatically switches to a scrollable `TASKS` progress board (`✓` done, `⠋` in-progress with `activeForm`, `○` pending, plus `━━━░░░ % [HW]` footer), supports instant `t`/`Tab` or `[HW]`/`[TASK]` click toggling, and automatically restores Hardware Telemetry once all tasks finish.
 
 ### 5. Version-Independent Claude Code Binary Patcher
 - **Dynamic `\n---- Bun! ----\n` Trailer Parsing**: Instead of hardcoded file offsets, the patcher locates Bun's standalone trailer dynamically on both **macOS Mach-O** and **Linux ELF** binaries, parses the `StandaloneModuleGraph` table (`byte_count` / `mod_off` / `mod_len`), and clears the bytecode cache only for the JS modules it actually modified, so Bun recompiles the patched source instead of running stale cached bytecode.
@@ -138,11 +139,11 @@ Releases are promoted through a strict two-stage pull-request pipeline. Direct p
 | Stage | Branch | Trigger | CI Gate | Release Output |
 |-------|--------|---------|---------|----------------|
 | **Development** | `dev` | `push` / PR | `ci.yml`: Rust `1.70.0` MSRV check + tests, stable `rustfmt` + `clippy -D warnings`, 4-target build matrix (`aarch64`/`x86_64` × macOS/Linux), shell/Python/JSON manifest validation, patcher mutation tests | none |
-| **Preview RC** | `preview` | PR from `dev` merges (push) | Same gate **plus** live npm `@anthropic-ai/claude-code@latest` patch verification | Pre-release `v0.4.0-rc.<run_number>` marked *not latest* |
-| **Stable Release** | `main` | PR from `preview` merges (push) | Same gate **plus** live npm CC verification | Immutable `v0.4.0` marked *latest* |
+| **Preview RC** | `preview` | PR from `dev` merges (push) | Same gate **plus** live npm `@anthropic-ai/claude-code@latest` patch verification | Pre-release `v0.5.0-rc.<run_number>` marked *not latest* |
+| **Stable Release** | `main` | PR from `preview` merges (push) | Same gate **plus** live npm CC verification | Immutable `v0.5.0` marked *latest* |
 
 - **CI Gate (`.github/workflows/ci.yml`)**: Runs on every push and PR to `dev`, `preview`, and `main`. The MSRV job builds and tests with a real `1.70.0` toolchain, then runs formatting and Clippy against stable. The `scripts-and-patcher` job validates `ensure-ccide-core.sh`, `install.sh`, `scripts/ccide`, and `pane-runner.sh`, byte-compiles the Python scripts, parses all plugin/hook/asset JSON manifests, runs the patcher mutation/structural unit tests, and — on `preview`/`main` — downloads the latest published Claude Code and runs `patch_claude_binary.py --verify` against it.
-- **Release Pipeline (`.github/workflows/release.yml`)**: Triggered on push to `preview` or `main`. Builds `ccide-core` for all four targets, packages `ccide-core-<triple>.tar.gz`, generates `SHA256SUMS.txt`, and publishes the GitHub Release. On `preview` the tag is a moving pre-release (`v0.4.0-rc.<run>`); on `main` it is the immutable stable `v0.4.0` and is marked `make_latest`.
+- **Release Pipeline (`.github/workflows/release.yml`)**: Triggered on push to `preview` or `main`. Builds `ccide-core` for all four targets, packages `ccide-core-<triple>.tar.gz`, generates `SHA256SUMS.txt`, and publishes the GitHub Release. On `preview` the tag is a moving pre-release (`v0.5.0-rc.<run>`); on `main` it is the immutable stable `v0.5.0` and is marked `make_latest`.
 - **Daily Upstream Compatibility Probe (`.github/workflows/cc-compat-watch.yml`)**: Runs at `03:17 UTC` every day (plus manual `workflow_dispatch`). It installs the current `@anthropic-ai/claude-code@latest` from npm, runs the patcher in `--verify` mode, and opens a deduplicated `[Compat Alert]` GitHub issue if the upstream bundle layout changes enough to break a required patch.
 
 ---
