@@ -82,6 +82,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v7
 
@@ -102,11 +106,11 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Run Native Target Tests
-        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc'
         run: cargo test --release --locked --target ${{ matrix.target }}
 
   scripts-and-patcher:
-    name: Shell, Manifest & Dynamic Patcher Suite
+    name: Shell, Node, PowerShell & Dynamic Patcher Suite
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -121,18 +125,19 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends zsh
 
-      - name: Validate Shell & Python Scripts
+      - name: Validate Shell, Node & Python Scripts
         run: |
           sh -n scripts/ensure-ccide-core.sh
+          node --check scripts/ensure-ccide-core.mjs
           zsh -n install.sh
           zsh -n scripts/ccide
           zsh -n scripts/pane-runner.sh
-          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py
+          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py
 
       - name: Validate Plugin & Marketplace JSON Manifests & Version Parity
         run: |
           python3 -I - <<'PY'
-          import json, re
+          import json, os, re
 
           def load_jsonc(path: str):
               with open(path, encoding="utf-8") as f:
@@ -142,7 +147,14 @@ jobs:
               no_trail = re.sub(r",\s*([}\]])", r"\1", no_line)
               return json.loads(no_trail)
 
-          for p in [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "hooks/hooks.json", "assets/adaptive_quadrant_logos.json", "assets/glow-style.json"]:
+          for p in [
+              ".claude-plugin/plugin.json",
+              ".claude-plugin/marketplace.json",
+              "hooks/hooks.json",
+              "assets/cc-schema.json",
+              "assets/adaptive_quadrant_logos.json",
+              "assets/glow-style.json",
+          ]:
               with open(p, encoding="utf-8") as f:
                   json.load(f)
               print("OK:", p)
@@ -159,7 +171,6 @@ jobs:
           assert isinstance(pr.get("models"), dict) and len(pr["models"]) >= 30
           print("OK: assets/pricing.json")
 
-          import os
           for fam in ("claude", "gemini", "deepseek", "openai", "grok"):
               assert os.path.isfile(f"assets/sprites/{fam}.ansi") and os.path.isfile(f"assets/sprites/{fam}.png")
           print("OK: assets/sprites/*.{ansi,png}")
@@ -170,32 +181,17 @@ jobs:
               plugin_ver = json.load(f)["version"]
           with open("install.sh", encoding="utf-8") as f:
               inst_ver = re.search(r'(?m)^PLUGIN_VERSION="([^"]+)"', f.read()).group(1)
-          assert cargo_ver == plugin_ver == inst_ver, (
-              f"Version mismatch: Cargo.toml={cargo_ver}, plugin.json={plugin_ver}, install.sh={inst_ver}"
+          with open("install.ps1", encoding="utf-8") as f:
+              ps1_ver = re.search(r'(?m)^\$PluginVersion\s*=\s*"([^"]+)"', f.read()).group(1)
+          assert cargo_ver == plugin_ver == inst_ver == ps1_ver, (
+              f"Version mismatch: Cargo.toml={cargo_ver}, plugin.json={plugin_ver}, install.sh={inst_ver}, install.ps1={ps1_ver}"
           )
-          print(f"OK: version parity ({cargo_ver})")
+          print(f"OK: 4-way version parity ({cargo_ver})")
           PY
 
-      - name: Run Dynamic Patcher Mutation & Structural Unit Tests
+      - name: Run Dynamic Patcher, Workbench & Cross-Platform Unit Tests
         run: python3 -I -m unittest discover -s tests -v
 
-      - name: Verify Live Upstream @anthropic-ai/claude-code Compatibility (preview/main)
+      - name: Verify Live 3-OS Upstream @anthropic-ai/claude-code Compatibility (preview/main)
         if: github.ref == 'refs/heads/preview' || github.ref == 'refs/heads/main' || github.base_ref == 'preview' || github.base_ref == 'main'
-        run: |
-          UPSTREAM_DIR="$(mktemp -d)"
-          trap 'rm -rf "$UPSTREAM_DIR"' EXIT
-          CC_VER="$(npm view @anthropic-ai/claude-code version)"
-          echo "Probing @anthropic-ai/claude-code@${CC_VER}"
-          npm install --prefix "$UPSTREAM_DIR" "@anthropic-ai/claude-code@${CC_VER}" --ignore-scripts --no-audit --no-fund
-          CAND_EXE="$(find "$UPSTREAM_DIR" -type f -size +5M \( -name 'claude.exe' -o -name 'claude' -o -name 'cli.js' \) | sort | head -n 1)"
-          echo "Resolved upstream Claude Code artifact: $CAND_EXE"
-          test -n "$CAND_EXE"
-          python3 -I scripts/patch_claude_binary.py --verify --binary "$CAND_EXE" | tee /tmp/cc_verify_report.json
-          python3 -I - /tmp/cc_verify_report.json <<'PY'
-          import json, sys
-          with open(sys.argv[1], encoding="utf-8") as f:
-              rep = json.load(f)
-          for p in rep.get("patches", []):
-              if not p.get("required") and not p.get("applied"):
-                  print(f"::warning::Optional patch '{p['name']}' did not match upstream bundle: {p['message']}")
-          PY
+        run: python3 -I scripts/cc-maint.py --fetch-npm latest

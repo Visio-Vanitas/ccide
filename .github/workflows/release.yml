@@ -38,18 +38,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Verify Formatting, Clippy, Python Suite & Upstream Compatibility
+      - name: Verify Formatting, Clippy, Python Suite & 3-OS Upstream Compatibility
         run: |
           cargo +stable fmt --all -- --check
           cargo +stable clippy --all-targets -- -D warnings
+          node --check scripts/ensure-ccide-core.mjs
           python3 -I -m unittest discover -s tests -v
-          UPSTREAM_DIR="$(mktemp -d)"
-          trap 'rm -rf "$UPSTREAM_DIR"' EXIT
-          CC_VER="$(npm view @anthropic-ai/claude-code version)"
-          npm install --prefix "$UPSTREAM_DIR" "@anthropic-ai/claude-code@${CC_VER}" --ignore-scripts --no-audit --no-fund
-          CAND_EXE="$(find "$UPSTREAM_DIR" -type f -size +5M \( -name 'claude.exe' -o -name 'claude' -o -name 'cli.js' \) | sort | head -n 1)"
-          test -n "$CAND_EXE"
-          python3 -I scripts/patch_claude_binary.py --verify --binary "$CAND_EXE"
+          python3 -I scripts/cc-maint.py --fetch-npm latest
 
   build-artifacts:
     name: Package (${{ matrix.target }})
@@ -60,12 +55,22 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
+            bin_name: ccide-core
           - os: macos-latest
             target: x86_64-apple-darwin
+            bin_name: ccide-core
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            bin_name: ccide-core
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            bin_name: ccide-core
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin_name: ccide-core.exe
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            bin_name: ccide-core.exe
     steps:
       - uses: actions/checkout@v7
 
@@ -81,14 +86,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Build & Archive Release Binary
+        shell: bash
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: |
-          cargo build --release --locked --target ${{ matrix.target }}
+          cargo build --release --locked --target "${{ matrix.target }}"
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/ccide-core" dist/ccide-core
-          chmod 0755 dist/ccide-core
-          tar -C dist -czf "ccide-core-${{ matrix.target }}.tar.gz" ccide-core
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" "dist/${{ matrix.bin_name }}"
+          chmod 0755 "dist/${{ matrix.bin_name }}" 2>/dev/null || true
+          tar -C dist -czf "ccide-core-${{ matrix.target }}.tar.gz" "${{ matrix.bin_name }}"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v7
@@ -124,7 +130,7 @@ jobs:
             MAKE_LATEST="true"
             TITLE="ccide v${BASE_VER}"
             if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-              echo "::notice::Immutable stable release tag '${TAG}' already exists; skipping stable release overwrite. Bump version in Cargo.toml, .claude-plugin/plugin.json, and install.sh to publish a new stable tag."
+              echo "::notice::Immutable stable release tag '${TAG}' already exists; skipping stable release overwrite. Bump version in Cargo.toml, .claude-plugin/plugin.json, install.sh, and install.ps1 to publish a new stable tag."
               SHOULD_PUBLISH="false"
             fi
           else
@@ -136,7 +142,7 @@ jobs:
           (
             cd release-assets
             count="$(ls -1 ccide-core-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')"
-            test "$count" -eq 4
+            test "$count" -eq 6
             sha256sum ccide-core-*.tar.gz > SHA256SUMS.txt
           )
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"

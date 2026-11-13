@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${0:A:h}"
-PLUGIN_VERSION="0.5.0"
+PLUGIN_VERSION="0.7.0"
 HOME_DIR="$HOME"
 CLAUDE_DIR="$HOME_DIR/.claude"
 CACHE_DIR="$HOME_DIR/.cache/cc-ide"
@@ -260,7 +260,7 @@ if [[ ! -f "$HOME_DIR/.config/cc-ide/pricing.json" ]]; then
   cp -f "$PROJECT_ROOT/assets/pricing.json" "$HOME_DIR/.config/cc-ide/pricing.json"
 fi
 
-for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py pane-runner.sh lazygit-pager.sh lazygit-log.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py cc_tui_lib.py ccide ensure-ccide-core.sh; do
+for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py bun_pe.py cc_patch_rules.py cc_schema_inspector.py cc-maint.py pane-runner.sh lazygit-pager.sh lazygit-log.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py cc_tui_lib.py ccide ensure-ccide-core.sh ensure-ccide-core.mjs; do
   chmod +x "$PROJECT_ROOT/scripts/$script_name"
   ln -sf "$PROJECT_ROOT/scripts/$script_name" "$CLAUDE_DIR/scripts/$script_name"
 done
