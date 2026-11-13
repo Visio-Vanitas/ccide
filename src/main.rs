@@ -38,6 +38,8 @@ fn main() {
         "yazi-hook" => commands::yazi_hook::run(),
         "statusline" => commands::statusline::run(),
         "workspace" => commands::workspace::run(&args),
+        "setup" | "install" => commands::setup::run_setup(&args),
+        "doctor" => commands::setup::run_doctor(&args),
         _ => {}
     }
 }

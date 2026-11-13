@@ -222,10 +222,14 @@ pub fn render_multi_panel_grid(
         );
 
         if sp.raw_interior {
-            for r in (top_r + 1)..bot_r {
+            for (idx, r) in ((top_r + 1)..bot_r).enumerate() {
+                let extra = sp.rows.get(idx).map(|br| br.text.as_str()).unwrap_or("");
                 emit_row(
                     r,
-                    format!("{border}│{RESET}\x1b[{};{}H{border}│{RESET}", r, geom.cols),
+                    format!(
+                        "{border}│{RESET}\x1b[{};{}H{border}│{RESET}{extra}",
+                        r, geom.cols
+                    ),
                 );
             }
         } else {

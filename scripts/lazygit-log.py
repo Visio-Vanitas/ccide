@@ -90,24 +90,35 @@ def write_full_lines_cache(sid_str: str, panel_w: int, full_lines: list[str]) ->
 def slice_ansi_window(s: str, offset_cols: int, width_cols: int) -> str:
     """Slices ANSI text to exact display columns `[offset_cols : offset_cols + width_cols]` without wrapping."""
     width_cols = max(8, width_cols)
-    s = re.sub(r"\x1b\[0?K", "", ANSI_OSC_RE.sub("", s)).expandtabs(4)
+    s = (
+        re.sub(r"\x1b\[0?K|\x1b[\(\)\*\+][A-Za-z0-9]", "", ANSI_OSC_RE.sub("", s))
+        .replace("\r", "")
+        .expandtabs(4)
+    )
     if offset_cols <= 0 and visible_width(s) <= width_cols:
         return s
 
     tokens: list[tuple[bool, str, int]] = []
     i, n = 0, len(s)
     while i < n:
-        if s[i] == "\x1b" and i + 1 < n and s[i + 1] == "[":
-            j = i + 2
-            while j < n and not ("@" <= s[j] <= "~"):
-                j += 1
-            if j < n:
-                seq = s[i : j + 1]
-                if seq.endswith("m"):
-                    tokens.append((True, seq, 0))
-                i = j + 1
-                continue
+        if s[i] == "\x1b":
+            if i + 1 < n and s[i + 1] == "[":
+                j = i + 2
+                while j < n and not ("@" <= s[j] <= "~"):
+                    j += 1
+                if j < n:
+                    seq = s[i : j + 1]
+                    if seq.endswith("m"):
+                        tokens.append((True, seq, 0))
+                    i = j + 1
+                    continue
+            i += 2 if (i + 1 < n) else 1
+            continue
         ch = s[i]
+        o = ord(ch)
+        if o < 0x20 or (0x7F <= o < 0xA0):
+            i += 1
+            continue
         tokens.append((False, ch, char_cols(ch)))
         i += 1
 

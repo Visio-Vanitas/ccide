@@ -54,22 +54,25 @@ if ! fetch_url "${BASE_URL}/${ARCHIVE}" "${TMP_DIR}/${ARCHIVE}"; then
   exit 0
 fi
 
-if fetch_url "${BASE_URL}/SHA256SUMS.txt" "${TMP_DIR}/SHA256SUMS.txt"; then
-  EXPECTED="$(grep " ${ARCHIVE}\$" "${TMP_DIR}/SHA256SUMS.txt" | awk '{print $1}' | head -n 1 || true)"
-  if [ -n "$EXPECTED" ]; then
-    if command -v shasum >/dev/null 2>&1; then
-      ACTUAL="$(shasum -a 256 "${TMP_DIR}/${ARCHIVE}" | awk '{print $1}')"
-    elif command -v sha256sum >/dev/null 2>&1; then
-      ACTUAL="$(sha256sum "${TMP_DIR}/${ARCHIVE}" | awk '{print $1}')"
-    elif command -v openssl >/dev/null 2>&1; then
-      ACTUAL="$(openssl dgst -sha256 "${TMP_DIR}/${ARCHIVE}" | awk '{print $NF}')"
-    else
-      exit 0
-    fi
-    if [ "$ACTUAL" != "$EXPECTED" ]; then
-      exit 0
-    fi
-  fi
+if ! fetch_url "${BASE_URL}/SHA256SUMS.txt" "${TMP_DIR}/SHA256SUMS.txt"; then
+  exit 0
+fi
+
+EXPECTED="$(grep " ${ARCHIVE}\$" "${TMP_DIR}/SHA256SUMS.txt" | awk '{print $1}' | head -n 1 || true)"
+if [ -z "$EXPECTED" ]; then
+  exit 0
+fi
+if command -v shasum >/dev/null 2>&1; then
+  ACTUAL="$(shasum -a 256 "${TMP_DIR}/${ARCHIVE}" | awk '{print $1}')"
+elif command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL="$(sha256sum "${TMP_DIR}/${ARCHIVE}" | awk '{print $1}')"
+elif command -v openssl >/dev/null 2>&1; then
+  ACTUAL="$(openssl dgst -sha256 "${TMP_DIR}/${ARCHIVE}" | awk '{print $NF}')"
+else
+  exit 0
+fi
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+  exit 0
 fi
 
 mkdir -p "$CLAUDE_BIN_DIR"

@@ -3,20 +3,20 @@
 //! 1. Resolves the live `yazi_id` belonging ONLY to the calling Claude session (`CC_YAZI_ID`,
 //!    newest `tab_shell_<yazi_id>.txt` via `getppid()` ancestry, or `session_<sessionId>.yazi`).
 //! 2. Wakes `ccide-core sidebar` immediately via `SIGUSR2` (`< 0.05ms`) on every tool/task/subagent event.
-//! 3. Records `main`'s latest operated file (`Read`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`,
-//!    `LSP`, `Grep`, `Glob`) in `main_last_file_<yazi_id>.json` and reveals + highlights it in `Yazi`
-//!    whenever `main` is the active selected session.
+//! 3. Extracts the exact modified/read `(line, span)` target (`structuredPatch` / `new_string` / `offset` / `line`),
+//!    persists `main_last_file_<yazi_id>.json`, and auto-scrolls + highlights the hunk in `Yazi`.
 
 use std::env;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ffi::notify_sidebar;
 use crate::json::extract_json_str;
-use crate::session::{normalize_path_under_cwd, resolve_live_yazi_tab};
+use crate::session::{
+    emit_yazi_reveal_at, extract_tool_line_target, normalize_path_under_cwd, resolve_live_yazi_tab,
+};
 
 pub fn run() {
     let mut input = String::new();
@@ -46,7 +46,6 @@ pub fn run() {
         );
     }
 
-    // Always wake the Right Sidebar immediately on ANY hook event (TaskCreate, TaskUpdate, Read, Edit, Subagent*)
     notify_sidebar(&session_id, &target_yazi_id);
 
     if raw_file.is_empty() {
@@ -83,19 +82,20 @@ pub fn run() {
         );
     }
 
+    if target_yazi_id.is_empty() || !target_yazi_id.chars().all(|c| c.is_ascii_digit()) {
+        return;
+    }
+
+    let (target_line, target_span) = extract_tool_line_target(&input, &tool_name, &file_path);
     let now_s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    if target_yazi_id.is_empty() || !target_yazi_id.chars().all(|c| c.is_ascii_digit()) {
-        return;
-    }
-
     let safe_fp = file_path.replace('\\', "\\\\").replace('"', "\\\"");
     let main_json = format!(
-        "{{\"file\":\"{}\",\"tool\":\"{}\",\"ts\":{}}}\n",
-        safe_fp, tool_name, now_s
+        "{{\"file\":\"{}\",\"tool\":\"{}\",\"line\":{},\"span\":{},\"ts\":{}}}\n",
+        safe_fp, tool_name, target_line, target_span, now_s
     );
     let _ = fs::write(
         format!("{}/main_last_file_{}.json", cache_dir, target_yazi_id),
@@ -129,26 +129,12 @@ pub fn run() {
         return;
     }
 
-    let ya_bin = if Path::new("/opt/homebrew/bin/ya").exists() {
-        "/opt/homebrew/bin/ya"
-    } else {
-        "ya"
-    };
-    let hscroll_plugin = Path::new(&home).join(".config/yazi/plugins/hscroll.yazi/main.lua");
-    if hscroll_plugin.exists() {
-        let plugin_arg = format!("reveal '{}'", file_path.replace('\'', "'\\''"));
-        let _ = Command::new(ya_bin)
-            .args(["emit-to", &target_yazi_id, "plugin", "hscroll", &plugin_arg])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-    } else {
-        let _ = Command::new(ya_bin)
-            .args(["emit-to", &target_yazi_id, "reveal", &file_path])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-    }
+    emit_yazi_reveal_at(
+        &home,
+        &target_yazi_id,
+        norm_base,
+        &file_path,
+        target_line,
+        target_span,
+    );
 }

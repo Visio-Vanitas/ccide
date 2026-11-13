@@ -1,11 +1,13 @@
 #!/usr/bin/env zsh
 # ==============================================================================
-# cc-ide One-Click Installer, Adaptive Daemon Configurator & Binary Patcher
+# cc-ide Interactive TUI & Headless Installer, Doctor & Clean Uninstaller
 # ==============================================================================
 # Usage:
-#   ./install.sh               # Full build, plugin registration, daemon setup, binary patch & hot-reload
-#   ./install.sh --patch-only  # Only re-apply claude.exe binary patches (e.g. after npm update)
-#   ./install.sh --uninstall   # Restore claude.exe.bak and stop ccide_daemon.py
+#   ./install.sh               # Launch interactive TUI Setup & Doctor (headless if non-TTY)
+#   ./install.sh --yes | -y    # Headless one-click build, install, patch & hot-reload
+#   ./install.sh --doctor      # Print environment health & dependency diagnostics
+#   ./install.sh --patch-only  # Only re-apply claude.exe binary patches
+#   ./install.sh --uninstall   # Cleanly roll back patches, daemon, SSH Include & plugin entries
 # ==============================================================================
 set -euo pipefail
 
@@ -48,7 +50,44 @@ discover_claude_exe() {
   done | tail -n 1
 }
 
-MODE="${1:-install}"
+backup_once() {
+  local target="$1"
+  if [[ -f "$target" && ! -f "${target}.ccide.bak" ]]; then
+    cp -p "$target" "${target}.ccide.bak" 2>/dev/null || cp "$target" "${target}.ccide.bak"
+  fi
+}
+
+ensure_engine_built() {
+  mkdir -p "$PROJECT_ROOT/bin" "$CLAUDE_DIR/bin" "/tmp/.cc-ide"
+  if [[ "${CCIDE_SKIP_BUILD:-0}" == "1" && -x "$PROJECT_ROOT/bin/ccide-core" ]]; then
+    ln -sf "$PROJECT_ROOT/bin/ccide-core" "$CLAUDE_DIR/bin/ccide-core"
+    return
+  fi
+  log_step "1/7 Building native Rust engine (ccide-core) for $OS_NAME..."
+  if [[ -x "$CARGO_BIN" ]]; then
+    (
+      cd "$PROJECT_ROOT"
+      RUSTFLAGS="${CCIDE_RUSTFLAGS:--C target-cpu=native}" "$CARGO_BIN" build --release --locked --quiet
+    )
+    cp -f "$PROJECT_ROOT/target/release/ccide-core" "$PROJECT_ROOT/bin/ccide-core"
+    [[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$PROJECT_ROOT/bin/ccide-core" >/dev/null 2>&1 || true
+    ln -sf "$PROJECT_ROOT/bin/ccide-core" "$CLAUDE_DIR/bin/ccide-core"
+    log_ok "Compiled $PROJECT_ROOT/bin/ccide-core ($(du -h "$PROJECT_ROOT/bin/ccide-core" | awk '{print $1}'))"
+  else
+    log_step "cargo not found locally; fetching prebuilt ccide-core from GitHub Releases..."
+    chmod +x "$PROJECT_ROOT/scripts/ensure-ccide-core.sh"
+    sh "$PROJECT_ROOT/scripts/ensure-ccide-core.sh" --help >/dev/null 2>&1 || true
+    if [[ -x "$CLAUDE_DIR/bin/ccide-core" ]]; then
+      cp -f "$CLAUDE_DIR/bin/ccide-core" "$PROJECT_ROOT/bin/ccide-core"
+      log_ok "Downloaded prebuilt ccide-core -> $CLAUDE_DIR/bin/ccide-core"
+    else
+      echo "Error: cargo not found and no prebuilt release binary available yet." >&2
+      exit 1
+    fi
+  fi
+}
+
+MODE="${1:-auto}"
 
 log_step() {
   printf "\033[1;36m==>\033[0m \033[1m%s\033[0m\n" "$1"
@@ -58,16 +97,88 @@ log_ok() {
   printf "  \033[1;32m[OK]\033[0m %s\n" "$1"
 }
 
+if [[ "$MODE" == "-h" || "$MODE" == "--help" ]]; then
+  cat <<'EOF'
+Usage: ./install.sh [option]
+
+Options:
+  (no args)      Launch interactive TUI Setup, Theme Studio & Doctor (falls back to --yes if non-TTY)
+  --yes, -y      Non-interactive full build, plugin install, binary patch & hot-reload
+  --doctor       Run environment & companion dependency health check
+  --patch-only   Re-apply only the claude.exe structural binary patches
+  --uninstall    Cleanly restore claude.exe.bak, stop daemon, and remove managed config blocks
+EOF
+  exit 0
+fi
+
 if [[ "$MODE" == "--uninstall" ]]; then
-  log_step "Uninstalling cc-ide patches and restoring claude.exe.bak..."
+  log_step "Uninstalling cc-ide patches, daemon & managed configuration blocks..."
   CLAUDE_BIN="$(discover_claude_exe)"
   if [[ -n "$CLAUDE_BIN" && -f "${CLAUDE_BIN}.bak" ]]; then
     cp -f "${CLAUDE_BIN}.bak" "$CLAUDE_BIN"
-    [[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$CLAUDE_BIN"
+    [[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$CLAUDE_BIN" >/dev/null 2>&1 || true
+    rm -f "$CACHE_DIR/claude_bin.stamp"
     log_ok "Restored original claude.exe from backup"
   fi
   pkill -f "ccide_daemon.py" >/dev/null 2>&1 || true
+  pkill -f "ccide-core sidebar" >/dev/null 2>&1 || true
   rm -f "/tmp/.cc-ide/iterm_daemon.sock" "/tmp/.cc-ide/iterm_daemon.pid"
+  rm -f "$HOME_DIR/Library/Application Support/iTerm2/Scripts/AutoLaunch/ccide_daemon.py" 2>/dev/null || true
+  rm -rf "$HOME_DIR/.config/yazi/plugins/hscroll.yazi" 2>/dev/null || true
+
+  "$PYTHON_BIN" -I - "$HOME_DIR" <<'PYEOF'
+import json, os, re, sys
+
+home_dir = sys.argv[1]
+
+# 1. Remove Include ~/.ssh/ccide_config from ~/.ssh/config
+ssh_cfg = os.path.join(home_dir, ".ssh", "config")
+if os.path.isfile(ssh_cfg):
+    with open(ssh_cfg, "r", encoding="utf-8") as f:
+        s = f.read()
+    ns = re.sub(r"(?m)^\s*Include\s+~/.ssh/ccide_config\s*\n*", "", s)
+    if ns != s:
+        with open(ssh_cfg, "w", encoding="utf-8") as f:
+            f.write(ns)
+cc_ssh = os.path.join(home_dir, ".ssh", "ccide_config")
+if os.path.exists(cc_ssh):
+    os.remove(cc_ssh)
+
+# 2. Strip cc-ide managed blocks from Yazi configs
+yazi_dir = os.path.join(home_dir, ".config", "yazi")
+for fname, pat in (
+    ("yazi.toml", r"\n?# Managed by cc-ide:[^\n]*\n(?:.*\n)*?(?=\Z|\n\[(?!\[plugin\.prepend_previewers\]\]))"),
+    ("keymap.toml", r"\n?# Managed by cc-ide:[^\n]*\n(?:.*\n)*?(?=\Z|\n# (?!Managed by cc-ide))"),
+    ("init.lua", r'(?m)^require\(["\']hscroll["\']\):setup\(\)\n?'),
+):
+    fp = os.path.join(yazi_dir, fname)
+    if os.path.isfile(fp):
+        with open(fp, "r", encoding="utf-8") as f:
+            src = f.read()
+        cleaned = re.sub(pat, "", src).rstrip()
+        with open(fp, "w", encoding="utf-8") as f:
+            f.write((cleaned + "\n") if cleaned else "")
+
+# 3. Clean Claude Code plugin & statusLine entries
+claude_dir = os.path.join(home_dir, ".claude")
+st_path = os.path.join(claude_dir, "settings.json")
+if os.path.isfile(st_path):
+    try:
+        with open(st_path, "r", encoding="utf-8") as f:
+            st = json.load(f)
+        if isinstance(st.get("enabledPlugins"), dict):
+            st["enabledPlugins"].pop("cc-ide@cc-ide", None)
+        if isinstance(st.get("extraKnownMarketplaces"), dict):
+            st["extraKnownMarketplaces"].pop("cc-ide", None)
+        sl = st.get("statusLine")
+        if isinstance(sl, dict) and "ccide-core" in str(sl.get("command", "")):
+            st.pop("statusLine", None)
+        with open(st_path, "w", encoding="utf-8") as f:
+            json.dump(st, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+PYEOF
+  log_ok "Cleaned daemon, SSH Include, Yazi managed blocks & Claude plugin registration"
   exit 0
 fi
 
@@ -77,39 +188,40 @@ if [[ "$MODE" == "--patch-only" ]]; then
   exit 0
 fi
 
+if [[ "$MODE" == "--doctor" || "$MODE" == "doctor" ]]; then
+  shift || true
+  ensure_engine_built >/dev/null
+  exec "$PROJECT_ROOT/bin/ccide-core" doctor "$PROJECT_ROOT" "$@"
+fi
+
+if [[ "$MODE" == "--tui" || ( "$MODE" == "auto" && -t 0 && -t 1 && "${CCIDE_NONINTERACTIVE:-0}" != "1" ) ]]; then
+  ensure_engine_built
+  exec "$PROJECT_ROOT/bin/ccide-core" setup "$PROJECT_ROOT"
+fi
+
+OPT_PLUGIN="${CCIDE_OPT_PLUGIN:-1}"
+OPT_PATCH="${CCIDE_OPT_PATCH:-1}"
+OPT_COMPANION="${CCIDE_OPT_COMPANION:-1}"
+OPT_DAEMON="${CCIDE_OPT_DAEMON:-1}"
+
 # ------------------------------------------------------------------------------
 # 1. Build or Fetch Native Rust Engine (`ccide-core`)
 # ------------------------------------------------------------------------------
-log_step "1/7 Building native Rust engine (ccide-core) for $OS_NAME..."
-mkdir -p "$PROJECT_ROOT/bin" "$CLAUDE_DIR/bin" "/tmp/.cc-ide"
-if [[ -x "$CARGO_BIN" ]]; then
-  (
-    cd "$PROJECT_ROOT"
-    RUSTFLAGS="${CCIDE_RUSTFLAGS:--C target-cpu=native}" "$CARGO_BIN" build --release --locked --quiet
-  )
-  cp -f "$PROJECT_ROOT/target/release/ccide-core" "$PROJECT_ROOT/bin/ccide-core"
-  [[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$PROJECT_ROOT/bin/ccide-core" >/dev/null 2>&1 || true
-  ln -sf "$PROJECT_ROOT/bin/ccide-core" "$CLAUDE_DIR/bin/ccide-core"
-  log_ok "Compiled $PROJECT_ROOT/bin/ccide-core ($(du -h "$PROJECT_ROOT/bin/ccide-core" | awk '{print $1}'))"
-else
-  log_step "cargo not found locally; fetching prebuilt ccide-core from GitHub Releases..."
-  chmod +x "$PROJECT_ROOT/scripts/ensure-ccide-core.sh"
-  sh "$PROJECT_ROOT/scripts/ensure-ccide-core.sh" --help >/dev/null 2>&1 || true
-  if [[ -x "$CLAUDE_DIR/bin/ccide-core" ]]; then
-    cp -f "$CLAUDE_DIR/bin/ccide-core" "$PROJECT_ROOT/bin/ccide-core"
-    log_ok "Downloaded prebuilt ccide-core -> $CLAUDE_DIR/bin/ccide-core"
-  else
-    echo "Error: cargo not found and no prebuilt release binary available yet." >&2
-    exit 1
-  fi
-fi
+ensure_engine_built
 
 # ------------------------------------------------------------------------------
-# 2. Install Assets, Scripts, CLI Launchers & Yazi Configuration
+# 2. Install Assets, Scripts, CLI Launchers & Companion Configurations
 # ------------------------------------------------------------------------------
-log_step "2/7 Installing vector logo assets, scripts & CLI launchers..."
-mkdir -p "$CACHE_DIR/logos" "$CACHE_DIR/status" "$CLAUDE_DIR/scripts" "$HOME_DIR/.local/bin" "$HOME_DIR/.config/yazi" "$HOME_DIR/.config/cc-ide"
+log_step "2/7 Installing standalone sprites, pricing catalog, scripts & CLI launchers..."
+mkdir -p "$CACHE_DIR/logos" "$CACHE_DIR/sprites" "$CACHE_DIR/status" "$CLAUDE_DIR/scripts" "$HOME_DIR/.local/bin" "$HOME_DIR/.config/yazi" "$HOME_DIR/.config/cc-ide/sprites"
 cp -f "$PROJECT_ROOT/assets/adaptive_quadrant_logos.json" "$CACHE_DIR/logos/adaptive_quadrant_logos.json"
+cp -rf "$PROJECT_ROOT/assets/sprites/"* "$CACHE_DIR/sprites/"
+for sp_f in "$PROJECT_ROOT/assets/sprites/"*; do
+  sp_base="$(basename "$sp_f")"
+  if [[ ! -f "$HOME_DIR/.config/cc-ide/sprites/$sp_base" ]]; then
+    cp -f "$sp_f" "$HOME_DIR/.config/cc-ide/sprites/$sp_base"
+  fi
+done
 cp -f "$PROJECT_ROOT/assets/lazygit.yml" "$HOME_DIR/.config/cc-ide/lazygit.yml"
 cp -f "$PROJECT_ROOT/assets/glow-style.json" "$HOME_DIR/.config/cc-ide/glow-style.json"
 if [[ ! -f "$HOME_DIR/.config/cc-ide/palette.json" ]]; then
@@ -118,8 +230,11 @@ fi
 if [[ ! -f "$HOME_DIR/.config/cc-ide/viewer.json" ]]; then
   cp -f "$PROJECT_ROOT/assets/viewer.json" "$HOME_DIR/.config/cc-ide/viewer.json"
 fi
+if [[ ! -f "$HOME_DIR/.config/cc-ide/pricing.json" ]]; then
+  cp -f "$PROJECT_ROOT/assets/pricing.json" "$HOME_DIR/.config/cc-ide/pricing.json"
+fi
 
-for script_name in ccide_daemon.py iterm2_workspace.py pane-runner.sh lazygit-pager.sh lazygit-log.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py cc_tui_lib.py ccide ensure-ccide-core.sh; do
+for script_name in ccide_daemon.py iterm2_workspace.py pane-runner.sh lazygit-pager.sh lazygit-log.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py cc_tui_lib.py ccide ensure-ccide-core.sh; do
   chmod +x "$PROJECT_ROOT/scripts/$script_name"
   ln -sf "$PROJECT_ROOT/scripts/$script_name" "$CLAUDE_DIR/scripts/$script_name"
 done
@@ -127,22 +242,27 @@ ln -sf "$PROJECT_ROOT/scripts/ccide" "$HOME_DIR/.local/bin/cc-ide"
 ln -sf "$PROJECT_ROOT/scripts/ccide" "$HOME_DIR/.local/bin/ccide"
 ln -sf "$PROJECT_ROOT/scripts/lazygit-log.py" "$HOME_DIR/.local/bin/lazygit-log.py"
 
-YAZI_TOML="$HOME_DIR/.config/yazi/yazi.toml"
-if [[ ! -f "$YAZI_TOML" ]] || ! grep -q "mouse_events" "$YAZI_TOML"; then
-  cat <<'EOF' > "$YAZI_TOML"
+if [[ "$OPT_COMPANION" == "1" ]]; then
+  YAZI_TOML="$HOME_DIR/.config/yazi/yazi.toml"
+  backup_once "$YAZI_TOML"
+  backup_once "$HOME_DIR/.config/yazi/init.lua"
+  backup_once "$HOME_DIR/.config/yazi/keymap.toml"
+  backup_once "$HOME_DIR/Library/Application Support/lazygit/config.yml"
+  backup_once "$HOME_DIR/.config/lazygit/config.yml"
+
+  if [[ ! -f "$YAZI_TOML" ]] || ! grep -q "mouse_events" "$YAZI_TOML"; then
+    cat <<'EOF' > "$YAZI_TOML"
 [mgr]
 mouse_events = ["click", "scroll", "touch", "move", "drag"]
 scrolloff = 4
 EOF
-fi
+  fi
 
-# Install Yazi horizontal-panning plugin (`hscroll.yazi` — Magic Mouse swipe + Shift/Alt+Left/Right)
-HSCROLL_PLUGIN_DIR="$HOME_DIR/.config/yazi/plugins/hscroll.yazi"
-mkdir -p "$HSCROLL_PLUGIN_DIR"
-cp -f "$PROJECT_ROOT/assets/yazi-hscroll.lua" "$HSCROLL_PLUGIN_DIR/main.lua"
+  HSCROLL_PLUGIN_DIR="$HOME_DIR/.config/yazi/plugins/hscroll.yazi"
+  mkdir -p "$HSCROLL_PLUGIN_DIR"
+  cp -f "$PROJECT_ROOT/assets/yazi-hscroll.lua" "$HSCROLL_PLUGIN_DIR/main.lua"
 
-# Configure Yazi (`yazi.toml`, `init.lua`, `keymap.toml`) and Lazygit user config upgrades cleanly
-"$PYTHON_BIN" -I - "$YAZI_TOML" "$HOME_DIR" <<'PYEOF'
+  "$PYTHON_BIN" -I - "$YAZI_TOML" "$HOME_DIR" <<'PYEOF'
 import os, re, sys
 
 yazi_toml, home_dir = sys.argv[1], sys.argv[2]
@@ -151,7 +271,6 @@ yazi_dir = os.path.join(home_dir, ".config", "yazi")
 with open(yazi_toml, "r", encoding="utf-8") as f:
     src = f.read()
 
-# Strip any previous cc-ide managed previewers or legacy piper glow/md-render blocks
 clean_yazi = re.sub(
     r"\n?# Managed by cc-ide:[^\n]*\n(?:.*\n)*?(?=\Z|\n\[(?!\[plugin\.prepend_previewers\]\]))",
     "",
@@ -163,7 +282,6 @@ clean_yazi = re.sub(
     clean_yazi,
 ).rstrip()
 
-# Ensure `mouse_events` includes `"touch"` so Magic Mouse horizontal swipes reach `hscroll.yazi`
 if re.search(r"(?m)^mouse_events\s*=\s*\[([^\]]*)\]", clean_yazi):
     def _ensure_touch(m):
         inner = m.group(1)
@@ -201,7 +319,6 @@ if updated != src:
     with open(yazi_toml, "w", encoding="utf-8") as f:
         f.write(updated)
 
-# Wire `require("hscroll"):setup()` into `~/.config/yazi/init.lua` without clobbering existing plugins
 init_lua = os.path.join(yazi_dir, "init.lua")
 init_src = ""
 if os.path.isfile(init_lua):
@@ -212,14 +329,12 @@ if 'require("hscroll")' not in init_src and "require('hscroll')" not in init_src
     with open(init_lua, "w", encoding="utf-8") as f:
         f.write(init_src + sep + 'require("hscroll"):setup()\n')
 
-# Wire keyboard navigation highlight activation & horizontal scroll bindings in `keymap.toml`
 keymap_toml = os.path.join(yazi_dir, "keymap.toml")
 km_src = ""
 if os.path.isfile(keymap_toml):
     with open(keymap_toml, "r", encoding="utf-8") as f:
         km_src = f.read()
 
-# Strip any previous cc-ide managed block before writing the current canonical block
 km_clean = re.sub(
     r"\n?# Managed by cc-ide:[^\n]*\n(?:.*\n)*?(?=\Z|\n# (?!Managed by cc-ide))",
     "",
@@ -286,8 +401,6 @@ if km_out != km_src:
     with open(keymap_toml, "w", encoding="utf-8") as f:
         f.write(km_out)
 
-# Upgrade existing user Lazygit config in place if present so open/restarted instances inherit
-# `--col-width={{columnWidth}}`, vertical full-width main split, 2-column branchLogCmd, and zero status telemetry.
 for lg_cfg in (
     os.path.join(home_dir, "Library", "Application Support", "lazygit", "config.yml"),
     os.path.join(home_dir, ".config", "lazygit", "config.yml"),
@@ -327,7 +440,6 @@ for lg_cfg in (
             with open(lg_cfg, "w", encoding="utf-8") as f:
                 f.write(lg_new)
 
-# Strip legacy hardware telemetry from `~/.claude/scripts/lazygit-status.sh` if present
 lg_status = os.path.join(home_dir, ".claude", "scripts", "lazygit-status.sh")
 if os.path.isfile(lg_status) and not os.path.islink(lg_status):
     with open(lg_status, "r", encoding="utf-8") as f:
@@ -339,24 +451,27 @@ if os.path.isfile(lg_status) and not os.path.islink(lg_status):
                 'exec "$HOME/.claude/scripts/lazygit-log.py" --all "$@"\n'
             )
 PYEOF
-if command -v ya >/dev/null 2>&1; then
-  ya cache --clear >/dev/null 2>&1 || true
+  if command -v ya >/dev/null 2>&1; then
+    ya cache --clear >/dev/null 2>&1 || true
+  fi
+  log_ok "Synced assets & Yazi/Lazygit companion configs (backups saved as *.ccide.bak)"
+else
+  log_ok "Synced core scripts & launchers (skipped Yazi/Lazygit config edits per user selection)"
 fi
-log_ok "Synced assets & linked scripts into ~/.claude/scripts/ and ~/.local/bin/ccide"
 
 # ------------------------------------------------------------------------------
 # 3. Configure iTerm2 AutoLaunch Daemon & SSH ControlMaster Bridge (macOS)
 # ------------------------------------------------------------------------------
 log_step "3/7 Configuring iTerm2 AutoLaunch Daemon & SSH ControlMaster multiplexing..."
-if [[ "$OS_NAME" == "Darwin" ]]; then
-  AUTOLAUNCH_DIR="$HOME_DIR/Library/Application Support/iTerm2/Scripts/AutoLaunch"
-  mkdir -p "$AUTOLAUNCH_DIR"
-  ln -sf "$PROJECT_ROOT/scripts/ccide_daemon.py" "$AUTOLAUNCH_DIR/ccide_daemon.py"
+if [[ "$OPT_DAEMON" == "1" ]]; then
+  if [[ "$OS_NAME" == "Darwin" ]]; then
+    AUTOLAUNCH_DIR="$HOME_DIR/Library/Application Support/iTerm2/Scripts/AutoLaunch"
+    mkdir -p "$AUTOLAUNCH_DIR"
+    ln -sf "$PROJECT_ROOT/scripts/ccide_daemon.py" "$AUTOLAUNCH_DIR/ccide_daemon.py"
 
-  # Ensure SSH ControlMaster is configured so remote SSH `ccide` can split local iTerm2 panes in < 20ms
-  mkdir -p "$HOME_DIR/.ssh"
-  chmod 700 "$HOME_DIR/.ssh"
-  cat <<'EOF' > "$HOME_DIR/.ssh/ccide_config"
+    mkdir -p "$HOME_DIR/.ssh"
+    chmod 700 "$HOME_DIR/.ssh"
+    cat <<'EOF' > "$HOME_DIR/.ssh/ccide_config"
 # Managed by cc-ide: enables zero-latency SSH multiplexing & LC_TERMINAL forwarding for native iTerm2 splits
 Host *
     ControlMaster auto
@@ -364,29 +479,32 @@ Host *
     ControlPersist 10m
     SendEnv LC_TERMINAL
 EOF
-  chmod 600 "$HOME_DIR/.ssh/ccide_config"
-  if [[ ! -f "$HOME_DIR/.ssh/config" ]]; then
-    printf "Include ~/.ssh/ccide_config\n" > "$HOME_DIR/.ssh/config"
-    chmod 600 "$HOME_DIR/.ssh/config"
-  elif ! grep -q "ccide_config" "$HOME_DIR/.ssh/config"; then
-    tmp_ssh="$(mktemp)"
-    printf "Include ~/.ssh/ccide_config\n\n" > "$tmp_ssh"
-    cat "$HOME_DIR/.ssh/config" >> "$tmp_ssh"
-    mv "$tmp_ssh" "$HOME_DIR/.ssh/config"
-    chmod 600 "$HOME_DIR/.ssh/config"
-  fi
+    chmod 600 "$HOME_DIR/.ssh/ccide_config"
+    if [[ ! -f "$HOME_DIR/.ssh/config" ]]; then
+      printf "Include ~/.ssh/ccide_config\n" > "$HOME_DIR/.ssh/config"
+      chmod 600 "$HOME_DIR/.ssh/config"
+    elif ! grep -q "ccide_config" "$HOME_DIR/.ssh/config"; then
+      backup_once "$HOME_DIR/.ssh/config"
+      tmp_ssh="$(mktemp)"
+      printf "Include ~/.ssh/ccide_config\n\n" > "$tmp_ssh"
+      cat "$HOME_DIR/.ssh/config" >> "$tmp_ssh"
+      mv "$tmp_ssh" "$HOME_DIR/.ssh/config"
+      chmod 600 "$HOME_DIR/.ssh/config"
+    fi
 
-  # Restart warm iTerm2 daemon (`ccide_daemon.py`) in background
-  pkill -f "ccide_daemon.py" >/dev/null 2>&1 || true
-  rm -f "/tmp/.cc-ide/iterm_daemon.sock"
-  nohup "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ccide_daemon.py" >/dev/null 2>&1 &
-  for _ in {1..20}; do
-    [[ -S "/tmp/.cc-ide/iterm_daemon.sock" ]] && break
-    sleep 0.05
-  done
-  log_ok "Started ccide_daemon.py (/tmp/.cc-ide/iterm_daemon.sock + OSC 1337 SSH listener)"
+    pkill -f "ccide_daemon.py" >/dev/null 2>&1 || true
+    rm -f "/tmp/.cc-ide/iterm_daemon.sock"
+    nohup "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ccide_daemon.py" >/dev/null 2>&1 &
+    for _ in {1..20}; do
+      [[ -S "/tmp/.cc-ide/iterm_daemon.sock" ]] && break
+      sleep 0.05
+    done
+    log_ok "Started ccide_daemon.py (/tmp/.cc-ide/iterm_daemon.sock + OSC 1337 SSH listener)"
+  else
+    log_ok "Linux host detected: OSC 1337 emitter & tmux backend ready"
+  fi
 else
-  log_ok "Linux host detected: OSC 1337 emitter & tmux backend ready"
+  log_ok "Skipped iTerm2 AutoLaunch & SSH config per user selection"
 fi
 
 # ------------------------------------------------------------------------------
@@ -412,9 +530,6 @@ cp -f "$PROJECT_ROOT/bin/ccide-core" "$PLUGIN_CACHE_DIR/bin/ccide-core"
 [[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$PLUGIN_CACHE_DIR/bin/ccide-core" >/dev/null 2>&1 || true
 cp -f "$PROJECT_ROOT/AGENT.md" "$PLUGIN_CACHE_DIR/AGENT.md"
 
-# Keep any prior cached plugin version directories (`0.4.0`, etc.) in sync so already-running
-# Claude Code sessions whose `${CLAUDE_PLUGIN_ROOT}` still references an older version immediately
-# execute the updated `ccide-core yazi-hook` and scripts without requiring a session restart.
 for prev_cache in "$CLAUDE_DIR/plugins/cache/cc-ide/cc-ide"/*; do
   if [[ -d "$prev_cache" && "$prev_cache" != "$PLUGIN_CACHE_DIR" ]]; then
     mkdir -p "$prev_cache/bin" "$prev_cache/hooks" "$prev_cache/scripts" "$prev_cache/assets"
@@ -426,7 +541,9 @@ for prev_cache in "$CLAUDE_DIR/plugins/cache/cc-ide/cc-ide"/*; do
   fi
 done
 
-"$PYTHON_BIN" -I - "$PROJECT_ROOT" "$PLUGIN_CACHE_DIR" "$PLUGIN_VERSION" <<'PYEOF'
+if [[ "$OPT_PLUGIN" == "1" ]]; then
+  backup_once "$CLAUDE_DIR/settings.json"
+  "$PYTHON_BIN" -I - "$PROJECT_ROOT" "$PLUGIN_CACHE_DIR" "$PLUGIN_VERSION" <<'PYEOF'
 import datetime, json, os, sys
 
 project_root, plugin_cache_dir, version = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -502,17 +619,26 @@ if "hooks" in st and isinstance(st["hooks"], dict):
 with open(st_path, "w", encoding="utf-8") as f:
     json.dump(st, f, indent=2, ensure_ascii=False)
 PYEOF
-log_ok "Registered cc-ide@cc-ide v$PLUGIN_VERSION in ~/.claude/plugins & ~/.claude/settings.json"
+  log_ok "Registered cc-ide@cc-ide v$PLUGIN_VERSION in ~/.claude/plugins & ~/.claude/settings.json"
+else
+  log_ok "Packaged plugin cache (skipped settings.json registration per user selection)"
+fi
 
 # ------------------------------------------------------------------------------
 # 5. Patch `claude.exe` Binary (Subagent Retention + SIGUSR2 Hook + Clean Bottom)
 # ------------------------------------------------------------------------------
 log_step "5/7 Applying native claude.exe patches..."
-CLAUDE_BIN_FOUND="$(discover_claude_exe)"
-if [[ -n "$CLAUDE_BIN_FOUND" ]]; then
-  "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/patch_claude_binary.py" || true
-  STAMP_VAL="$(stat -f '%i:%z:%m' "$CLAUDE_BIN_FOUND" 2>/dev/null || stat -c '%i:%s:%Y' "$CLAUDE_BIN_FOUND" 2>/dev/null || echo "")"
-  [[ -n "$STAMP_VAL" ]] && printf '%s' "$STAMP_VAL" > "$CACHE_DIR/claude_bin.stamp"
+if [[ "$OPT_PATCH" == "1" ]]; then
+  CLAUDE_BIN_FOUND="$(discover_claude_exe)"
+  if [[ -n "$CLAUDE_BIN_FOUND" ]]; then
+    "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/patch_claude_binary.py" || true
+    STAMP_VAL="$(stat -f '%i:%z:%m' "$CLAUDE_BIN_FOUND" 2>/dev/null || stat -c '%i:%s:%Y' "$CLAUDE_BIN_FOUND" 2>/dev/null || echo "")"
+    [[ -n "$STAMP_VAL" ]] && printf '%s' "$STAMP_VAL" > "$CACHE_DIR/claude_bin.stamp"
+  else
+    log_ok "claude binary not found locally; auto-repatch will run on first ccide launch"
+  fi
+else
+  log_ok "Skipped claude.exe binary patch per user selection"
 fi
 
 # ------------------------------------------------------------------------------

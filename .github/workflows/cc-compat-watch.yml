@@ -14,39 +14,57 @@ jobs:
     name: Test Dynamic Patcher Against Latest @anthropic-ai/claude-code
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
-      - name: Download & Probe Latest @anthropic-ai/claude-code
-        id: probe
-        continue-on-error: true
+      - name: Download Latest @anthropic-ai/claude-code Bundle
+        id: download
         run: |
           CC_VER="$(npm view @anthropic-ai/claude-code version)"
-          echo "cc_version=${CC_VER}" >> "$GITHUB_OUTPUT"
-          mkdir -p /tmp/cc-watch
-          npm install --prefix /tmp/cc-watch "@anthropic-ai/claude-code@${CC_VER}" --no-audit --no-fund
-          CAND_BIN="$(find /tmp/cc-watch -type f -size +5M \( -name 'claude.exe' -o -name 'claude' -o -name 'cli.js' \) | sort | head -n 1)"
-          echo "Testing binary/bundle: $CAND_BIN"
+          test -n "$CC_VER"
+          echo "Resolved upstream @anthropic-ai/claude-code version: ${CC_VER}"
+          WATCH_DIR="$(mktemp -d)"
+          npm install --prefix "$WATCH_DIR" "@anthropic-ai/claude-code@${CC_VER}" --ignore-scripts --no-audit --no-fund
+          CAND_BIN="$(find "$WATCH_DIR" -type f -size +5M \( -name 'claude.exe' -o -name 'claude' -o -name 'cli.js' \) | sort | head -n 1)"
+          echo "Resolved upstream binary/bundle: $CAND_BIN"
           test -n "$CAND_BIN"
-          python3 scripts/patch_claude_binary.py --verify --binary "$CAND_BIN" > /tmp/patch_report.json
+          echo "cc_version=${CC_VER}" >> "$GITHUB_OUTPUT"
+          echo "cand_bin=${CAND_BIN}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Structural Patcher Compatibility Probe
+        id: probe
+        continue-on-error: true
+        env:
+          CAND_BIN: ${{ steps.download.outputs.cand_bin }}
+        run: |
+          python3 -I scripts/patch_claude_binary.py --verify --binary "$CAND_BIN" | tee /tmp/patch_report.json
+          python3 -I - /tmp/patch_report.json <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as f:
+              rep = json.load(f)
+          for p in rep.get("patches", []):
+              if not p.get("required") and not p.get("applied"):
+                  print(f"::warning::Optional patch '{p['name']}' drifted: {p['message']}")
+          PY
 
       - name: Open Deduplicated Alert Issue on Failure
         if: steps.probe.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CC_VER: ${{ steps.probe.outputs.cc_version }}
+          CC_VER: ${{ steps.download.outputs.cc_version }}
         run: |
           TITLE="[Compat Alert] Claude Code v${CC_VER} upstream bundle layout changed"
           EXISTING="$(gh issue list --state open --search "\"${TITLE}\" in:title" --json number --jq '.[0].number // empty')"
           if [ -n "$EXISTING" ]; then
             echo "Issue #${EXISTING} already open for v${CC_VER}; skipping duplicate."
-            exit 0
+            exit 1
           fi
           REPORT="$(cat /tmp/patch_report.json 2>/dev/null || echo 'No JSON report generated')"
           gh issue create \
             --title "$TITLE" \
             --body "$(printf 'Automated daily compatibility probe detected a required patch mismatch against `@anthropic-ai/claude-code@%s`.\n\n```json\n%s\n```' "$CC_VER" "$REPORT")"
+          exit 1

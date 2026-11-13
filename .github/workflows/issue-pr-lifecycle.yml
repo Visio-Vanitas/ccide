@@ -1,0 +1,280 @@
+name: Issue & PR Lifecycle Automation
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+  pull_request:
+    types: [opened, edited, reopened, synchronize, closed]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Automation action to run"
+        required: true
+        default: "sync-labels-and-triage"
+        type: choice
+        options:
+          - sync-labels-and-triage
+          - generate-promotion-notes
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  triage-issue:
+    name: Auto-Label & Agent-Readiness Triage
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Classify Issue Component & Agent Readiness
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re, subprocess
+
+          repo = os.environ["REPO"]
+          num = os.environ["ISSUE_NUM"]
+          title = os.environ.get("ISSUE_TITLE", "")
+          body = os.environ.get("ISSUE_BODY", "") or ""
+          combined = f"{title}\n{body}".lower()
+
+          area_rules = [
+              ("area:patcher", ["patch_claude_binary", "patcher", "sigusr2", "__bun", "bun!"]),
+              ("area:sidebar", ["sidebar", "sprite", "subagents", "context", "cost", "tokscale"]),
+              ("area:installer", ["install.sh", "iterm-preferences", "iterm-pyenv", "pyenv", "doctor", "setup"]),
+              ("area:workspace", ["workspace.rs", "ccide_daemon", "iterm2_workspace", "osc 1337", "tmux"]),
+              ("area:hscroll", ["pty-hscroll", "yazi-hscroll", "lazygit-pager", "lazygit-log", "md-render"]),
+              ("area:statusline", ["statusline", "autocompact", "auto-compact", "powerline"]),
+              ("area:ci", ["ci.yml", "release.yml", "cc-compat-watch", "workflow"]),
+          ]
+
+          labels = set()
+          for lbl, kws in area_rules:
+              if any(k in combined for k in kws):
+                  labels.add(lbl)
+
+          if "[compat alert]" in title.lower():
+              labels.update(["compat", "bug"])
+          elif title.lower().startswith("fix") or "### minimal reproduction" in combined or "## 现象" in body:
+              labels.add("bug")
+          elif title.lower().startswith("feat") or "### proposed design" in combined or "## 期望" in body:
+              labels.add("enhancement")
+
+          if ("acceptance criteria" in combined or "验收标准" in body) and ("- [" in body or "\n- " in body):
+              labels.add("agent-ready")
+
+          palette = {
+              "area:patcher": "d93f0b",
+              "area:sidebar": "5319e7",
+              "area:installer": "0e8a16",
+              "area:workspace": "1d76db",
+              "area:hscroll": "006b75",
+              "area:statusline": "fbca04",
+              "area:ci": "bfd4f2",
+              "compat": "b60205",
+              "agent-ready": "0e8a16",
+              "triage": "ededed",
+          }
+          for lbl in sorted(labels):
+              if lbl in palette:
+                  subprocess.run(
+                      ["gh", "label", "create", lbl, "--repo", repo, "--color", palette[lbl], "--force"],
+                      check=False,
+                      capture_output=True,
+                  )
+          if labels:
+              cmd = ["gh", "issue", "edit", num, "--repo", repo]
+              for lbl in sorted(labels):
+                  cmd.extend(["--add-label", lbl])
+              cmd.extend(["--remove-label", "triage"])
+              subprocess.run(cmd, check=False)
+              print(f"Applied labels to #{num}: {sorted(labels)}")
+          PY
+
+  pr-issue-bridge:
+    name: Link Closing PRs & Track Promotion Stage
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Track Issue References Across dev -> preview -> main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          ACTION: ${{ github.event.action }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 -I - <<'PY'
+          import os, re, subprocess
+
+          repo = os.environ["REPO"]
+          same_repo = os.environ.get("SAME_REPO", "false").lower() == "true"
+          action = os.environ["ACTION"]
+          merged = os.environ.get("MERGED", "false").lower() == "true"
+          pr_num = os.environ["PR_NUM"]
+          base_ref = os.environ["BASE_REF"]
+          head_ref = os.environ["HEAD_REF"]
+          title = os.environ.get("PR_TITLE", "")
+          body = os.environ.get("PR_BODY", "") or ""
+
+          refs = sorted(
+              {
+                  int(m.group(1))
+                  for m in re.finditer(
+                      r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b",
+                      f"{title}\n{body}",
+                  )
+              }
+          )
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as sf:
+                  sf.write(f"### PR #{pr_num} Automation Summary (`{head_ref}` -> `{base_ref}`)\n")
+                  sf.write(f"- **Linked Closing Issues**: {['#' + str(i) for i in refs] if refs else 'None'}\n")
+                  sf.write(f"- **Merged**: `{merged}`\n")
+
+          if not same_repo or not refs:
+              raise SystemExit(0)
+
+          stage_colors = {
+              "has-pr": "1d76db",
+              "stage:in-dev": "5319e7",
+              "stage:in-preview": "fbca04",
+          }
+          for lbl, col in stage_colors.items():
+              subprocess.run(
+                  ["gh", "label", "create", lbl, "--repo", repo, "--color", col, "--force"],
+                  check=False,
+                  capture_output=True,
+              )
+
+          for issue_id in refs:
+              sid = str(issue_id)
+              if action != "closed":
+                  subprocess.run(
+                      ["gh", "issue", "edit", sid, "--repo", repo, "--add-label", "has-pr"],
+                      check=False,
+                  )
+              elif merged:
+                  if base_ref == "dev":
+                      subprocess.run(
+                          ["gh", "issue", "edit", sid, "--repo", repo, "--add-label", "stage:in-dev"],
+                          check=False,
+                      )
+                  elif base_ref == "preview":
+                      subprocess.run(
+                          [
+                              "gh", "issue", "edit", sid, "--repo", repo,
+                              "--add-label", "stage:in-preview",
+                              "--remove-label", "stage:in-dev",
+                          ],
+                          check=False,
+                      )
+                  elif base_ref == "main":
+                      subprocess.run(
+                          [
+                              "gh", "issue", "close", sid, "--repo", repo,
+                              "--reason", "completed",
+                              "--comment", f"Resolved and promoted to `main` via PR #{pr_num}.",
+                          ],
+                          check=False,
+                      )
+          PY
+
+  close-promoted-issues-on-main:
+    name: Auto-Close Multi-Hop Issues Landed on main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 50
+
+      - name: Scan Newly Promoted Commits for Closing Directives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re, subprocess
+
+          repo = os.environ["REPO"]
+          before = os.environ.get("BEFORE_SHA", "")
+          after = os.environ["AFTER_SHA"]
+          rev_range = f"{before}..{after}" if before and set(before) != {"0"} else "-n 20 " + after
+          log_cmd = ["git", "log", "--format=%H%n%B%n---END---"] + rev_range.split()
+          out = subprocess.run(log_cmd, capture_output=True, text=True, check=False).stdout
+          refs = sorted(
+              {
+                  int(m.group(1))
+                  for m in re.finditer(
+                      r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b",
+                      out,
+                  )
+              }
+          )
+          for issue_id in refs:
+              sid = str(issue_id)
+              st_proc = subprocess.run(
+                  ["gh", "issue", "view", sid, "--repo", repo, "--json", "state"],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              if st_proc.returncode == 0 and '"OPEN"' in st_proc.stdout:
+                  subprocess.run(
+                      [
+                          "gh", "issue", "close", sid, "--repo", repo,
+                          "--reason", "completed",
+                          "--comment", f"Closed automatically on promotion to `main` ({after[:7]}).",
+                      ],
+                      check=False,
+                  )
+                  subprocess.run(
+                      [
+                          "gh", "issue", "edit", sid, "--repo", repo,
+                          "--remove-label", "stage:in-dev",
+                          "--remove-label", "stage:in-preview",
+                          "--remove-label", "has-pr",
+                      ],
+                      check=False,
+                  )
+          PY
+
+  manual-automation-dispatch:
+    name: On-Demand Triage & Promotion Manifest
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run Requested Automation Task
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          if [ "$MODE" = "generate-promotion-notes" ]; then
+            python3 -I scripts/agent-task-context.py --promotion-notes origin/main..origin/dev | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            python3 -I scripts/agent-task-context.py --sync-labels --repo "$REPO"
+          fi

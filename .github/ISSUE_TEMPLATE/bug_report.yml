@@ -1,0 +1,75 @@
+name: Bug Report
+description: Report a rendering defect, workspace split failure, binary patch drift, or telemetry mismatch (Agent-Ready Schema)
+title: "fix: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue! Fields below use deterministic headings so both maintainers and AI coding agents (`scripts/agent-task-context.py --issue <id>`) can parse, reproduce, and verify fixes automatically.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      description: Primary subsystem where the defect surfaces.
+      options:
+        - sidebar (Right TUI · Sprite / SUBAGENTS / CONTEXT / COST / HW)
+        - patcher (scripts/patch_claude_binary.py · SIGUSR2 / UI hooks)
+        - workspace (Tier 1 iTerm2 Daemon / Tier 2 SSH OSC 1337 / Tier 3 tmux)
+        - hscroll-pager (Lazygit PTY Bridge / Yazi hscroll.yazi / md-render)
+        - statusline (Powerline Statusbar & Auto-Compact Threshold)
+        - installer (install.sh / ccide setup / ccide doctor / iTerm2 prefs)
+        - ci-release (GitHub Actions / MSRV 1.70 / Packaging)
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Phenomenon & Root-Cause Clues
+      description: What happened, vs. what should have happened? Include screenshots or terminal text if visual.
+      placeholder: |
+        When switching models via `/model`, the top right panel briefly flashes...
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro_steps
+    attributes:
+      label: Minimal Reproduction Steps
+      description: Numbered commands or interactions to trigger the defect reliably.
+      placeholder: |
+        1. Launch `ccide` in iTerm2 3.7+ with Claude Code 2.1.x
+        2. Run `/model ...`
+        3. Observe right sidebar header...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor_json
+    attributes:
+      label: Environment Diagnostics (`ccide doctor --json`)
+      description: Paste the output of `ccide doctor --json` (or `./install.sh --doctor --json`).
+      render: json
+      placeholder: |
+        {
+          "schema_version": 1,
+          "ccide_version": "0.5.0",
+          "os_arch": "darwin/aarch64",
+          ...
+        }
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Concrete `- [ ]` checks that define when a fix PR can close this issue.
+      value: |
+        - [ ] Defect no longer reproduces under the steps above
+        - [ ] Unit/regression test added (`cargo +1.70.0 test --locked` or `python3 -I -m unittest`)
+        - [ ] Modified modules remain under `< 300` lines and pass `clippy -- -D warnings`
+    validations:
+      required: true

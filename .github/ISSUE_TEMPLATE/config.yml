@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Quick Environment Diagnostics (ccide doctor --json)
+    url: https://github.com/Visio-Vanitas/ccide/blob/main/CONTRIBUTING.md
+    about: Run `ccide doctor --json` locally before filing a report so humans and AI coding agents can reproduce immediately.

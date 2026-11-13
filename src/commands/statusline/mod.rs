@@ -1,9 +1,6 @@
 //! `ccide-core statusline`: Sub-Millisecond Native Powerline Status Bar Renderer.
-//!
-//! Reads `.git/HEAD` and `/tmp/.cc-ide/sys_telemetry.cache` directly without spawning
-//! `git`, `ps`, `vm_stat`, or `awk`, and exports per-session isolated model state
-//! (`live_sess_<sessionId>.json` and `live_tab_<yaziId>.json`) so the Right Sidebar
-//! updates its model logo instantaneously when `/model` is switched.
+
+pub mod compact;
 
 use std::env;
 use std::fs;
@@ -12,10 +9,15 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ffi::notify_sidebar;
-use crate::json::{extract_json_str, extract_json_u64};
+use crate::json::{extract_json_object, extract_json_str};
 use crate::session::resolve_yazi_id_from_ppid;
 use crate::tui::palette::Palette;
 use crate::tui::width::floor_char_boundary;
+
+pub use compact::{
+    compute_context_budget, extract_statusline_context, load_compact_config, CompactConfig,
+    ContextBudget, CtxTier,
+};
 
 fn fast_git_summary(cwd: &str) -> String {
     let mut cur = PathBuf::from(cwd);
@@ -49,10 +51,21 @@ pub fn run() {
     let _ = fs::create_dir_all(&status_cache);
 
     let session_id = extract_json_str(&input, "session_id").unwrap_or_default();
-    let model = extract_json_str(&input, "display_name")
-        .or_else(|| extract_json_str(&input, "id"))
+    let model_scope = extract_json_object(&input, "model").unwrap_or(&input);
+    let model_id = extract_json_str(model_scope, "id").unwrap_or_default();
+    let model = extract_json_str(model_scope, "display_name")
+        .or_else(|| {
+            if !model_id.is_empty() {
+                Some(model_id.clone())
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| "claude".to_string());
-    let cwd = extract_json_str(&input, "current_dir")
+
+    let ws_scope = extract_json_object(&input, "workspace").unwrap_or(&input);
+    let project_dir = extract_json_str(ws_scope, "project_dir").unwrap_or_default();
+    let cwd = extract_json_str(ws_scope, "current_dir")
         .or_else(|| extract_json_str(&input, "cwd"))
         .unwrap_or_else(|| {
             env::current_dir()
@@ -60,10 +73,10 @@ pub fn run() {
                 .and_then(|p| p.to_str().map(String::from))
                 .unwrap_or_default()
         });
+
     let mut raw_mode = extract_json_str(&input, "permission_mode")
         .or_else(|| extract_json_str(&input, "mode"))
         .unwrap_or_default();
-
     if raw_mode.is_empty() && !session_id.is_empty() {
         raw_mode = fs::read_to_string(format!("{}/mode_{}.cache", status_cache, session_id))
             .unwrap_or_default()
@@ -90,32 +103,23 @@ pub fn run() {
             ("manual", sl.manual_bg, sl.manual_fg)
         };
 
-    let used_pct = extract_json_u64(&input, "used_percentage").unwrap_or(0);
-    let in_tok = extract_json_u64(&input, "input_tokens").unwrap_or(0);
-    let cc_tok = extract_json_u64(&input, "cache_creation_input_tokens").unwrap_or(0);
-    let cr_tok = extract_json_u64(&input, "cache_read_input_tokens").unwrap_or(0);
-    let win_size = extract_json_u64(&input, "context_window_size").unwrap_or(950_000);
+    let (total_in, win_size) = extract_statusline_context(&input, &model_id, &model);
+    let compact_cfg = load_compact_config(&home, &cwd, &project_dir, &model_id, &model);
+    let budget = compute_context_budget(total_in, win_size, &compact_cfg);
 
-    let mut total_in = in_tok + cc_tok + cr_tok;
-    if total_in == 0 && used_pct > 0 {
-        total_in = win_size * used_pct / 100;
-    }
-    let tokens_k = total_in / 1000;
-    let compact_k = win_size * 50 / 100_000;
-
-    let (c_ctx_bg, c_ctx_fg) = if used_pct >= 40 {
-        (sl.ctx_crit_bg, sl.ctx_crit_fg)
-    } else if used_pct >= 25 {
-        (sl.ctx_warn_bg, sl.ctx_warn_fg)
-    } else {
-        (sl.ctx_ok_bg, sl.ctx_ok_fg)
+    let (c_ctx_bg, c_ctx_fg) = match budget.tier {
+        CtxTier::Crit => (sl.ctx_crit_bg, sl.ctx_crit_fg),
+        CtxTier::Warn => (sl.ctx_warn_bg, sl.ctx_warn_fg),
+        CtxTier::Ok => (sl.ctx_ok_bg, sl.ctx_ok_fg),
     };
-    let ctx_text = format!("CTX {}k/{}k ({}%)", tokens_k, compact_k, used_pct);
+    let ctx_text = format!(
+        "CTX {}k/{}k ({}%)",
+        budget.tokens_k, budget.compact_k, budget.used_pct
+    );
     let git_text = fast_git_summary(&cwd);
     let sys_text = fs::read_to_string("/tmp/.cc-ide/sys_telemetry.cache")
         .unwrap_or_else(|_| "CPU --% \u{e0b1} RAM --%".to_string());
 
-    // Resolve per-tab `yazi_id` and export strictly isolated per-session & per-tab live model state
     let mut yid = env::var("CC_YAZI_ID").unwrap_or_default();
     if yid.is_empty() && !session_id.is_empty() {
         yid = fs::read_to_string(format!("{}/session_{}.yazi", base_cache, session_id))
@@ -137,7 +141,7 @@ pub fn run() {
     let safe_cwd = cwd.replace('\\', "\\\\").replace('"', "\\\"");
     let live_json = format!(
         "{{\"session_id\":\"{}\",\"model\":\"{}\",\"mode\":\"{}\",\"used_pct\":{},\"tokens_k\":{},\"compact_k\":{},\"cwd\":\"{}\",\"ts\":{}}}",
-        session_id, model, mode_word, used_pct, tokens_k, compact_k, safe_cwd, now_s
+        session_id, model, mode_word, budget.used_pct, budget.tokens_k, budget.compact_k, safe_cwd, now_s
     );
     if !session_id.is_empty() {
         let _ = fs::write(
@@ -153,19 +157,15 @@ pub fn run() {
     let s0_bg = c_mode_bg.bg_ansi();
     let s0_fg = c_mode_fg.fg_ansi();
     let s0_sep = c_mode_bg.fg_ansi();
-
     let s1_bg = sl.model_bg.bg_ansi();
     let s1_fg = sl.model_fg.fg_ansi();
     let s1_sep = sl.model_bg.fg_ansi();
-
     let s2_bg = c_ctx_bg.bg_ansi();
     let s2_fg = c_ctx_fg.fg_ansi();
     let s2_sep = c_ctx_bg.fg_ansi();
-
     let s3_bg = sl.git_bg.bg_ansi();
     let s3_fg = sl.git_fg.fg_ansi();
     let s3_sep = sl.git_bg.fg_ansi();
-
     let s4_bg = sl.sys_bg.bg_ansi();
     let s4_fg = sl.sys_fg.fg_ansi();
     let s4_sep = sl.sys_bg.fg_ansi();

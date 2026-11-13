@@ -73,7 +73,8 @@ pub fn display_width(s: &str) -> usize {
     w
 }
 
-/// Truncates `s` so its visible column width never exceeds `max_cols`, appending `…` when truncated.
+/// Truncates `s` so its visible column width never exceeds `max_cols`, preserving ANSI CSI/OSC
+/// escape sequences and appending `…` (plus `\x1b[0m` when ANSI sequences were present).
 pub fn trunc_to_width(s: &str, max_cols: usize) -> String {
     if max_cols == 0 {
         return String::new();
@@ -82,9 +83,35 @@ pub fn trunc_to_width(s: &str, max_cols: usize) -> String {
         return s.to_string();
     }
     let limit = max_cols.saturating_sub(1);
-    let mut out = String::new();
+    let mut out = String::with_capacity(s.len());
     let mut cur = 0usize;
-    for ch in s.chars() {
+    let mut saw_ansi = false;
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            saw_ansi = true;
+            out.push(ch);
+            if let Some(&next) = chars.peek() {
+                if next == '[' {
+                    out.push(chars.next().unwrap_or('['));
+                    for esc_c in chars.by_ref() {
+                        out.push(esc_c);
+                        if ('@'..='~').contains(&esc_c) {
+                            break;
+                        }
+                    }
+                } else if next == ']' {
+                    out.push(chars.next().unwrap_or(']'));
+                    for esc_c in chars.by_ref() {
+                        out.push(esc_c);
+                        if esc_c == '\x07' {
+                            break;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         let cw = char_display_width(ch);
         if cur + cw > limit {
             break;
@@ -93,6 +120,9 @@ pub fn trunc_to_width(s: &str, max_cols: usize) -> String {
         cur += cw;
     }
     out.push('…');
+    if saw_ansi {
+        out.push_str("\x1b[0m");
+    }
     out
 }
 

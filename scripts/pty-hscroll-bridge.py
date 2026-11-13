@@ -101,6 +101,25 @@ def apply_sgr_seq(state: list, seq: str) -> None:
     n = len(parts)
     while i < n:
         p = parts[i]
+        if ":" in p:
+            sub = p.split(":")
+            head = int(sub[0]) if sub[0].isdigit() else -1
+            if head in (38, 48) and len(sub) >= 3:
+                slot = 0 if head == 38 else 1
+                if sub[1] == "5" and sub[2].isdigit():
+                    state[slot] = f"{head};5;{sub[2]}"
+                elif (
+                    sub[1] == "2"
+                    and len(sub) >= 5
+                    and sub[-3].isdigit()
+                    and sub[-2].isdigit()
+                    and sub[-1].isdigit()
+                ):
+                    state[slot] = f"{head};2;{sub[-3]};{sub[-2]};{sub[-1]}"
+            elif head == 4:
+                state[5] = len(sub) < 2 or sub[1] != "0"
+            i += 1
+            continue
         code = int(p) if p.isdigit() else (0 if p == "" else -1)
         if code == 0:
             state[:] = ["", "", False, False, False, False, False]
@@ -170,23 +189,34 @@ def serialize_sgr(state: list) -> str:
 
 def tokenize_ansi_line(s: str) -> tuple[list[tuple[bool, str, int]], str, int]:
     """Pre-tokenizes an ANSI string once into `(tokens, plain_str, total_cols)` for `< 0.08ms` 120Hz slicing."""
-    s = re.sub(r"\x1b\[0?K", "", OSC_STRIP_RE.sub("", s)).expandtabs(4)
+    s = (
+        re.sub(r"\x1b\[0?K|\x1b[\(\)\*\+][A-Za-z0-9]", "", OSC_STRIP_RE.sub("", s))
+        .replace("\r", "")
+        .expandtabs(4)
+    )
     tokens: list[tuple[bool, str, int]] = []
     plain_chars: list[str] = []
     total_w = 0
     i, n = 0, len(s)
     while i < n:
-        if s[i] == "\x1b" and i + 1 < n and s[i + 1] == "[":
-            j = i + 2
-            while j < n and not ("@" <= s[j] <= "~"):
-                j += 1
-            if j < n:
-                seq = s[i : j + 1]
-                if seq.endswith("m"):
-                    tokens.append((True, seq, 0))
-                i = j + 1
-                continue
+        if s[i] == "\x1b":
+            if i + 1 < n and s[i + 1] == "[":
+                j = i + 2
+                while j < n and not ("@" <= s[j] <= "~"):
+                    j += 1
+                if j < n:
+                    seq = s[i : j + 1]
+                    if seq.endswith("m"):
+                        tokens.append((True, seq, 0))
+                    i = j + 1
+                    continue
+            i += 2 if (i + 1 < n) else 1
+            continue
         ch = s[i]
+        o = ord(ch)
+        if o < 0x20 or (0x7F <= o < 0xA0):
+            i += 1
+            continue
         cw = char_cols(ch)
         tokens.append((False, ch, cw))
         if cw > 0:
@@ -265,6 +295,116 @@ def slice_tokens_padded(tokens: list[tuple[bool, str, int]], offset_cols: int, w
     return "".join(out)
 
 
+class VtFrameGate:
+    """
+    Byte-level ECMA-48 + UTF-8 frame boundary gate across 1024-byte Darwin/POSIX PTY reads.
+
+    Never emits incomplete UTF-8 multi-byte codepoints or unfinished ESC/CSI/OSC/DCS/charset
+    sequences (`\\x1b]8;;\\x1b\\\\`, `\\x1b[38;2;...m`, `\\x1b(B`, `\\x1b[row;colH`), preventing
+    120Hz `[0]` overlays from ever tearing Lazygit/`tcell` escape sequences mid-flight.
+    """
+
+    def __init__(self) -> None:
+        self.tail = b""
+
+    def has_pending(self) -> bool:
+        return bool(self.tail)
+
+    def push(self, chunk: bytes) -> bytes:
+        if not chunk:
+            return b""
+        buf = (self.tail + chunk) if self.tail else chunk
+        n = len(buf)
+        # Immediately after ST (`\x1b\\`), ECMA-48 is unconditionally in GROUND state with 0 UTF-8 bytes pending.
+        scan_from = 0
+        if n > 256:
+            st_pos = buf.rfind(b"\x1b\\", 0, n - 128)
+            if st_pos != -1:
+                scan_from = st_pos + 2
+
+        # States: 0=ground, 1=utf8, 2=esc, 3=esc_inter, 4=csi, 5=osc_dcs, 6=osc_esc
+        state = 0
+        utf8_rem = 0
+        safe_end = scan_from
+        i = scan_from
+        while i < n:
+            b = buf[i]
+            if state == 0:
+                if b == 0x1B:
+                    state = 2
+                elif b < 0x80:
+                    safe_end = i + 1
+                elif 0xC2 <= b <= 0xDF:
+                    state = 1
+                    utf8_rem = 1
+                elif 0xE0 <= b <= 0xEF:
+                    state = 1
+                    utf8_rem = 2
+                elif 0xF0 <= b <= 0xF4:
+                    state = 1
+                    utf8_rem = 3
+                else:
+                    safe_end = i + 1
+            elif state == 1:
+                if 0x80 <= b <= 0xBF:
+                    utf8_rem -= 1
+                    if utf8_rem == 0:
+                        state = 0
+                        safe_end = i + 1
+                else:
+                    state = 0
+                    continue
+            elif state == 2:
+                if b == 0x5B:  # '[' -> CSI
+                    state = 4
+                elif b in (0x5D, 0x50, 0x5F, 0x5E, 0x58):  # ']', 'P', '_', '^', 'X' -> OSC/DCS
+                    state = 5
+                elif 0x20 <= b <= 0x2F:  # '(', ')', '*', '+', '#', ' ' -> intermediate + final
+                    state = 3
+                elif 0x30 <= b <= 0x7E:  # 2-byte ESC ('7', '8', '=', '>', 'M', 'c')
+                    state = 0
+                    safe_end = i + 1
+                else:
+                    state = 0
+                    safe_end = i + 1
+            elif state == 3:
+                if 0x20 <= b <= 0x2F:
+                    pass
+                else:
+                    state = 0
+                    safe_end = i + 1
+            elif state == 4:
+                if 0x40 <= b <= 0x7E:
+                    state = 0
+                    safe_end = i + 1
+                elif b == 0x1B:
+                    state = 2
+            elif state == 5:
+                if b == 0x07:
+                    state = 0
+                    safe_end = i + 1
+                elif b == 0x1B:
+                    state = 6
+            elif state == 6:
+                if b == 0x5C:  # '\\' -> ST
+                    state = 0
+                    safe_end = i + 1
+                elif b == 0x5B:
+                    state = 4
+                elif b in (0x5D, 0x50, 0x5F, 0x5E, 0x58):
+                    state = 5
+                else:
+                    state = 0
+                    safe_end = i + 1
+            i += 1
+
+        if n - safe_end > 4096:
+            self.tail = b""
+            return buf
+        self.tail = buf[safe_end:]
+        return buf[:safe_end]
+
+
 class VtScreen:
     """Lightweight VT cell tracker + 120Hz in-memory `[0]` viewport blitter."""
 
@@ -272,14 +412,22 @@ class VtScreen:
         self.rows = max(4, rows)
         self.cols = max(20, cols)
         self.grid: list[list[str]] = [[" "] * self.cols for _ in range(self.rows)]
+        self.cell_touched = bytearray(self.rows * self.cols)
         self.r = 0
         self.c = 0
+        self.saved_r = 0
+        self.saved_c = 0
+        self.cursor_sgr: list = ["", "", False, False, False, False, False]
         self._utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._vt_state = "ground"
         self._csi_buf = ""
+        self.frame_gate = VtFrameGate()
         self.stdin_tail = b""
         self.focused_panel = "1"
         self.pan_x: dict[str, int] = {str(i): 0 for i in range(6)}
+        self.main_dirty_on_term = False
+        self._saved_pan0: tuple[tuple[int, int, int, int], int, list[list[tuple[bool, str, int]]]] | None = None
+        self.pending_pan_flush = False
         self.main_inner_w = 0
         self.sid = 0
         self._last_reflog_heal = 0.0
@@ -356,9 +504,14 @@ class VtScreen:
         self.rows = rows
         self.cols = cols
         self.grid = [[" "] * self.cols for _ in range(self.rows)]
+        self.cell_touched = bytearray(self.rows * self.cols)
         self.r = min(self.r, self.rows - 1)
         self.c = min(self.c, self.cols - 1)
         self.matched_top_idx = None
+
+    def clear_touched(self) -> None:
+        n = len(self.cell_touched)
+        self.cell_touched[:] = b"\x00" * n
 
     def feed(self, raw: bytes) -> None:
         """Incremental UTF-8 + VT100/xterm/OSC-8 state machine safe across arbitrary PTY read boundaries."""
@@ -366,6 +519,7 @@ class VtScreen:
         rows = self.rows
         cols = self.cols
         grid = self.grid
+        touched = self.cell_touched
         r = self.r
         c = self.c
         state = self._vt_state
@@ -385,13 +539,18 @@ class VtScreen:
                     cw = char_cols(ch)
                     if cw > 0 and 0 <= r < rows and 0 <= c < cols:
                         row_ref = grid[r]
+                        row_base = r * cols
                         if c > 0 and row_ref[c] == "":
                             row_ref[c - 1] = " "
+                            touched[row_base + c - 1] = 1
                         row_ref[c] = ch
+                        touched[row_base + c] = 1
                         if cw == 2 and c + 1 < cols:
                             row_ref[c + 1] = ""
+                            touched[row_base + c + 1] = 1
                         elif cw == 1 and c + 1 < cols and row_ref[c + 1] == "":
                             row_ref[c + 1] = " "
+                            touched[row_base + c + 1] = 1
                         c += cw
             elif state == "esc":
                 if ch == "[":
@@ -403,6 +562,14 @@ class VtScreen:
                     state = "charset"
                 elif ch in ("P", "_", "^", "X"):
                     state = "dcs"
+                elif ch == "7":
+                    self.saved_r = r
+                    self.saved_c = c
+                    state = "ground"
+                elif ch == "8":
+                    r = min(rows - 1, max(0, self.saved_r))
+                    c = min(cols - 1, max(0, self.saved_c))
+                    state = "ground"
                 else:
                     state = "ground"
             elif state == "csi":
@@ -411,7 +578,9 @@ class VtScreen:
                     cmd = ch
                     state = "ground"
                     csi_buf = ""
-                    if cmd in ("H", "f"):
+                    if cmd == "m":
+                        apply_sgr_seq(self.cursor_sgr, f"\x1b[{seq}m")
+                    elif cmd in ("H", "f"):
                         parts = seq.split(";")
                         r = max(0, min(rows - 1, (int(parts[0]) if parts[0].isdigit() else 1) - 1))
                         c = max(
@@ -428,37 +597,50 @@ class VtScreen:
                     elif cmd == "J":
                         if seq in ("", "0"):
                             if 0 <= r < rows:
+                                rb = r * cols
                                 for cx in range(max(0, c), cols):
                                     grid[r][cx] = " "
+                                    touched[rb + cx] = 1
                             for ry in range(r + 1, rows):
                                 grid[ry] = [" "] * cols
+                                touched[ry * cols : (ry + 1) * cols] = b"\x01" * cols
                         elif seq == "1":
                             for ry in range(0, r):
                                 grid[ry] = [" "] * cols
+                                touched[ry * cols : (ry + 1) * cols] = b"\x01" * cols
                             if 0 <= r < rows:
+                                rb = r * cols
                                 for cx in range(0, min(cols, c + 1)):
                                     grid[r][cx] = " "
+                                    touched[rb + cx] = 1
                         elif seq in ("2", "3"):
                             for ry in range(rows):
                                 grid[ry] = [" "] * cols
+                            touched[:] = b"\x01" * (rows * cols)
                     elif cmd == "K":
                         if 0 <= r < rows:
                             row_ref = grid[r]
+                            rb = r * cols
                             if seq in ("", "0"):
                                 for cx in range(max(0, c), cols):
                                     row_ref[cx] = " "
+                                    touched[rb + cx] = 1
                             elif seq == "1":
                                 for cx in range(0, min(cols, c + 1)):
                                     row_ref[cx] = " "
+                                    touched[rb + cx] = 1
                             elif seq == "2":
                                 for cx in range(cols):
                                     row_ref[cx] = " "
+                                    touched[rb + cx] = 1
                     elif cmd == "X":
                         if 0 <= r < rows:
                             step = int(seq) if seq.isdigit() else 1
                             row_ref = grid[r]
+                            rb = r * cols
                             for cx in range(max(0, c), min(cols, c + step)):
                                 row_ref[cx] = " "
+                                touched[rb + cx] = 1
                     elif cmd in ("C", "a"):
                         step = int(seq) if seq.isdigit() else 1
                         c = min(cols - 1, c + step)
@@ -660,8 +842,9 @@ class VtScreen:
 
         n_lines = len(self.tok_lines)
         col_1b = x0 + 2
-        # DEC Mode 2026 synchronized output prevents any mid-frame tearing at 120Hz
-        chunks: list[str] = ["\x1b[?2026h\x1b7\x1b[0m"]
+        restore_sgr = serialize_sgr(self.cursor_sgr)
+        # DEC Mode 2026 synchronized output + clean G0/OSC-8/TrueColor save & restore
+        chunks: list[str] = ["\x1b[?2026h\x1b7\x1b(B\x1b[0m\x1b]8;;\x1b\\"]
         for k, ry in enumerate(range(y0 + 1, vis_end_y)):
             src_idx = top_idx + k
             row_1b = ry + 1
@@ -670,8 +853,164 @@ class VtScreen:
             else:
                 row_txt = " " * mw
             chunks.append(f"\x1b[{row_1b};{col_1b}H{row_txt}")
-        chunks.append("\x1b[0m\x1b8\x1b[?2026l")
+        chunks.append(f"\x1b[0m\x1b8{restore_sgr}\x1b[?2026l")
+        if pan_x > 0:
+            self.main_dirty_on_term = True
+            self._saved_pan0 = (b0, top_idx, self.tok_lines)
+        else:
+            self.main_dirty_on_term = False
+            self._saved_pan0 = None
         return "".join(chunks).encode("utf-8")
+
+    def _render_saved_pan0_restore(
+        self,
+        saved: tuple[tuple[int, int, int, int], int, list[list[tuple[bool, str, int]]]],
+        pre_sgr: list,
+    ) -> bytes:
+        """
+        Reconstructs `[0]`'s exact `pan_x = 0` cells prior to applying a `tcell.Show()` differential
+        stream so `State_A(pan_x=0) + Delta(State_A -> State_B) == State_B` holds for every cell.
+        """
+        b0, top_idx, tok_lines = saved
+        x0, y0, x1, y1 = b0
+        mw = max(0, x1 - x0 - 1)
+        vis_end_y = min(self.rows, y1)
+        if mw <= 0 or vis_end_y <= y0 + 1:
+            return b""
+        n_lines = len(tok_lines)
+        col_1b = x0 + 2
+        restore_sgr = serialize_sgr(pre_sgr)
+        chunks: list[str] = ["\x1b[?2026h\x1b7\x1b(B\x1b[0m\x1b]8;;\x1b\\"]
+        for k, ry in enumerate(range(y0 + 1, vis_end_y)):
+            src_idx = top_idx + k
+            row_1b = ry + 1
+            if src_idx < n_lines:
+                row_txt = slice_tokens_padded(tok_lines[src_idx], 0, mw)
+            else:
+                row_txt = " " * mw
+            chunks.append(f"\x1b[{row_1b};{col_1b}H{row_txt}")
+        chunks.append(f"\x1b[0m\x1b8{restore_sgr}\x1b[?2026l")
+        return "".join(chunks).encode("utf-8")
+
+    def render_untouched_blank_scrub(self, b0: tuple[int, int, int, int]) -> bytes:
+        """
+        Scrubs ghost `[0]` cells (`pan_x > 0` characters & diff backgrounds) that `tcell.Show()`
+        skipped writing because `tcell`'s internal front-buffer already held `' '` at `pan_x = 0`.
+        """
+        x0, y0, x1, y1 = b0
+        end_x = min(self.cols, x1)
+        vis_end_y = min(self.rows, y1)
+        if end_x <= x0 + 1 or vis_end_y <= y0 + 1:
+            self.main_dirty_on_term = False
+            return b""
+
+        cols = self.cols
+        touched = self.cell_touched
+        ops: list[str] = []
+        for ry in range(y0 + 1, vis_end_y):
+            row_ref = self.grid[ry]
+            rb = ry * cols
+            cx = x0 + 1
+            while cx < end_x:
+                if touched[rb + cx] == 0 and row_ref[cx] == " ":
+                    run_start = cx
+                    cx += 1
+                    while cx < end_x and touched[rb + cx] == 0 and row_ref[cx] == " ":
+                        cx += 1
+                    ops.append(f"\x1b[{ry + 1};{run_start + 1}H{' ' * (cx - run_start)}")
+                else:
+                    cx += 1
+
+        self.main_dirty_on_term = False
+        if not ops:
+            return b""
+        restore_sgr = serialize_sgr(self.cursor_sgr)
+        return (
+            "\x1b[?2026h\x1b7\x1b(B\x1b[0m\x1b]8;;\x1b\\"
+            + "".join(ops)
+            + f"\x1b[0m\x1b8{restore_sgr}\x1b[?2026l"
+        ).encode("utf-8")
+
+    def process_pty_chunk(
+        self,
+        raw: bytes,
+        applied_rows: int = 0,
+        applied_cols: int = 0,
+        master_write_cb=None,
+    ) -> bytes:
+        """
+        Feeds raw PTY bytes through `VtFrameGate`, updates `VtScreen`, and appends `[0]` horizontal
+        pan overlays or ghost-cell scrubs ONLY at clean complete-frame boundaries.
+        """
+        complete = self.frame_gate.push(raw)
+        if not complete:
+            return b""
+
+        was_dirty = self.main_dirty_on_term
+        saved_pan0 = self._saved_pan0
+        pre_sgr = list(self.cursor_sgr)
+
+        self.clear_touched()
+        self.feed(complete)
+
+        # If `tcell` is still mid-escape-sequence across a 1024-byte PTY boundary, defer overlay
+        # until the remaining bytes of the sequence arrive so we never interleave mid-frame.
+        if self.frame_gate.has_pending():
+            self.pending_pan_flush = True
+            if was_dirty and saved_pan0 is not None:
+                pre_restore = self._render_saved_pan0_restore(saved_pan0, pre_sgr)
+                self.main_dirty_on_term = False
+                self._saved_pan0 = None
+                return pre_restore + complete
+            return complete
+
+        self.pending_pan_flush = False
+        boxes_now = self.find_boxes()
+        b0 = boxes_now.get("0")
+        pre_restore = b""
+        overlay = b""
+        if b0 is not None:
+            mw = max(0, b0[2] - b0[0] - 1)
+            if mw > 0 and mw != self.main_inner_w:
+                self.main_inner_w = mw
+                if self.sid > 0 and applied_rows > 0 and applied_cols > 0:
+                    write_geom_file(self.sid, applied_rows, applied_cols, mw)
+            hdr0 = "".join(
+                ch if ch != "" else " " for ch in self.grid[b0[1]][b0[0] : min(self.cols, b0[2])]
+            )
+            if "Reflog Entry" in hdr0 and "4" in boxes_now and master_write_cb is not None:
+                now_t = time.monotonic()
+                if now_t - self._last_reflog_heal > 0.4:
+                    self._last_reflog_heal = now_t
+                    b4 = boxes_now["4"]
+                    c4 = b4[0] + 6
+                    r4 = b4[1] + 1
+                    master_write_cb(f"\x1b[<0;{c4};{r4}M\x1b[<0;{c4};{r4}m".encode("ascii"))
+
+            top_idx = self.match_visible_main(b0)
+            cur_pan = self.pan_x.get("0", 0)
+            if top_idx is not None and cur_pan > 0:
+                max_over = self.visible_main_max_overflow(b0, top_idx)
+                next_pan = min(cur_pan, max_over)
+                self.pan_x["0"] = next_pan
+                if was_dirty and saved_pan0 is not None and (next_pan == 0 or saved_pan0[0] != b0):
+                    pre_restore = self._render_saved_pan0_restore(saved_pan0, pre_sgr)
+                overlay = self.render_main_pan_ansi(b0, next_pan)
+            elif was_dirty:
+                if saved_pan0 is not None:
+                    pre_restore = self._render_saved_pan0_restore(saved_pan0, pre_sgr)
+                if top_idx is not None:
+                    overlay = self.render_main_pan_ansi(b0, 0)
+                else:
+                    overlay = self.render_untouched_blank_scrub(b0)
+                self.main_dirty_on_term = False
+                self._saved_pan0 = None
+        elif was_dirty and saved_pan0 is not None:
+            pre_restore = self._render_saved_pan0_restore(saved_pan0, pre_sgr)
+            self.main_dirty_on_term = False
+            self._saved_pan0 = None
+
+        return pre_restore + complete + overlay
 
     def can_scroll_right(self, pid: str, rect: tuple[int, int, int, int]) -> bool:
         if pid == "1":
@@ -719,6 +1058,9 @@ def restore_main_pan_zero(screen: VtScreen, direct_out: list[bytes]) -> None:
     """Restores `[0]` terminal cells back to `pan_x = 0` before Lazygit draws popups or changes selection."""
     if screen.pan_x.get("0", 0) > 0:
         screen.pan_x["0"] = 0
+        if screen.frame_gate.has_pending():
+            screen.pending_pan_flush = True
+            return
         b0 = screen.find_boxes().get("0")
         if b0 is not None and screen.matched_top_idx is not None:
             ansi = screen.render_main_pan_ansi(b0, 0)
@@ -749,6 +1091,9 @@ def emit_hscroll_for_panel(
             if next_pan == cur_pan:
                 return b""
             screen.pan_x["0"] = next_pan
+            if screen.frame_gate.has_pending():
+                screen.pending_pan_flush = True
+                return b""
             ansi = screen.render_main_pan_ansi(rect, next_pan)
             if ansi:
                 direct_out.append(ansi)
@@ -871,6 +1216,13 @@ def translate_input(
                     out_parts.append(seq)
                 continue
 
+            if base_btn in (64, 65):
+                pid, _ = screen.panel_at(col, row)
+                if pid is not None and pid != "0":
+                    restore_main_pan_zero(screen, direct_out)
+                out_parts.append(m.group(0))
+                continue
+
             if btn in (0, 32):
                 pid, rect = screen.panel_at(col, row)
                 if pid is not None and rect is not None:
@@ -890,6 +1242,35 @@ def translate_input(
         return b"".join(out_parts)
 
     return translate_key_chunk(buf, screen, direct_out)
+
+
+def read_master_burst(master_fd: int) -> bytes:
+    """Coalesces back-to-back 1024-byte Darwin/POSIX PTY chunks of a single `tcell.Show()` frame."""
+    chunks: list[bytes] = []
+    total = 0
+    while total < 65536:
+        try:
+            d = os.read(master_fd, 16384)
+        except BlockingIOError:
+            break
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR):
+                break
+            if not chunks:
+                raise
+            break
+        if not d:
+            break
+        chunks.append(d)
+        total += len(d)
+        wait_s = 0.0004 if (len(d) >= 1024 or d[-1:] == b"\x1b") else 0.0
+        try:
+            r_more, _, _ = select.select([master_fd], [], [], wait_s)
+        except Exception:
+            break
+        if not r_more:
+            break
+    return b"".join(chunks)
 
 
 def main() -> int:
@@ -928,7 +1309,23 @@ def main() -> int:
     screen.sid = child_pid
     applied_size = [init_rows, init_cols]
 
-    def sync_winch(force_nudge: bool = False) -> None:
+    # Single-threaded self-pipe so SIGWINCH & post-launch resize never race with `VtScreen.feed()`
+    wake_r, wake_w = os.pipe()
+    for wfd in (wake_r, wake_w):
+        flags = fcntl.fcntl(wfd, fcntl.F_GETFL)
+        fcntl.fcntl(wfd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    winch_req = [False, False]  # [pending, force_nudge]
+
+    def request_winch(force_nudge: bool = False) -> None:
+        winch_req[0] = True
+        if force_nudge:
+            winch_req[1] = True
+        try:
+            os.write(wake_w, b"\x01")
+        except OSError:
+            pass
+
+    def sync_winch_on_loop(force_nudge: bool = False) -> None:
         packed = get_winsize_packed(stdout_fd)
         rows, cols, xpx, ypx = struct.unpack("HHHH", packed)
         changed = (rows != applied_size[0]) or (cols != applied_size[1])
@@ -950,13 +1347,13 @@ def main() -> int:
         except OSError:
             pass
 
-    signal.signal(signal.SIGWINCH, lambda *_: sync_winch(False))
+    signal.signal(signal.SIGWINCH, lambda *_: request_winch(False))
 
     def post_launch_sync() -> None:
         started_narrow = init_cols < 60
         for idx, delay in enumerate((0.10, 0.25, 0.55)):
             time.sleep(delay)
-            sync_winch(force_nudge=(started_narrow and idx == 1))
+            request_winch(force_nudge=(started_narrow and idx == 1))
 
     threading.Thread(target=post_launch_sync, daemon=True).start()
 
@@ -975,7 +1372,7 @@ def main() -> int:
     try:
         while True:
             try:
-                rlist, _, _ = select.select([stdin_fd, master_fd], [], [])
+                rlist, _, _ = select.select([stdin_fd, master_fd, wake_r], [], [])
             except InterruptedError:
                 continue
             except select.error as exc:
@@ -983,39 +1380,38 @@ def main() -> int:
                     continue
                 break
 
+            if wake_r in rlist:
+                try:
+                    while os.read(wake_r, 64):
+                        pass
+                except OSError:
+                    pass
+                if winch_req[0] and not screen.frame_gate.has_pending():
+                    nudge = winch_req[1]
+                    winch_req[0] = False
+                    winch_req[1] = False
+                    sync_winch_on_loop(force_nudge=nudge)
+
             if master_fd in rlist:
                 try:
-                    data = os.read(master_fd, 8192)
+                    data = read_master_burst(master_fd)
                 except OSError:
                     break
                 if not data:
                     break
-                screen.feed(data)
-                boxes_now = screen.find_boxes()
-                b0 = boxes_now.get("0")
-                overlay = b""
-                if b0 is not None:
-                    mw = max(0, b0[2] - b0[0] - 1)
-                    if mw > 0 and mw != screen.main_inner_w:
-                        screen.main_inner_w = mw
-                        write_geom_file(child_pid, applied_size[0], applied_size[1], mw)
-                    hdr0 = "".join(ch if ch != "" else " " for ch in screen.grid[b0[1]][b0[0] : min(screen.cols, b0[2])])
-                    if "Reflog Entry" in hdr0 and "4" in boxes_now:
-                        now_t = time.monotonic()
-                        if now_t - screen._last_reflog_heal > 0.4:
-                            screen._last_reflog_heal = now_t
-                            b4 = boxes_now["4"]
-                            c4 = b4[0] + 6
-                            r4 = b4[1] + 1
-                            write_all(master_fd, f"\x1b[<0;{c4};{r4}M\x1b[<0;{c4};{r4}m".encode("ascii"))
-                    # Keep horizontal `pan_x` seamlessly applied across vertical wheel scrolling!
-                    top_idx = screen.match_visible_main(b0)
-                    if top_idx is not None and screen.pan_x.get("0", 0) > 0:
-                        max_over = screen.visible_main_max_overflow(b0, top_idx)
-                        screen.pan_x["0"] = min(screen.pan_x["0"], max_over)
-                        if screen.pan_x["0"] > 0:
-                            overlay = screen.render_main_pan_ansi(b0, screen.pan_x["0"])
-                write_all(stdout_fd, data + overlay if overlay else data)
+                out_bytes = screen.process_pty_chunk(
+                    data,
+                    applied_rows=applied_size[0],
+                    applied_cols=applied_size[1],
+                    master_write_cb=lambda b: write_all(master_fd, b),
+                )
+                if out_bytes:
+                    write_all(stdout_fd, out_bytes)
+                if winch_req[0] and not screen.frame_gate.has_pending():
+                    nudge = winch_req[1]
+                    winch_req[0] = False
+                    winch_req[1] = False
+                    sync_winch_on_loop(force_nudge=nudge)
 
             if stdin_fd in rlist:
                 try:
@@ -1026,15 +1422,23 @@ def main() -> int:
                     break
                 direct_out: list[bytes] = []
                 translated = translate_input(in_data, screen, last_emit, direct_out)
-                if direct_out:
+                if direct_out and not screen.frame_gate.has_pending():
                     write_all(stdout_fd, b"".join(direct_out))
                 if translated:
                     write_all(master_fd, translated)
     finally:
+        if screen.frame_gate.tail:
+            write_all(stdout_fd, screen.frame_gate.tail)
+            screen.frame_gate.tail = b""
         if orig_termios is not None:
             try:
                 termios.tcsetattr(stdin_fd, termios.TCSADRAIN, orig_termios)
             except termios.error:
+                pass
+        for wfd in (wake_r, wake_w):
+            try:
+                os.close(wfd)
+            except OSError:
                 pass
         for stale_p in (
             f"/tmp/.cc-ide/lg_geom_{child_pid}.txt",
