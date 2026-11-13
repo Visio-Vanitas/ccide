@@ -234,6 +234,20 @@ class TestViewerWrapAndHScroll(unittest.TestCase):
         self.assertEqual(len(osc_out), 1)
         self.assertIn("‹".encode("utf-8"), osc_out[0])
 
+        blur_out: list[bytes] = []
+        scr_osc.focused_panel = "2"
+        bridge.translate_input(b"\x1b[O", scr_osc, [0.0], blur_out)
+        self.assertEqual(len(blur_out), 1)
+        self.assertIn(b"\x1b7\x1b[0m", blur_out[0])
+
+        dag_mod = load_script_module("git_smooth_graph", "scripts/git_smooth_graph.py")
+        log_mod = load_script_module("lazygit_log_smooth", "scripts/lazygit-log.py")
+        dag_rows = dag_mod.render_smooth_dag_rows(
+            [("m1", ["b0", "f1"]), ("f1", ["b0"]), ("b0", [])]
+        )
+        plain_dag = [log_mod.strip_ansi(r[0]) for r in dag_rows]
+        self.assertEqual(plain_dag, ["⏣─╮ ", "│ ○ ", "○─╯ "])
+
     def test_write_all_handles_short_pty_writes_and_compound_delta_sgr(self) -> None:
         bridge = load_script_module("pty_hscroll_bridge_w", "scripts/pty-hscroll-bridge.py")
         r_fd, w_fd = os.pipe()

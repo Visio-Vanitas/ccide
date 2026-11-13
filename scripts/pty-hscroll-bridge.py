@@ -732,6 +732,35 @@ class VtScreen:
                 return pid, rect
         return None, None
 
+    def render_unfocused_border_dim(self) -> bytes:
+        """Repaints the focused Lazygit panel's active green border & blue selection bar in neutral inactive style on `FocusOut` (`\\x1b[O`) while preserving `[0]`'s syntax-highlighted diff."""
+        boxes = self.find_boxes()
+        rect = boxes.get(self.focused_panel)
+        if rect is None:
+            return b""
+        x0, y0, x1, y1 = rect
+        end_y = min(self.rows - 1, y1)
+        end_x = min(self.cols - 1, x1)
+        if x0 < 0 or y0 < 0 or end_x <= x0 or end_y <= y0:
+            return b""
+        self._dimmed_unfocused = True
+        out: list[str] = ["\x1b7\x1b[0m"]
+        top_s = "".join(ch if ch != "" else "" for ch in self.grid[y0][x0 : end_x + 1])
+        out.append(f"\x1b[{y0 + 1};{x0 + 1}H{top_s}")
+        bot_s = "".join(ch if ch != "" else "" for ch in self.grid[end_y][x0 : end_x + 1])
+        out.append(f"\x1b[{end_y + 1};{x0 + 1}H{bot_s}")
+        repaint_interior = self.focused_panel != "0"
+        for ry in range(y0 + 1, end_y):
+            if repaint_interior:
+                full_s = "".join(ch if ch != "" else "" for ch in self.grid[ry][x0 : end_x + 1])
+                out.append(f"\x1b[{ry + 1};{x0 + 1}H{full_s}")
+            else:
+                lc = self.grid[ry][x0] or "│"
+                rc = self.grid[ry][end_x] or "│"
+                out.append(f"\x1b[{ry + 1};{x0 + 1}H{lc}\x1b[{ry + 1};{end_x + 1}H{rc}")
+        out.append("\x1b8")
+        return "".join(out).encode("utf-8", "replace")
+
     def has_popup_over_main(self, b0: tuple[int, int, int, int]) -> bool:
         """Detects Lazygit modal popups (`╭─...─╮` + `│` vertical borders) without false-positiving on `delta` `───┐`."""
         x0, y0, x1, y1 = b0
@@ -1137,6 +1166,10 @@ def translate_key_chunk(buf: bytes, screen: VtScreen, direct_out: list[bytes]) -
             return KEY_HLEFT_RE.sub(lambda _: clamp_key_dir(-1), buf)
         if KEY_HRIGHT_RE.search(buf):
             return KEY_HRIGHT_RE.sub(lambda _: clamp_key_dir(1), buf)
+        if b"\x1b[O" in buf:
+            dim_ansi = screen.render_unfocused_border_dim()
+            if dim_ansi:
+                direct_out.append(dim_ansi)
         if FOCUS_EVENT_RE.sub(b"", buf):
             restore_main_pan_zero(screen, direct_out)
         return buf
@@ -1367,6 +1400,7 @@ def main() -> int:
         raw[3] &= ~(termios.ECHO | termios.ICANON | termios.IEXTEN | termios.ISIG)
         termios.tcsetattr(stdin_fd, termios.TCSADRAIN, raw)
 
+    write_all(stdout_fd, b"\x1b[?1004h")
     last_emit = [0.0]
     exit_code = 0
     try:
@@ -1420,13 +1454,22 @@ def main() -> int:
                     break
                 if not in_data:
                     break
+                had_focus_in = b"\x1b[I" in in_data
                 direct_out: list[bytes] = []
                 translated = translate_input(in_data, screen, last_emit, direct_out)
                 if direct_out and not screen.frame_gate.has_pending():
                     write_all(stdout_fd, b"".join(direct_out))
                 if translated:
                     write_all(master_fd, translated)
+                if had_focus_in and getattr(screen, "_dimmed_unfocused", False):
+                    screen._dimmed_unfocused = False
+                    if not translated:
+                        request_winch(force_nudge=True)
     finally:
+        try:
+            write_all(stdout_fd, b"\x1b[?1004l")
+        except OSError:
+            pass
         if screen.frame_gate.tail:
             write_all(stdout_fd, screen.frame_gate.tail)
             screen.frame_gate.tail = b""

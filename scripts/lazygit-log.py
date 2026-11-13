@@ -19,6 +19,9 @@ import subprocess
 import sys
 import unicodedata
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from git_smooth_graph import render_smooth_dag_rows  # type: ignore[import-not-found]
+
 if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
@@ -342,13 +345,12 @@ def format_full_width_log(
     wrap_enabled: bool = False,
 ) -> list[str]:
     sep = "\x1f"
-    pretty = f"format:{sep}%an{sep}%d{sep}%s"
+    pretty = f"format:%H{sep}%P{sep}%an{sep}%d{sep}%s"
     cmd = [
         "git",
         "--no-optional-locks",
         "log",
-        "--graph",
-        "--color=always",
+        "--topo-order",
         f"-n{max_commits}",
         f"--pretty={pretty}",
     ]
@@ -362,30 +364,21 @@ def format_full_width_log(
     except Exception:
         return []
 
-    raw_rows = res.stdout.splitlines()
+    parsed: list[tuple[str, list[str], str, str, str]] = []
+    for raw in res.stdout.splitlines():
+        parts = raw.split(sep)
+        if len(parts) < 5:
+            continue
+        sha = parts[0].strip()
+        parents = [p for p in parts[1].strip().split() if p]
+        parsed.append((sha, parents, parts[2], parts[3].strip(), parts[4].strip()))
+
+    dag_rows = render_smooth_dag_rows([(sha, parents) for sha, parents, _, _, _ in parsed])
     out_lines: list[str] = []
-    total_rows = len(raw_rows)
 
-    for idx, raw in enumerate(raw_rows):
-        raw_clean_osc = ANSI_OSC_RE.sub("", raw)
-        if sep not in raw_clean_osc:
-            conn_line = "    " + raw_clean_osc + RESET
-            if wrap_enabled and visible_width(conn_line) > panel_w:
-                out_lines.extend(wrap_vi_ansi(conn_line, panel_w, SHOWBREAK_GLYPH, panel_w - 1))
-            else:
-                out_lines.append(conn_line)
-            continue
-
-        parts = raw_clean_osc.split(sep)
-        if len(parts) < 4:
-            out_lines.append("    " + raw_clean_osc + RESET)
-            continue
-
-        graph_pfx = parts[0]
-        author_raw = strip_ansi(parts[1])
-        deco_raw = strip_ansi(parts[2]).strip()
-        subject_raw = strip_ansi(parts[3]).strip()
-
+    for (_, _, author_raw, deco_raw, subject_raw), (graph_pfx, graph_cont, graph_w) in zip(
+        parsed, dag_rows
+    ):
         au = compact_author(author_raw)
         au_w = visible_width(au)
         pad_w = max(1, 4 - au_w)
@@ -395,7 +388,11 @@ def format_full_width_log(
         deco_badge = ""
         if deco_raw.startswith("(") and deco_raw.endswith(")"):
             inner = deco_raw[1:-1]
-            refs = [r.strip().replace("HEAD -> ", "→").replace("tag: ", "") for r in inner.split(",") if r.strip()]
+            refs = [
+                r.strip().replace("HEAD -> ", "→").replace("tag: ", "")
+                for r in inner.split(",")
+                if r.strip()
+            ]
             if refs:
                 badge_txt = ", ".join(refs[:2])
                 if len(badge_txt) > 18:
@@ -409,10 +406,7 @@ def format_full_width_log(
             out_lines.append(lead + body)
             continue
 
-        lead_w = au_total_w + visible_width(graph_pfx)
-        has_next = idx + 1 < total_rows
-        pipe_repl = "│" if has_next else " "
-        graph_cont = graph_pfx.replace("*", pipe_repl)
+        lead_w = au_total_w + graph_w
         cont_pfx = f"{' ' * au_total_w}{graph_cont}{RESET}{SHOWBREAK_GLYPH}"
         cont_w = lead_w + 1
 

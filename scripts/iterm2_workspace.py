@@ -125,6 +125,8 @@ def make_command_profile(cmd: str, cwd: str) -> iterm2.LocalWriteOnlyProfile:
     prof.set_disable_smcup_rmcup(False)
     prof.set_mouse_reporting(True)
     prof.set_mouse_reporting_allow_mouse_wheel(True)
+    if hasattr(prof, "_simple_set"):
+        prof._simple_set("Mouse Reporting allow clicks and drags", True)
     if hasattr(prof, "set_background_image_location"):
         prof.set_background_image_location("")
     if cwd and os.path.isdir(cwd):
@@ -148,6 +150,8 @@ async def lock_tui_pane_no_scrollback(sess: iterm2.Session):
         await prof.async_set_disable_smcup_rmcup(False)
         await prof.async_set_mouse_reporting(True)
         await prof.async_set_mouse_reporting_allow_mouse_wheel(True)
+        if hasattr(prof, "_async_simple_set"):
+            await prof._async_simple_set("Mouse Reporting allow clicks and drags", True)
     except Exception:
         pass
 

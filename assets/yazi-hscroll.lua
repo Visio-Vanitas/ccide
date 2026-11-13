@@ -326,11 +326,38 @@ local function slice_ansi_preserve_sgr(s, offset_cols, width_cols, initial_sgr)
 	return table.concat(out), st
 end
 
+local IS_WIN = (package.config:sub(1, 1) == "\\")
+
+local function ipc_dir()
+	local custom = os.getenv("CCIDE_IPC_DIR")
+	if custom and custom ~= "" then
+		return custom:gsub("[/\\]+$", "")
+	end
+	if IS_WIN then
+		local t = os.getenv("TEMP") or os.getenv("TMP") or "."
+		return (t:gsub("[/\\]+$", "")) .. "\\.cc-ide"
+	end
+	return "/tmp/.cc-ide"
+end
+
+local function ipc_file(name)
+	return ipc_dir() .. (IS_WIN and "\\" or "/") .. name
+end
+
+local function atomic_replace(tmp_p, dst_p)
+	local ok = os.rename(tmp_p, dst_p)
+	if not ok then
+		os.remove(dst_p)
+		os.rename(tmp_p, dst_p)
+	end
+end
+
 local function url_hash(s)
+	local norm = (s or ""):gsub("^\\\\\?\\", ""):gsub("\\", "/")
 	local h1 = 5381
 	local h2 = 52711
-	for i = 1, #s do
-		local b = s:byte(i)
+	for i = 1, #norm do
+		local b = norm:byte(i)
 		h1 = ((h1 * 33) + b) % 2147483647
 		h2 = ((h2 * 131) + b) % 2147483647
 	end
@@ -341,7 +368,7 @@ local function read_url_bounds(url_str)
 	if not url_str or url_str == "" then
 		return 0, false
 	end
-	local f = io.open("/tmp/.cc-ide/yb_" .. url_hash(url_str) .. ".txt", "r")
+	local f = io.open(ipc_file("yb_" .. url_hash(url_str) .. ".txt"), "r")
 	if not f then
 		return 0, false
 	end
@@ -355,7 +382,7 @@ local function write_url_bounds(url_str, max_x, at_bot)
 	if not url_str or url_str == "" then
 		return
 	end
-	local p = "/tmp/.cc-ide/yb_" .. url_hash(url_str) .. ".txt"
+	local p = ipc_file("yb_" .. url_hash(url_str) .. ".txt")
 	local tmp = p .. ".tmp"
 	local f = io.open(tmp, "w")
 	if not f then
@@ -363,14 +390,14 @@ local function write_url_bounds(url_str, max_x, at_bot)
 	end
 	f:write(tostring(math.max(0, math.floor(max_x or 0))) .. "\n" .. (at_bot and "1\n" or "0\n"))
 	f:close()
-	os.rename(tmp, p)
+	atomic_replace(tmp, p)
 end
 
 local function read_url_px(url_str)
 	if not url_str or url_str == "" then
 		return 0
 	end
-	local f = io.open("/tmp/.cc-ide/yx_" .. url_hash(url_str) .. ".txt", "r")
+	local f = io.open(ipc_file("yx_" .. url_hash(url_str) .. ".txt"), "r")
 	if not f then
 		return 0
 	end
@@ -383,7 +410,7 @@ local function write_url_px(url_str, px)
 	if not url_str or url_str == "" then
 		return
 	end
-	local p = "/tmp/.cc-ide/yx_" .. url_hash(url_str) .. ".txt"
+	local p = ipc_file("yx_" .. url_hash(url_str) .. ".txt")
 	local tmp = p .. ".tmp"
 	local f = io.open(tmp, "w")
 	if not f then
@@ -391,7 +418,7 @@ local function write_url_px(url_str, px)
 	end
 	f:write(tostring(math.max(0, math.floor(px or 0))) .. "\n")
 	f:close()
-	os.rename(tmp, p)
+	atomic_replace(tmp, p)
 end
 
 local function sync_bounds_and_get_px(url_str, max_x, at_bot)
@@ -408,7 +435,7 @@ local function write_focus_file(key_str, line_no, span_no, pending)
 	if not key_str or key_str == "" then
 		return
 	end
-	local p = "/tmp/.cc-ide/yf_" .. url_hash(key_str) .. ".txt"
+	local p = ipc_file("yf_" .. url_hash(key_str) .. ".txt")
 	if not line_no or line_no <= 0 then
 		os.remove(p)
 		return
@@ -429,14 +456,14 @@ local function write_focus_file(key_str, line_no, span_no, pending)
 			.. "\n"
 	)
 	f:close()
-	os.rename(tmp, p)
+	atomic_replace(tmp, p)
 end
 
 local function read_single_focus(key_str)
 	if not key_str or key_str == "" then
 		return 0, 0, 0
 	end
-	local f = io.open("/tmp/.cc-ide/yf_" .. url_hash(key_str) .. ".txt", "r")
+	local f = io.open(ipc_file("yf_" .. url_hash(key_str) .. ".txt"), "r")
 	if not f then
 		return 0, 0, 0
 	end
@@ -553,6 +580,14 @@ local dispatch_sync = ya.sync(function(_, action, arg1, arg2, arg3)
 					ya.emit("peek", { desired, only_if = h.url, force = true })
 				end
 			end
+			ui.render()
+		end
+		return
+	end
+
+	if action == "blur" then
+		if (_G.CCIDE_INPUT_MODE or "mouse") ~= "mouse" then
+			_G.CCIDE_INPUT_MODE = "mouse"
 			ui.render()
 		end
 		return
@@ -1074,10 +1109,13 @@ local function write_cached_block(cache_path, key, body)
 	f:write(key .. "\n")
 	f:write(body or "")
 	f:close()
-	os.rename(tmp, cache_path)
+	atomic_replace(tmp, cache_path)
 end
 
 local function find_bat_bin()
+	if IS_WIN then
+		return "bat"
+	end
 	for _, p in ipairs({ "/opt/homebrew/bin/bat", "/usr/local/bin/bat", "/usr/bin/bat", "/usr/bin/batcat" }) do
 		local f = io.open(p, "r")
 		if f then
@@ -1093,13 +1131,14 @@ local function peek_markdown(job, url_str)
 	local area_h = job.area.h
 	local skip = job.skip or 0
 	local key = file_stamp(job.file)
-	local cache_path = "/tmp/.cc-ide/ym_" .. url_hash(url_str) .. ".txt"
+	local cache_path = ipc_file("ym_" .. url_hash(url_str) .. ".txt")
 	local raw_all = read_cached_block(cache_path, key)
 
 	if not raw_all then
-		local home = os.getenv("HOME") or ""
-		local script = home .. "/.claude/scripts/md-render.py"
-		local out = Command("python3"):arg({ script, "-w", tostring(area_w), tostring(job.file.path) }):stdout(Command.PIPED):stderr(Command.NULL):output()
+		local home = os.getenv("HOME") or os.getenv("USERPROFILE") or ""
+		local script = home .. (IS_WIN and "\\.claude\\scripts\\md-render.py" or "/.claude/scripts/md-render.py")
+		local py_cmd = IS_WIN and "python" or "python3"
+		local out = Command(py_cmd):arg({ script, "-w", tostring(area_w), tostring(job.file.path) }):stdout(Command.PIPED):stderr(Command.NULL):output()
 		raw_all = (out and out.stdout) or ""
 		if raw_all ~= "" then
 			write_cached_block(cache_path, key, raw_all)
@@ -1195,7 +1234,7 @@ end
 local function fetch_or_warm_bat_cache(file, url_str, path_str, skip, area_h, tab_sz, hl_start, hl_end)
 	local theme_name = resolve_yazi_bat_theme()
 	local hl_tag = (hl_start and hl_start > 0) and string.format("%d:%d", hl_start, hl_end or hl_start) or ""
-	local cache_path = "/tmp/.cc-ide/yc2_" .. url_hash(url_str) .. ".txt"
+	local cache_path = ipc_file("yc2_" .. url_hash(url_str) .. ".txt")
 	local key = file_stamp(file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name .. "\t" .. hl_tag
 	local cached = read_cached_block(cache_path, key)
 	if cached then
@@ -1307,7 +1346,7 @@ local function peek_code(job, url_str)
 
 	local theme_name = resolve_yazi_bat_theme()
 	local hl_tag = (hl_ln > 0) and string.format("%d:%d", hl_ln, hl_end) or ""
-	local cache_path = "/tmp/.cc-ide/yc2_" .. url_hash(url_str) .. ".txt"
+	local cache_path = ipc_file("yc2_" .. url_hash(url_str) .. ".txt")
 	local key = file_stamp(job.file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name .. "\t" .. hl_tag
 	local ansi_slice = read_cached_block(cache_path, key)
 
