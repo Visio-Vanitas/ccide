@@ -19,6 +19,7 @@ try:
     import iterm2  # type: ignore
 except ModuleNotFoundError:
     for cand in (
+        os.path.expanduser("~/.local/share/cc-ide/pyenv/bin/python3"),
         os.path.expanduser("~/miniconda3/bin/python3"),
         os.path.expanduser("~/anaconda3/bin/python3"),
         os.path.expanduser("~/.pyenv/shims/python3"),
@@ -124,6 +125,8 @@ def make_command_profile(cmd: str, cwd: str) -> iterm2.LocalWriteOnlyProfile:
     prof.set_disable_smcup_rmcup(False)
     prof.set_mouse_reporting(True)
     prof.set_mouse_reporting_allow_mouse_wheel(True)
+    if hasattr(prof, "set_background_image_location"):
+        prof.set_background_image_location("")
     if cwd and os.path.isdir(cwd):
         prof.set_initial_directory_mode(
             iterm2.InitialWorkingDirectory.INITIAL_WORKING_DIRECTORY_CUSTOM

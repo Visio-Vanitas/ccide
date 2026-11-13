@@ -220,9 +220,13 @@ ccide setup
 # Non-interactive headless one-click build, plugin install, claude.exe patch & hot-reload:
 ./install.sh --yes
 
-# Run environment, companion tool & patch-anchor health diagnostics:
-./install.sh --doctor
-ccide doctor
+# Run environment, companion tool & patch-anchor health diagnostics (human TUI or JSON):
+./install.sh --doctor [--json]
+ccide doctor [--json]
+
+# Apply or roll back reversible iTerm2 display & Python API preferences:
+./install.sh --iterm-preferences-only
+./install.sh --restore-iterm-preferences
 
 # Re-apply only the Claude Code binary patch (usually automatic on the next `ccide` launch):
 ./install.sh --patch-only
@@ -231,7 +235,10 @@ ccide doctor
 ./install.sh --uninstall
 ```
 
-Installer side effects worth knowing: it symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/`, (re)writes `~/.ssh/ccide_config` and the `Include` line in `~/.ssh/config`, (re)starts the daemon, and packages the plugin into `~/.claude/plugins/cache/cc-ide/cc-ide/0.5.0/`. When `cargo` is absent it falls back to `scripts/ensure-ccide-core.sh` to download the prebuilt release binary.
+Installer side effects worth knowing:
+- **Stage 3a (`scripts/iterm-pyenv.py`)**: locates `iTerm.app` across `/Applications`, `~/Applications`, and `mdfind`; respects `PIP_INDEX_URL` / `pip config list` or concurrently probes `pypi.org`, TUNA, Aliyun, and USTC (cached 24h in `~/.cache/cc-ide/pypi_mirror.json`); provisions an isolated PEP 668-safe venv at `~/.local/share/cc-ide/pyenv` with `iterm2` installed and records `~/.cache/cc-ide/python_bin` (falling back cleanly to Tier 3 `tmux` with copy-pasteable commands when offline).
+- **Stage 3b (`scripts/iterm-preferences.py`)**: backs up `com.googlecode.iterm2.plist` + original key snapshot under `~/.config/cc-ide/backups/iterm2/`, idempotently applies `ShowPaneTitles=false`, `ShowPaneTitlesEvenIfOnlyOnePane=false`, `PerPaneBackgroundImage=false`, `DimInactiveSplitPanes=false`, and `EnableAPIServer=true` (leaving `SplitPaneDimmingAmount` untouched and clearing per-pane wallpapers via `LocalWriteOnlyProfile`), and supports exact rollback via `./install.sh --restore-iterm-preferences`.
+- **Scripts, SSH & Plugin Cache**: symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/`, (re)writes `~/.ssh/ccide_config` + `Include` in `~/.ssh/config`, (re)starts `ccide_daemon.py`, and packages `cc-ide` into `~/.claude/plugins/cache/cc-ide/cc-ide/0.5.0/` (fetching prebuilt release binaries via `scripts/ensure-ccide-core.sh` when `cargo` is absent).
 
 ---
 

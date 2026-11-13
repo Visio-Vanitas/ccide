@@ -127,7 +127,7 @@ jobs:
           zsh -n install.sh
           zsh -n scripts/ccide
           zsh -n scripts/pane-runner.sh
-          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py
+          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py
 
       - name: Validate Plugin & Marketplace JSON Manifests & Version Parity
         run: |

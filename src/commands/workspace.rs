@@ -139,13 +139,38 @@ fn ensure_daemon_started(home: &str) {
     }
 }
 
+/// Unified Python interpreter resolver shared with `install.sh` & `iterm-pyenv.py`:
+/// 1. `~/.cache/cc-ide/python_bin` (recorded by `iterm-pyenv.py` / `install.sh`)
+/// 2. `~/.local/share/cc-ide/pyenv/bin/python3` (dedicated PEP 668-safe venv)
+/// 3. `~/miniconda3/bin/python3` (legacy fallback)
+/// 4. `python3` in `PATH`, else `/usr/bin/python3`
 fn find_python_bin(home: &str) -> String {
-    let conda_py = format!("{}/miniconda3/bin/python3", home);
-    if Path::new(&conda_py).exists() {
-        conda_py
-    } else {
-        "/usr/bin/python3".to_string()
+    let rec_file = format!("{}/.cache/cc-ide/python_bin", home);
+    if let Ok(raw) = fs::read_to_string(&rec_file) {
+        let cand = raw.trim();
+        if !cand.is_empty() && Path::new(cand).is_file() {
+            return cand.to_string();
+        }
     }
+    for cand in [
+        format!("{}/.local/share/cc-ide/pyenv/bin/python3", home),
+        format!("{}/miniconda3/bin/python3", home),
+        "/opt/homebrew/bin/python3".to_string(),
+        "/usr/local/bin/python3".to_string(),
+    ] {
+        if Path::new(&cand).is_file() {
+            return cand;
+        }
+    }
+    if let Ok(path_var) = env::var("PATH") {
+        for dir in path_var.split(':').filter(|s| !s.is_empty()) {
+            let p = Path::new(dir).join("python3");
+            if p.is_file() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    "/usr/bin/python3".to_string()
 }
 
 /// Fast, non-blocking Center-Pane Focus & Subagent Switcher used by `ccide-core sidebar`.
