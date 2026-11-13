@@ -1,0 +1,70 @@
+name: Feature Request
+description: Propose a workspace enhancement, TUI panel improvement, terminal backend, or automation capability (Agent-Ready Schema)
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Structured feature specs can be ingested directly by `python3 -I scripts/agent-task-context.py --issue <id>` to generate scoped implementation briefs and verification checklists.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      description: Primary subsystem this enhancement extends.
+      options:
+        - sidebar (Right TUI · Sprite / SUBAGENTS / CONTEXT / COST / HW)
+        - workspace (Tier 1 iTerm2 Daemon / Tier 2 SSH OSC 1337 / Tier 3 tmux / Ghostty)
+        - installer (install.sh / ccide setup / ccide doctor / iTerm2 prefs)
+        - hscroll-pager (Lazygit PTY Bridge / Yazi hscroll.yazi / md-render)
+        - statusline (Powerline Statusbar & Auto-Compact Threshold)
+        - patcher (scripts/patch_claude_binary.py)
+        - ci-release (GitHub Actions / Automation / Agent Infra)
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Background & Motivation
+      description: What workflow friction or missing capability does this solve?
+      placeholder: |
+        Currently `install.sh` assumes iTerm2's Python API is already installed...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Design & Interfaces
+      description: Desired UX, CLI flags, JSON/JSONC config keys (`palette.json` / `viewer.json`), and fallback behavior.
+      placeholder: |
+        1. Sniff iTerm2 bundle in `/Applications`, `~/Applications`, and `mdfind`...
+        2. Provision isolated venv in `~/.local/share/cc-ide/pyenv`...
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Invariants & Rollback Constraints
+      description: Compatibility, idempotency, backup/restore, MSRV 1.70, and `< 300`-line modularity requirements.
+      value: |
+        - Preserve Rust Edition 2021, MSRV `1.70.0`, and zero external Cargo dependencies
+        - Keep each new/modified source file `< 300` lines (single-responsibility modules)
+        - Any user config/preference writes must be idempotent and reversible via backup/restore
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Concrete `- [ ]` checks required before merging and closing this issue.
+      value: |
+        - [ ] Core behavior & graceful fallbacks verified across supported platforms/tiers
+        - [ ] Automated unit tests cover happy path, idempotency, and fallback edge cases
+        - [ ] `AGENT.md` (`CLAUDE.md`) and CLI `--help` / `--json` interfaces updated if applicable
+    validations:
+      required: true

@@ -11,42 +11,62 @@ permissions:
 
 jobs:
   verify-latest-claude-code:
-    name: Test Dynamic Patcher Against Latest @anthropic-ai/claude-code
+    name: Probe Latest @anthropic-ai/claude-code Across macOS, Linux & Windows PE
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
-      - name: Download & Probe Latest @anthropic-ai/claude-code
-        id: probe
-        continue-on-error: true
+      - name: Resolve Latest Upstream Version
+        id: meta
         run: |
           CC_VER="$(npm view @anthropic-ai/claude-code version)"
+          test -n "$CC_VER"
+          echo "Resolved upstream @anthropic-ai/claude-code version: ${CC_VER}"
           echo "cc_version=${CC_VER}" >> "$GITHUB_OUTPUT"
-          mkdir -p /tmp/cc-watch
-          npm install --prefix /tmp/cc-watch "@anthropic-ai/claude-code@${CC_VER}" --no-audit --no-fund
-          CAND_BIN="$(find /tmp/cc-watch -type f -size +5M \( -name 'claude.exe' -o -name 'claude' -o -name 'cli.js' \) | sort | head -n 1)"
-          echo "Testing binary/bundle: $CAND_BIN"
-          test -n "$CAND_BIN"
-          python3 scripts/patch_claude_binary.py --verify --binary "$CAND_BIN" > /tmp/patch_report.json
 
-      - name: Open Deduplicated Alert Issue on Failure
+      - name: Run 3-OS Structural Symbol & Schema Workbench Probe
+        id: probe
+        continue-on-error: true
+        env:
+          CC_VER: ${{ steps.meta.outputs.cc_version }}
+        run: |
+          python3 -I scripts/cc-maint.py --fetch-npm "${CC_VER}" --json | tee /tmp/maint_report.json
+          python3 -I - /tmp/maint_report.json <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as f:
+              rep = json.load(f)
+          for t in rep.get("targets", []):
+              plat = t.get("target", "unknown")
+              for mp in t.get("missed_diagnostics", []):
+                  if not mp.get("required"):
+                      print(f"::warning::[{plat}] Optional patch '{mp['patch']}' drifted: {mp['message']}")
+              for cat, diff in t.get("schema_diff", {}).items():
+                  if diff.get("added"):
+                      print(f"::notice::[{plat}] New upstream {cat}: {', '.join(diff['added'])}")
+          if not rep.get("required_ok"):
+              sys.exit(1)
+          PY
+
+      - name: Open Deduplicated Alert Issue on Required Patch Failure
         if: steps.probe.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CC_VER: ${{ steps.probe.outputs.cc_version }}
+          CC_VER: ${{ steps.meta.outputs.cc_version }}
         run: |
-          TITLE="[Compat Alert] Claude Code v${CC_VER} upstream bundle layout changed"
+          TITLE="[Compat Alert] Claude Code v${CC_VER} cross-OS bundle layout changed"
           EXISTING="$(gh issue list --state open --search "\"${TITLE}\" in:title" --json number --jq '.[0].number // empty')"
           if [ -n "$EXISTING" ]; then
             echo "Issue #${EXISTING} already open for v${CC_VER}; skipping duplicate."
-            exit 0
+            exit 1
           fi
-          REPORT="$(cat /tmp/patch_report.json 2>/dev/null || echo 'No JSON report generated')"
+          REPORT="$(cat /tmp/maint_report.json 2>/dev/null || echo 'No JSON report generated')"
           gh issue create \
             --title "$TITLE" \
-            --body "$(printf 'Automated daily compatibility probe detected a required patch mismatch against `@anthropic-ai/claude-code@%s`.\n\n```json\n%s\n```' "$CC_VER" "$REPORT")"
+            --label "compat,automated" \
+            --body "$(printf 'Automated 3-OS (`darwin-arm64`, `linux-x64`, `win32-x64`) compatibility probe detected a required patch mismatch against `@anthropic-ai/claude-code@%s`.\n\nRun `ccide --check-cc --fetch-npm %s` locally to inspect anchor snippets.\n\n```json\n%s\n```' "$CC_VER" "$CC_VER" "$REPORT")"
+          exit 1

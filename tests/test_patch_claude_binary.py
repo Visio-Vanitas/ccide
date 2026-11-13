@@ -92,6 +92,9 @@ def build_js_bundle(include_optional_ui=True):
         b'function stateVar(){let t="taskDecorations";return t}'
     )
 
+    # 5c. Hidden footer task navigation flag (`pa=Di&&"tasks"`).
+    parts.append(b'function navFlag(Di,Ri){const pa=Di&&"tasks",gl=Ri&&"frame";return[pa,gl]}')
+
     if include_optional_ui:
         # 6a. Statusline mode pill.
         parts.append(
@@ -106,6 +109,32 @@ def build_js_bundle(include_optional_ui=True):
         b"let hv;if(condOne)hv=prettyFn(Inner,{...pp}),tailOne=1;else hv=otherOne;"
         b"let gh;if(condTwo)gh=prettyFn(ns.PromptHintPart,{innerOne:1}),tailTwo=2;"
         b"else gh=otherTwo;return gh};"
+    )
+
+    # 6c. Safe Escape exit from `viewing-agent` (`Lxe`).
+    parts.append(
+        b'function escComp(h){return{onKey:(ev)=>{if(ev.name==="escape"&&modeV==="viewing-agent"){'
+        b"if(h)return;ev.preventDefault();let idV=curId;if(idV){let tk=store.tasks[idV];"
+        b'if(isAg(tk)&&tk.status==="running"){killTask(tk);return}}fnExit9(setSt)}}}}'
+    )
+
+    # 6d. Keep `viewing-agent` pinned across main turn updates (`DPe`).
+    parts.append(
+        b"function watchView(){let setSt=useSet(),vId=useSel((s)=>s.viewingAgentTaskId),"
+        b"vTask=useSel((s)=>s.viewingAgentTaskId?s.tasks[s.viewingAgentTaskId]:void 0),"
+        b"pRef=useRef(void 0);if(isAg(vTask))pRef.current=vTask.parentAgentId;"
+        b"useEff(()=>{if(!vId)return;if(!vTask){fnExit9(setSt);return}},[vId,vTask,setSt])}"
+    )
+
+    # 7. Export exact monotonic stream `ttftMs` & `durationMs` (`tengu_api_success`).
+    parts.append(
+        b'function logApi(e,h,y,b,w,H,q){ev("tengu_api_success",{model:vt(e),messageCount:1,'
+        b"inputTokens:h.input_tokens,outputTokens:h.output_tokens,"
+        b"cachedInputTokens:h.cache_read_input_tokens??0,"
+        b"uncachedInputTokens:h.cache_creation_input_tokens??0,"
+        b"cache_creation_5m_input_tokens:h.cache_creation?.ephemeral_5m_input_tokens??0,"
+        b"cache_creation_1h_input_tokens:h.cache_creation?.ephemeral_1h_input_tokens??0,"
+        b"durationMs:y,durationMsIncludingRetries:b,attempt:w,ttftMs:H??void 0,firstContentMs:q??void 0})}"
     )
 
     return b"".join(parts)
@@ -217,7 +246,7 @@ class BunStandaloneMutationTests(unittest.TestCase):
         )
 
     def test_all_patches_applied_and_required_ok(self):
-        self.assertEqual(len(self.report["patches"]), 8)
+        self.assertEqual(len(self.report["patches"]), 12)
         for patch in self.report["patches"]:
             self.assertTrue(patch["applied"], msg=f"{patch['name']}: {patch['message']}")
         self.assertIs(self.report["required_ok"], True)
@@ -347,6 +376,75 @@ class BunLayoutParserEdgeCaseTests(unittest.TestCase):
         report = patcher.patch_buffer_in_memory(buf)
         self.assertEqual(report["syntax_errors"], [])
         self.assertIs(report["required_ok"], True)
+
+    def test_claude_code_2_1_323_zustand_selector_and_ui_drift(self):
+        """Regression test for Issue #7 (Claude Code 2.1.322+ boolean trap & UI drift)."""
+        parts = [
+            b"var rT=3000,rU=30000,rV=30000;"
+            b'function tickLoop(a){let z="in_process_teammate";return z}',
+            b"var rW=3000;var rX=30000;"
+            b'function fnAdoptZ(a,b){let t="local_agent",d="(resumed agent)";return [t,d]}',
+            b"function hideDone(m){"
+            b'return m.type==="local_agent"&&m.status==="completed"&&m.someFlagField===!0&&'
+            b"m.quietlyParked===!0&&m.zz!==1}",
+            b'function fnEnter42(q,w){let a="tengu_transcript_view_enter";return a}'
+            b'function fnExit9(q){let a="tengu_transcript_view_exit";return a}',
+            # 2.1.322+ footer component header where `Ie=nt()` returns boolean `false`:
+            b"function TQ(M){let{showWorkflows:H}=M,ee=H===void 0?!1:H,"
+            b"xe=useZustandStore(hGt),Ie=nt(),$e=zTe();"
+            b"var tickLoop,moreDataPayload=0;"
+            b"if(condTick)tickLoop=()=>{let nA=Date.now();let lB=!1;"
+            b"let x1=foo();let mS=getModels(xe,mB);"
+            b'for(const ent of Object.values(xe)){if(ent.type==="local_workflow"){'
+            b'if(ent.status!=="running"&&(ent.evictAfter??Infinity)<=nA)'
+            b"evictor.evictTerminal(ent.id);continue}"
+            b"if(!checker(ent)){continue}"
+            + JN_FILLER_A
+            + b"if(a1.length>0||a2.length>0||a3.length>0)pusher((v)=>{"
+            + JN_FILLER_B
+            + b"return v});"
+            + b"if(lB&&!guard)err(nA)}"
+            + b",moreDataPayload=1;else tickLoop=queuedTick;enqueue(tickLoop,cbOne);"
+            + b"return null}",
+            b"function footerList(){if(qA||rows.length===0&&!qB&&!qC){return null}return rows}",
+            # 2.1.323 `Uk()` lookahead uses `idleTeammatesExpanded` instead of `taskDecorations`
+            b"function pillFn(){let[rows]=useStore(stateVar),b=foo(x);return hasRows()?0:empty}"
+            b'function stateVar(){let t="idleTeammatesExpanded";return t}',
+            b'function navFlag(Di,Ri){const pa=Di&&"tasks",gl=Ri&&"frame";return[pa,gl]}',
+            b'function pillBadge(q){return{key:"mode",width:getW(q),node:el(Badge,{mode:q},"mode")}}',
+            # 2.1.323 `PromptHintPart` spreads `{...pp,wrappedRowWidth:cc}`
+            b"var hintComp=(arg)=>{let q=soma(4),pp,cc;if(zz)pp=arg;else pp=two;"
+            b"const aa=!pp.isInputEmpty,"
+            b"bb=pp.isSearching||pp.exitMessage.show||zz.showExpandPasteHint||ww;"
+            b"let hv;if(condOne)hv=prettyFn(Inner,{...pp,wrappedRowWidth:cc}),tailOne=1;else hv=otherOne;"
+            b"let gh;if(condTwo)gh=prettyFn(ns.PromptHintPart,{innerOne:1}),tailTwo=2;"
+            b"else gh=otherTwo;return gh};",
+            b'function escComp(h){return{onKey:(ev)=>{if(ev.name==="escape"&&modeV==="viewing-agent"){'
+            b"if(h)return;ev.preventDefault();let idV=curId;if(idV){let tk=store.tasks[idV];"
+            b'if(isAg(tk)&&tk.status==="running"){killTask(tk);return}}fnExit9(setSt)}}}}',
+            b"function watchView(){let setSt=useSet(),vId=useSel((s)=>s.viewingAgentTaskId),"
+            b"vTask=useSel((s)=>s.viewingAgentTaskId?s.tasks[s.viewingAgentTaskId]:void 0),"
+            b"pRef=useRef(void 0);if(isAg(vTask))pRef.current=vTask.parentAgentId;"
+            b"useEff(()=>{if(!vId)return;if(!vTask){fnExit9(setSt);return}},[vId,vTask,setSt])}",
+            b'function logApi(e,h,y,b,w,H,q){ev("tengu_api_success",{model:vt(e),messageCount:1,'
+            b"inputTokens:h.input_tokens,outputTokens:h.output_tokens,"
+            b"cachedInputTokens:h.cache_read_input_tokens??0,"
+            b"uncachedInputTokens:h.cache_creation_input_tokens??0,"
+            b"cache_creation_5m_input_tokens:h.cache_creation?.ephemeral_5m_input_tokens??0,"
+            b"cache_creation_1h_input_tokens:h.cache_creation?.ephemeral_1h_input_tokens??0,"
+            b"durationMs:y,durationMsIncludingRetries:b,attempt:w,ttftMs:H??void 0,firstContentMs:q??void 0})}",
+        ]
+        buf, _, _ = build_bun_standalone(b"".join(parts))
+        report = patcher.patch_buffer_in_memory(buf)
+        self.assertTrue(report["required_ok"])
+        self.assertEqual(report["syntax_errors"], [])
+        for p in report["patches"]:
+            self.assertTrue(p["applied"], msg=f"{p['name']}: {p['message']}")
+        patched_bytes = bytes(buf)
+        self.assertNotIn(b"${Ie??", patched_bytes)
+        self.assertNotIn(b"__cm", patched_bytes)
+        self.assertIn(b"pf_${process.pid}.jsonl", patched_bytes)
+        self.assertIn(b"{...pp,wrappedRowWidth:cc}", patched_bytes)
 
 
 if __name__ == "__main__":

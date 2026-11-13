@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-11-14
+
+### Added
+- **Full Native Windows (`pwsh` / `cmd.exe`) Engine, Installers & Workspace Backends (`src/ffi/windows.rs`, `src/telemetry/windows.rs`, `src/commands/workspace/{wezterm,wt}.rs`, `install.ps1`, `install.cmd`, `scripts/ccide.{ps1,cmd}`, `scripts/ensure-ccide-core.mjs`)**:
+  - Zero-dependency Win32 FFI (`kernel32.dll` + `iphlpapi.dll` at MSRV `1.70.0`) with `Local\ccide_wake_<pid>` Named-Event `< 0.05 ms` sidebar wakeups, raw VT/SGR console input, `CreateToolhelp32Snapshot` process-tree isolation, and live CPU/RAM/NIC/GPU telemetry.
+  - Native **WezTerm** (`wezterm cli`) and **Windows Terminal** (`wt.exe -w 0`) `30% | 54% | 16%` 3-column workspace backends backed by `ccide-core pane-runner`, cross-platform Node hook bootstrap (`ensure-ccide-core.mjs`), and a 6-target CI/Release matrix (`x86_64`/`aarch64` × `macOS`/`Linux`/`Windows MSVC`).
+- **Semi-Automated Cross-OS Symbol & Schema Maintenance Workbench (`scripts/cc-maint.py`, `scripts/bun_pe.py`, `scripts/cc_schema_inspector.py`, `assets/cc-schema.json`)**:
+  - `ccide --check-cc` (`--local` or `--fetch-npm [ver]`) simultaneously probes `darwin-arm64`, `linux-x64`, and `win32-x64` Bun PE binaries (including `B:/~BUN/` module graphs and trailing Authenticode tables), prints `±220`-byte anchor context on drift, and diffs `statusLine`, `.jsonl`, `subagent_meta`, and Hook schemas.
+- **Declarative Terminal Cell Typesetting Engine, `3/2/1`-Line `COST` Telemetry (`TPS` · `HIT%` · `TTFT`) & `0.1%` `CACHE` Precision (`src/tui/layout.rs`, `src/tui/context/`)**:
+  - Added `RowLayout`, `ColSpec`, and `ColumnWidths` so `SUBAGENTS`, `CONTEXT`, `COST`, and Hardware Telemetry headers align flush inside box borders without manual string padding, full-bleed `BoxRow.bg` rectangles, and 3-tier lossless model name compaction (`compact_model_for_width`).
+  - Tightened split `CONTEXT` to a compact fixed `11`-row height (`0.1%` `CACHE` hit ratios strictly capped at `99.9%` so `100%` rounding never occurs) and expanded scrollable `COST` (`WheelUp`/`WheelDown` + `↑`/`↓`/`PgUp`/`PgDn`) with per-model `TPS`, prompt-cache `HIT%`, and right-aligned `TTFT` (first-token latency), configurable across `3` / `2` / `1` lines via `~/.config/cc-ide/viewer.json` (`"cost_lines"`) and `ccide setup`.
+  - Full Claude Code `2.1.3xx` plugin-first telemetry: official `PostModelSwitch` & `SessionStart` hooks (`hooks/hooks.json`), `5h`/`7d` rate-limit quotas, `+add/-del` diff counters, native-1M Opus 5.5 / Fable 5.1 `context_window_size`, linked git worktrees, `usage.iterations` advisor/context unwrapping, fast-mode / US-geo / web-search billing, per-subagent `model`/`effort`/`stoppedByUser`, and `yazi-hook` `agent_id` isolation + hunk auto-scroll/highlight.
+- **Smooth Connected Unicode DAG Commit Graph for Lazygit `[0]-Log` (`scripts/git_smooth_graph.py`, `scripts/lazygit-log.py`)**:
+  - Replaced raw ASCII `git log --graph` slashes (`*`, `|`, `/`, `\`) in `[0]-Log` (`branchLogCmd` / `allBranchesLogCmds`) with a 4-direction bitmask Unicode box-drawing DAG renderer (`○`, `⏣`, `│`, `╭`, `╮`, `╰`, `╯`, `├`, `┤`, `┬`, `┴`, `┼`) matching `[4]-Commits`.
+
+### Fixed
+- **Single-Click Responsiveness, Mutually-Exclusive 3-Column Highlight Clearing & Non-Draggable GPU Sprites (`src/commands/sidebar/`, `scripts/ccide_daemon.py`, `scripts/pty-hscroll-bridge.py`, `assets/yazi-hscroll.lua`)**:
+  - Activated sidebar controls on `MouseDown` (handling iTerm2 unfocused `reportUnreportedFocusClick:` single-packet clicks) with `0`-RPC `YAZI_SESSION_CACHE` focus switching, position-driven border focus, and automatic cross-column highlight clearing (`DECSET 1004` `\x1b[O` in Sidebar & Lazygit PTY bridge + `FocusMonitor` `ya emit-to ... blur` in Yazi).
+  - Upgraded iTerm2 `>= 3.5` and WezTerm PNG sprite rendering to Kitty Graphics Protocol (`APC _G`, `q=2,C=1`) with `HitZone::InertSprite` shielding, BMP wide-symbol column guards (`src/tui/width.rs`), and subagent `viewing-agent` locks (`keep_viewing_agent_on_turn_update`, `lock_hidden_footer_tasks_nav`, `safe_escape_from_subagent_view`).
+
+---
+
 ## [0.5.0] - 2026-11-12
 
 ### Added
@@ -82,7 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shared Cross-Platform Hardware Oscilloscope & Quadrant Model Logos (`src/telemetry/`, `src/tui/logo.rs`)**:
   - Single-instance `500 ms` `/tmp/.cc-ide/hw_telemetry_v1.bin` binary snapshot shared across all open tabs (`< 2 µs` read) rendering sub-pixel `CPU`, `GPU` (`IOKit AGX` / Linux `sysfs` & `nvidia-smi`), `MEM`, and `NET` curves alongside dynamic 2×2 Quadrant vector model logos (`CLAUDE`, `GEMINI`, `DEEPSEEK`, `OPENAI`, `GROK`).
 
-[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.5.0...v0.7.0
 [0.5.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.4.0-rc.1...v0.4.0
 [0.3.0]: https://github.com/Visio-Vanitas/ccide/releases/tag/v0.4.0-rc.1

@@ -25,6 +25,44 @@ pub fn char_display_width(ch: char) -> usize {
     {
         return 0;
     }
+    if matches!(
+        u,
+        0x231A..=0x231B
+            | 0x23E9..=0x23EC
+            | 0x23F0
+            | 0x23F3
+            | 0x25FD..=0x25FE
+            | 0x2614..=0x2615
+            | 0x2648..=0x2653
+            | 0x267F
+            | 0x2693
+            | 0x26A1
+            | 0x26AA..=0x26AB
+            | 0x26BD..=0x26BE
+            | 0x26C4..=0x26C5
+            | 0x26CE
+            | 0x26D4
+            | 0x26EA
+            | 0x26F2..=0x26F3
+            | 0x26F5
+            | 0x26FA
+            | 0x26FD
+            | 0x2705
+            | 0x270A..=0x270B
+            | 0x2728
+            | 0x274C
+            | 0x274E
+            | 0x2753..=0x2755
+            | 0x2757
+            | 0x2795..=0x2797
+            | 0x27B0
+            | 0x27BF
+            | 0x2B1B..=0x2B1C
+            | 0x2B50
+            | 0x2B55
+    ) {
+        return 2;
+    }
     if (0x1100..=0x115F).contains(&u)
         || (0x2E80..=0x303E).contains(&u)
         || (0x3040..=0x33BF).contains(&u)
@@ -73,7 +111,8 @@ pub fn display_width(s: &str) -> usize {
     w
 }
 
-/// Truncates `s` so its visible column width never exceeds `max_cols`, appending `…` when truncated.
+/// Truncates `s` so its visible column width never exceeds `max_cols`, preserving ANSI CSI/OSC
+/// escape sequences and appending `…` (plus `\x1b[0m` when ANSI sequences were present).
 pub fn trunc_to_width(s: &str, max_cols: usize) -> String {
     if max_cols == 0 {
         return String::new();
@@ -82,9 +121,35 @@ pub fn trunc_to_width(s: &str, max_cols: usize) -> String {
         return s.to_string();
     }
     let limit = max_cols.saturating_sub(1);
-    let mut out = String::new();
+    let mut out = String::with_capacity(s.len());
     let mut cur = 0usize;
-    for ch in s.chars() {
+    let mut saw_ansi = false;
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            saw_ansi = true;
+            out.push(ch);
+            if let Some(&next) = chars.peek() {
+                if next == '[' {
+                    out.push(chars.next().unwrap_or('['));
+                    for esc_c in chars.by_ref() {
+                        out.push(esc_c);
+                        if ('@'..='~').contains(&esc_c) {
+                            break;
+                        }
+                    }
+                } else if next == ']' {
+                    out.push(chars.next().unwrap_or(']'));
+                    for esc_c in chars.by_ref() {
+                        out.push(esc_c);
+                        if esc_c == '\x07' {
+                            break;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         let cw = char_display_width(ch);
         if cur + cw > limit {
             break;
@@ -93,6 +158,9 @@ pub fn trunc_to_width(s: &str, max_cols: usize) -> String {
         cur += cw;
     }
     out.push('…');
+    if saw_ansi {
+        out.push_str("\x1b[0m");
+    }
     out
 }
 

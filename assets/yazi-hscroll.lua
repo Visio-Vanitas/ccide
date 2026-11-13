@@ -326,11 +326,38 @@ local function slice_ansi_preserve_sgr(s, offset_cols, width_cols, initial_sgr)
 	return table.concat(out), st
 end
 
+local IS_WIN = (package.config:sub(1, 1) == "\\")
+
+local function ipc_dir()
+	local custom = os.getenv("CCIDE_IPC_DIR")
+	if custom and custom ~= "" then
+		return custom:gsub("[/\\]+$", "")
+	end
+	if IS_WIN then
+		local t = os.getenv("TEMP") or os.getenv("TMP") or "."
+		return (t:gsub("[/\\]+$", "")) .. "\\.cc-ide"
+	end
+	return "/tmp/.cc-ide"
+end
+
+local function ipc_file(name)
+	return ipc_dir() .. (IS_WIN and "\\" or "/") .. name
+end
+
+local function atomic_replace(tmp_p, dst_p)
+	local ok = os.rename(tmp_p, dst_p)
+	if not ok then
+		os.remove(dst_p)
+		os.rename(tmp_p, dst_p)
+	end
+end
+
 local function url_hash(s)
+	local norm = (s or ""):gsub("^\\\\\?\\", ""):gsub("\\", "/")
 	local h1 = 5381
 	local h2 = 52711
-	for i = 1, #s do
-		local b = s:byte(i)
+	for i = 1, #norm do
+		local b = norm:byte(i)
 		h1 = ((h1 * 33) + b) % 2147483647
 		h2 = ((h2 * 131) + b) % 2147483647
 	end
@@ -341,7 +368,7 @@ local function read_url_bounds(url_str)
 	if not url_str or url_str == "" then
 		return 0, false
 	end
-	local f = io.open("/tmp/.cc-ide/yb_" .. url_hash(url_str) .. ".txt", "r")
+	local f = io.open(ipc_file("yb_" .. url_hash(url_str) .. ".txt"), "r")
 	if not f then
 		return 0, false
 	end
@@ -355,7 +382,7 @@ local function write_url_bounds(url_str, max_x, at_bot)
 	if not url_str or url_str == "" then
 		return
 	end
-	local p = "/tmp/.cc-ide/yb_" .. url_hash(url_str) .. ".txt"
+	local p = ipc_file("yb_" .. url_hash(url_str) .. ".txt")
 	local tmp = p .. ".tmp"
 	local f = io.open(tmp, "w")
 	if not f then
@@ -363,14 +390,14 @@ local function write_url_bounds(url_str, max_x, at_bot)
 	end
 	f:write(tostring(math.max(0, math.floor(max_x or 0))) .. "\n" .. (at_bot and "1\n" or "0\n"))
 	f:close()
-	os.rename(tmp, p)
+	atomic_replace(tmp, p)
 end
 
 local function read_url_px(url_str)
 	if not url_str or url_str == "" then
 		return 0
 	end
-	local f = io.open("/tmp/.cc-ide/yx_" .. url_hash(url_str) .. ".txt", "r")
+	local f = io.open(ipc_file("yx_" .. url_hash(url_str) .. ".txt"), "r")
 	if not f then
 		return 0
 	end
@@ -383,7 +410,7 @@ local function write_url_px(url_str, px)
 	if not url_str or url_str == "" then
 		return
 	end
-	local p = "/tmp/.cc-ide/yx_" .. url_hash(url_str) .. ".txt"
+	local p = ipc_file("yx_" .. url_hash(url_str) .. ".txt")
 	local tmp = p .. ".tmp"
 	local f = io.open(tmp, "w")
 	if not f then
@@ -391,7 +418,7 @@ local function write_url_px(url_str, px)
 	end
 	f:write(tostring(math.max(0, math.floor(px or 0))) .. "\n")
 	f:close()
-	os.rename(tmp, p)
+	atomic_replace(tmp, p)
 end
 
 local function sync_bounds_and_get_px(url_str, max_x, at_bot)
@@ -402,6 +429,82 @@ local function sync_bounds_and_get_px(url_str, max_x, at_bot)
 		write_url_px(url_str, px)
 	end
 	return px
+end
+
+local function write_focus_file(key_str, line_no, span_no, pending)
+	if not key_str or key_str == "" then
+		return
+	end
+	local p = ipc_file("yf_" .. url_hash(key_str) .. ".txt")
+	if not line_no or line_no <= 0 then
+		os.remove(p)
+		return
+	end
+	local tmp = p .. ".tmp"
+	local f = io.open(tmp, "w")
+	if not f then
+		return
+	end
+	f:write(
+		tostring(math.floor(line_no))
+			.. "\n"
+			.. tostring(math.max(1, math.floor(span_no or 1)))
+			.. "\n"
+			.. tostring(pending or 0)
+			.. "\n"
+			.. tostring(os.time())
+			.. "\n"
+	)
+	f:close()
+	atomic_replace(tmp, p)
+end
+
+local function read_single_focus(key_str)
+	if not key_str or key_str == "" then
+		return 0, 0, 0
+	end
+	local f = io.open(ipc_file("yf_" .. url_hash(key_str) .. ".txt"), "r")
+	if not f then
+		return 0, 0, 0
+	end
+	local ln = tonumber(f:read("*l") or "0") or 0
+	local sp = tonumber(f:read("*l") or "1") or 1
+	local pend = tonumber(f:read("*l") or "0") or 0
+	local ts = tonumber(f:read("*l") or "0") or 0
+	f:close()
+	if ln <= 0 or (ts > 0 and (os.time() - ts) > 900) then
+		return 0, 0, 0
+	end
+	return ln, math.max(1, sp), pend
+end
+
+local function read_focus_marker(url_str, path_str)
+	local ln, sp, pend = read_single_focus(url_str)
+	if ln > 0 then
+		return ln, sp, pend
+	end
+	local clean_u = (url_str or ""):gsub("^file://", "")
+	if clean_u ~= url_str then
+		ln, sp, pend = read_single_focus(clean_u)
+		if ln > 0 then
+			return ln, sp, pend
+		end
+	end
+	if path_str and path_str ~= "" and path_str ~= url_str then
+		return read_single_focus(path_str)
+	end
+	return 0, 0, 0
+end
+
+local function consume_focus_pending(url_str, path_str)
+	for _, k in ipairs({ url_str, (url_str or ""):gsub("^file://", ""), path_str }) do
+		if k and k ~= "" then
+			local ln, sp, pend = read_single_focus(k)
+			if ln > 0 and pend == 1 then
+				write_focus_file(k, ln, sp, 0)
+			end
+		end
+	end
 end
 
 local function current_hovered_url()
@@ -426,7 +529,7 @@ local function trigger_preview_refresh(force_now)
 	ya.emit("peek", { tab.preview.skip, only_if = h.url, force = true })
 end
 
-local dispatch_sync = ya.sync(function(_, action, arg1, arg2)
+local dispatch_sync = ya.sync(function(_, action, arg1, arg2, arg3)
 	_G.CCIDE_INPUT_MODE = _G.CCIDE_INPUT_MODE or "mouse"
 
 	if action == "key_nav" then
@@ -448,16 +551,43 @@ local dispatch_sync = ya.sync(function(_, action, arg1, arg2)
 
 	if action == "reveal" then
 		local target = tostring(arg1 or "")
+		local target_line = tonumber(arg2) or 0
+		local target_span = math.max(1, tonumber(arg3) or 1)
 		if target ~= "" then
 			_G.CCIDE_INPUT_MODE = "key"
 			_G.CCIDE_CUR_Y = nil
 			_G.CCIDE_PAR_Y = nil
 			_G.CCIDE_CUR_X = 0
+			if target_line > 0 then
+				write_focus_file(target, target_line, target_span, 1)
+			end
+			write_url_px(target, 0)
 			local u = current_hovered_url()
 			if u ~= "" then
 				write_url_px(u, 0)
 			end
+			local clean_u = u:gsub("^file://", "")
 			ya.emit("reveal", { target })
+			if clean_u == target or u == target then
+				local tab = cx and (cx.active or cx.tab)
+				local h = tab and tab.current and tab.current.hovered
+				if h then
+					local prev_h = _G.CCIDE_PREV_AREA_H or 24
+					local desired = (target_line > 1)
+							and math.max(0, target_line - 1 - math.max(3, math.floor(prev_h / 4)))
+						or 0
+					consume_focus_pending(u, target)
+					ya.emit("peek", { desired, only_if = h.url, force = true })
+				end
+			end
+			ui.render()
+		end
+		return
+	end
+
+	if action == "blur" then
+		if (_G.CCIDE_INPUT_MODE or "mouse") ~= "mouse" then
+			_G.CCIDE_INPUT_MODE = "mouse"
 			ui.render()
 		end
 		return
@@ -544,6 +674,17 @@ function M:setup()
 			_G.CCIDE_PREV_DIR_X = 0
 			if u ~= "" then
 				write_url_px(u, 0)
+				local hl_ln, _, pend = read_focus_marker(u, u:gsub("^file://", ""))
+				if pend == 1 and hl_ln > 1 then
+					local tab = cx and (cx.active or cx.tab)
+					local h = tab and tab.current and tab.current.hovered
+					if h then
+						local prev_h = _G.CCIDE_PREV_AREA_H or 24
+						local desired = math.max(0, hl_ln - 1 - math.max(3, math.floor(prev_h / 4)))
+						consume_focus_pending(u, u:gsub("^file://", ""))
+						ya.emit("peek", { desired, only_if = h.url, force = true })
+					end
+				end
 			end
 		end
 	end)
@@ -816,6 +957,7 @@ function M:setup()
 
 		function Preview:scroll(_, step)
 			_G.CCIDE_INPUT_MODE = "mouse"
+			_G.CCIDE_PREV_AREA_H = self._area and self._area.h or _G.CCIDE_PREV_AREA_H
 			local tab = self._tab or (cx and (cx.active or cx.tab))
 			local skip = tab and tab.preview and tab.preview.skip or 0
 			if step < 0 and skip <= 0 then
@@ -967,10 +1109,13 @@ local function write_cached_block(cache_path, key, body)
 	f:write(key .. "\n")
 	f:write(body or "")
 	f:close()
-	os.rename(tmp, cache_path)
+	atomic_replace(tmp, cache_path)
 end
 
 local function find_bat_bin()
+	if IS_WIN then
+		return "bat"
+	end
 	for _, p in ipairs({ "/opt/homebrew/bin/bat", "/usr/local/bin/bat", "/usr/bin/bat", "/usr/bin/batcat" }) do
 		local f = io.open(p, "r")
 		if f then
@@ -986,13 +1131,14 @@ local function peek_markdown(job, url_str)
 	local area_h = job.area.h
 	local skip = job.skip or 0
 	local key = file_stamp(job.file)
-	local cache_path = "/tmp/.cc-ide/ym_" .. url_hash(url_str) .. ".txt"
+	local cache_path = ipc_file("ym_" .. url_hash(url_str) .. ".txt")
 	local raw_all = read_cached_block(cache_path, key)
 
 	if not raw_all then
-		local home = os.getenv("HOME") or ""
-		local script = home .. "/.claude/scripts/md-render.py"
-		local out = Command("python3"):arg({ script, "-w", tostring(area_w), tostring(job.file.path) }):stdout(Command.PIPED):stderr(Command.NULL):output()
+		local home = os.getenv("HOME") or os.getenv("USERPROFILE") or ""
+		local script = home .. (IS_WIN and "\\.claude\\scripts\\md-render.py" or "/.claude/scripts/md-render.py")
+		local py_cmd = IS_WIN and "python" or "python3"
+		local out = Command(py_cmd):arg({ script, "-w", tostring(area_w), tostring(job.file.path) }):stdout(Command.PIPED):stderr(Command.NULL):output()
 		raw_all = (out and out.stdout) or ""
 		if raw_all ~= "" then
 			write_cached_block(cache_path, key, raw_all)
@@ -1008,7 +1154,29 @@ local function peek_markdown(job, url_str)
 	end
 
 	local total = #all_lines
-	if skip > 0 and skip + area_h > total then
+	local path_str = tostring(job.file.path)
+	local hl_ln, _, hl_pend = read_focus_marker(url_str, path_str)
+	if hl_pend == 1 and hl_ln > 0 and total > 0 then
+		consume_focus_pending(url_str, path_str)
+		local raw_cnt = 0
+		local rf = io.open(path_str, "r")
+		if rf then
+			for _ in rf:lines() do
+				raw_cnt = raw_cnt + 1
+			end
+			rf:close()
+		end
+		local approx_row = (raw_cnt > 0) and math.max(1, math.floor((hl_ln / raw_cnt) * total)) or hl_ln
+		local desired = math.min(
+			math.max(0, total - area_h),
+			math.max(0, approx_row - 1 - math.max(3, math.floor(area_h / 4)))
+		)
+		if desired ~= skip then
+			ya.emit("peek", { desired, only_if = job.file.url, force = true })
+			return
+		end
+	end
+	if skip > 0 and skip > math.max(0, total - area_h) then
 		ya.emit("peek", { math.max(0, total - area_h), only_if = job.file.url, upper_bound = true })
 		return
 	end
@@ -1063,10 +1231,11 @@ local function resolve_yazi_bat_theme()
 	return "ansi"
 end
 
-local function fetch_or_warm_bat_cache(file, url_str, path_str, skip, area_h, tab_sz)
+local function fetch_or_warm_bat_cache(file, url_str, path_str, skip, area_h, tab_sz, hl_start, hl_end)
 	local theme_name = resolve_yazi_bat_theme()
-	local cache_path = "/tmp/.cc-ide/yc2_" .. url_hash(url_str) .. ".txt"
-	local key = file_stamp(file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name
+	local hl_tag = (hl_start and hl_start > 0) and string.format("%d:%d", hl_start, hl_end or hl_start) or ""
+	local cache_path = ipc_file("yc2_" .. url_hash(url_str) .. ".txt")
+	local key = file_stamp(file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name .. "\t" .. hl_tag
 	local cached = read_cached_block(cache_path, key)
 	if cached then
 		return cached
@@ -1076,16 +1245,20 @@ local function fetch_or_warm_bat_cache(file, url_str, path_str, skip, area_h, ta
 		return nil
 	end
 	local range_arg = string.format("%d:%d", skip + 1, skip + area_h)
+	local cmd_args = {
+		"--color=always",
+		"--theme=" .. theme_name,
+		"--style=plain",
+		"--paging=never",
+		"--tabs=" .. tostring(tab_sz),
+		"--line-range=" .. range_arg,
+	}
+	if hl_tag ~= "" then
+		cmd_args[#cmd_args + 1] = "--highlight-line=" .. hl_tag
+	end
+	cmd_args[#cmd_args + 1] = path_str
 	local out = Command(bat_bin)
-		:arg({
-			"--color=always",
-			"--theme=" .. theme_name,
-			"--style=plain",
-			"--paging=never",
-			"--tabs=" .. tostring(tab_sz),
-			"--line-range=" .. range_arg,
-			path_str,
-		})
+		:arg(cmd_args)
 		:stdout(Command.PIPED)
 		:stderr(Command.NULL)
 		:output()
@@ -1103,15 +1276,19 @@ local function peek_code(job, url_str)
 	local tab_sz = (rt and rt.preview and rt.preview.tab_size) or 2
 	local tab_spaces = string.rep(" ", tab_sz)
 	local path_str = tostring(job.file.path)
+	local hl_ln, hl_sp, hl_pend = read_focus_marker(url_str, path_str)
+	local hl_end = (hl_ln > 0) and (hl_ln + math.max(1, hl_sp) - 1) or 0
 
 	local f = io.open(path_str, "r")
 	local vis_lines = {}
 	local max_w = 0
 	local has_more = false
+	local total_lines = 0
+	local s_ln = skip + 1
+	local e_ln = skip + area_h
 	if f then
 		local idx = 0
-		local s_ln = skip + 1
-		local e_ln = skip + area_h
+		local scan_cap = math.max(e_ln + 2, 50000)
 		for line in f:lines() do
 			idx = idx + 1
 			if idx >= s_ln and idx <= e_ln then
@@ -1123,22 +1300,41 @@ local function peek_code(job, url_str)
 				end
 			elseif idx > e_ln then
 				has_more = true
-				break
+				if idx >= scan_cap then
+					break
+				end
 			end
 		end
+		total_lines = idx
 		f:close()
+	end
+
+	if hl_pend == 1 and hl_ln > 0 then
+		consume_focus_pending(url_str, path_str)
+		local desired = math.max(0, hl_ln - 1 - math.max(3, math.floor(area_h / 4)))
+		if total_lines > 0 and total_lines < 50000 then
+			desired = math.min(desired, math.max(0, total_lines - area_h))
+		end
+		if desired ~= skip then
+			ya.emit("peek", { desired, only_if = job.file.url, force = true })
+			return
+		end
+	end
+
+	if skip > 0 and total_lines > 0 and total_lines < 50000 and skip > math.max(0, total_lines - area_h) then
+		ya.emit("peek", { math.max(0, total_lines - area_h), only_if = job.file.url, upper_bound = true })
+		return
 	end
 
 	local max_x = math.max(0, max_w - area_w)
 	local at_bot = (f ~= nil) and (not has_more)
 	local px = sync_bounds_and_get_px(url_str, max_x, at_bot)
+	local has_vis_hl = (hl_ln > 0) and (hl_ln <= e_ln) and (hl_end >= s_ln)
 
-	if px <= 0 then
+	if px <= 0 and not has_vis_hl then
 		require("code"):peek(job)
-		-- Pre-warm `bat` ANSI cache in the background right after native preview renders so the very
-		-- first Magic Mouse swipe hits warm `/tmp` RAM cache in `< 0.15ms` with zero subprocess spawn!
 		if max_x > 0 then
-			fetch_or_warm_bat_cache(job.file, url_str, path_str, skip, area_h, tab_sz)
+			fetch_or_warm_bat_cache(job.file, url_str, path_str, skip, area_h, tab_sz, hl_ln, hl_end)
 		end
 		return
 	end
@@ -1149,18 +1345,24 @@ local function peek_code(job, url_str)
 	end
 
 	local theme_name = resolve_yazi_bat_theme()
-	local cache_path = "/tmp/.cc-ide/yc2_" .. url_hash(url_str) .. ".txt"
-	local key = file_stamp(job.file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name
+	local hl_tag = (hl_ln > 0) and string.format("%d:%d", hl_ln, hl_end) or ""
+	local cache_path = ipc_file("yc2_" .. url_hash(url_str) .. ".txt")
+	local key = file_stamp(job.file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name .. "\t" .. hl_tag
 	local ansi_slice = read_cached_block(cache_path, key)
 
-	-- Cold-cache instant fallback: emit plain sliced frame in `< 0.1ms` first so scrolling never stalls
 	if not ansi_slice then
 		local plain_rows = {}
 		for i = 1, #vis_lines do
-			plain_rows[i] = (slice_ansi_preserve_sgr(vis_lines[i], px, area_w, nil))
+			local abs_ln = skip + i
+			local sliced = slice_ansi_preserve_sgr(vis_lines[i], px, area_w, nil)
+			if hl_ln > 0 and abs_ln >= hl_ln and abs_ln <= hl_end then
+				plain_rows[i] = "\27[48;5;237m" .. sliced
+			else
+				plain_rows[i] = sliced
+			end
 		end
-		ya.preview_widget(job, ui.Text(plain_rows):area(job.area))
-		ansi_slice = fetch_or_warm_bat_cache(job.file, url_str, path_str, skip, area_h, tab_sz)
+		ya.preview_widget(job, ui.Text.parse(table.concat(plain_rows, "\n")):area(job.area))
+		ansi_slice = fetch_or_warm_bat_cache(job.file, url_str, path_str, skip, area_h, tab_sz, hl_ln, hl_end)
 		px = math.min(read_url_px(url_str), max_x)
 	end
 
@@ -1179,9 +1381,15 @@ local function peek_code(job, url_str)
 		else
 			local plain_rows = {}
 			for i = 1, #vis_lines do
-				plain_rows[i] = (slice_ansi_preserve_sgr(vis_lines[i], pan_x, area_w, nil))
+				local abs_ln = skip + i
+				local sliced = slice_ansi_preserve_sgr(vis_lines[i], pan_x, area_w, nil)
+				if hl_ln > 0 and abs_ln >= hl_ln and abs_ln <= hl_end then
+					plain_rows[i] = "\27[48;5;237m" .. sliced
+				else
+					plain_rows[i] = sliced
+				end
 			end
-			text = ui.Text(plain_rows):area(job.area)
+			text = ui.Text.parse(table.concat(plain_rows, "\n")):area(job.area)
 		end
 		ya.preview_widget(job, text)
 	end
@@ -1216,10 +1424,11 @@ function M:entry(job)
 	local a1 = tostring(args[1] or "")
 	local a2 = tostring(args[2] or "")
 	local a3 = tostring(args[3] or "")
+	local a4 = tostring(args[4] or "")
 	if a1 == "key" then
 		dispatch_sync("key_nav", a2, a3)
 	elseif a1 == "reveal" then
-		dispatch_sync("reveal", a2)
+		dispatch_sync("reveal", a2, a3, a4)
 	elseif a1 == "reset" then
 		dispatch_sync("reset")
 	else
