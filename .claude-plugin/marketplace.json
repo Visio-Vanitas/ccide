@@ -3,12 +3,12 @@
   "owner": {
     "name": "Visio-Vanitas"
   },
-  "description": "Cross-platform 3-column tiling terminal IDE and hardware telemetry suite for Claude Code (macOS & Linux)",
+  "description": "Cross-platform 3-column tiling terminal IDE and hardware telemetry suite for Claude Code (macOS, Linux & Windows)",
   "plugins": [
     {
       "name": "cc-ide",
       "source": "./",
-      "description": "3-column tiling workspace (Yazi + Lazygit | Claude Code | AI Companion & Hardware Oscilloscope Telemetry) with 3-tier adaptive backends (iTerm2 Metal, SSH OSC 1337, tmux) and event-driven SIGUSR2 hooks."
+      "description": "3-column tiling workspace (Yazi + Lazygit | Claude Code | AI Companion & Hardware Oscilloscope + Split CONTEXT/COST Telemetry) across iTerm2 Metal, SSH OSC 1337, WezTerm, Windows Terminal (wt.exe), and tmux."
     }
   ]
 }

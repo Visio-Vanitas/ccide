@@ -3,10 +3,12 @@
 //! Guarantees cross-window border alignment (`╭───╮`, `│...│`, `╰───╯`), CJK East-Asian
 //! display column width calculation, and exact vertical height allocation (`sum == rows`).
 
+pub mod context;
 pub mod grid;
+pub mod layout;
 pub mod logo;
 pub mod palette;
-pub mod tasks;
+pub mod pricing;
 pub mod width;
 
 pub const RESET: &str = "\x1b[0m";

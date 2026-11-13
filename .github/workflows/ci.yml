@@ -16,14 +16,27 @@ concurrency:
 jobs:
   branch-flow-guard:
     name: Enforce dev -> preview -> main Flow
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    if: github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'preview')
     runs-on: ubuntu-latest
     steps:
-      - name: Verify PR into main originates from preview
+      - name: Verify PR promotion flow (dev -> preview -> main)
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
         run: |
-          echo "PR head_ref=${{ github.head_ref }} -> base_ref=${{ github.base_ref }}"
-          if [ "${{ github.head_ref }}" != "preview" ]; then
+          echo "PR ${HEAD_REPO}:${HEAD_REF} -> ${BASE_REPO}:${BASE_REF}"
+          if [ "${HEAD_REPO}" != "${BASE_REPO}" ]; then
+            echo "::error::Promotion PRs into '${BASE_REF}' must originate from the same repository (${BASE_REPO})."
+            exit 1
+          fi
+          if [ "${BASE_REF}" = "main" ] && [ "${HEAD_REF}" != "preview" ]; then
             echo "::error::Direct PRs into 'main' must originate from 'preview' (enforced pipeline: dev -> preview -> main)."
+            exit 1
+          fi
+          if [ "${BASE_REF}" = "preview" ] && [ "${HEAD_REF}" != "dev" ]; then
+            echo "::error::PRs into 'preview' must originate from 'dev' (enforced pipeline: dev -> preview -> main)."
             exit 1
           fi
 
@@ -31,7 +44,7 @@ jobs:
     name: Rust 1.70 LTS MSRV & Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust 1.70.0 (LTS MSRV)
         uses: dtolnay/rust-toolchain@master
@@ -69,8 +82,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust Stable Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -86,60 +103,95 @@ jobs:
       - name: Build Release Binary
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Run Native Target Tests
-        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo test --release --target ${{ matrix.target }}
+        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo test --release --locked --target ${{ matrix.target }}
 
   scripts-and-patcher:
     name: Shell, Manifest & Dynamic Patcher Suite
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
 
       - name: Install zsh
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends zsh
 
-      - name: Validate Shell & Python Scripts
+      - name: Validate Shell, Node & Python Scripts
         run: |
           sh -n scripts/ensure-ccide-core.sh
+          node --check scripts/ensure-ccide-core.mjs
           zsh -n install.sh
           zsh -n scripts/ccide
           zsh -n scripts/pane-runner.sh
-          python3 -m py_compile scripts/patch_claude_binary.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/pty-hscroll-bridge.py scripts/md-render.py
+          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/git_smooth_graph.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py
 
-      - name: Validate Plugin & Marketplace JSON Manifests
+      - name: Validate Plugin & Marketplace JSON Manifests & Version Parity
         run: |
-          python3 - <<'PY'
-          import json, re
-          for p in [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "hooks/hooks.json", "assets/adaptive_quadrant_logos.json", "assets/glow-style.json"]:
+          python3 -I - <<'PY'
+          import json, os, re
+
+          def load_jsonc(path: str):
+              with open(path, encoding="utf-8") as f:
+                  raw = f.read()
+              no_block = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)
+              no_line = re.sub(r"(?m)^\s*//.*$|(?<=\s)//.*$", "", no_block)
+              no_trail = re.sub(r",\s*([}\]])", r"\1", no_line)
+              return json.loads(no_trail)
+
+          for p in [
+              ".claude-plugin/plugin.json",
+              ".claude-plugin/marketplace.json",
+              "hooks/hooks.json",
+              "assets/cc-schema.json",
+              "assets/adaptive_quadrant_logos.json",
+              "assets/glow-style.json",
+          ]:
               with open(p, encoding="utf-8") as f:
                   json.load(f)
               print("OK:", p)
-          with open("assets/palette.json", encoding="utf-8") as f:
-              raw = re.sub(r"(?m)^\s*//.*$", "", f.read())
-              pal = json.loads(raw)
-              assert "preset" in pal and "ui" in pal and "statusline" in pal
-              print("OK: assets/palette.json")
-          with open("assets/viewer.json", encoding="utf-8") as f:
-              raw = re.sub(r"(?m)^\s*//.*$", "", f.read())
-              vw = json.loads(raw)
-              assert vw.get("wrap") is False and vw.get("wrap_style") == "vi"
-              print("OK: assets/viewer.json")
+
+          pal = load_jsonc("assets/palette.json")
+          assert "preset" in pal and "ui" in pal and "statusline" in pal
+          print("OK: assets/palette.json")
+
+          vw = load_jsonc("assets/viewer.json")
+          assert vw.get("wrap") is False and vw.get("wrap_style") == "vi" and vw.get("sprite_mode") in ("auto", "ascii", "image")
+          print("OK: assets/viewer.json")
+
+          pr = load_jsonc("assets/pricing.json")
+          assert isinstance(pr.get("models"), dict) and len(pr["models"]) >= 30
+          print("OK: assets/pricing.json")
+
+          for fam in ("claude", "gemini", "deepseek", "openai", "grok"):
+              assert os.path.isfile(f"assets/sprites/{fam}.ansi") and os.path.isfile(f"assets/sprites/{fam}.png")
+          print("OK: assets/sprites/*.{ansi,png}")
+
+          with open("Cargo.toml", encoding="utf-8") as f:
+              cargo_ver = re.search(r'(?m)^version\s*=\s*"([^"]+)"', f.read()).group(1)
+          with open(".claude-plugin/plugin.json", encoding="utf-8") as f:
+              plugin_ver = json.load(f)["version"]
+          with open("install.sh", encoding="utf-8") as f:
+              inst_ver = re.search(r'(?m)^PLUGIN_VERSION="([^"]+)"', f.read()).group(1)
+          with open("install.ps1", encoding="utf-8") as f:
+              ps1_ver = re.search(r'(?m)^\$PluginVersion\s*=\s*"([^"]+)"', f.read()).group(1)
+          assert cargo_ver == plugin_ver == inst_ver == ps1_ver, (
+              f"Version mismatch: Cargo.toml={cargo_ver}, plugin.json={plugin_ver}, install.sh={inst_ver}, install.ps1={ps1_ver}"
+          )
+          print(f"OK: 4-way version parity ({cargo_ver})")
           PY
 
-      - name: Run Dynamic Patcher Mutation & Structural Unit Tests
-        run: python3 -m unittest discover -s tests -v
+      - name: Run Dynamic Patcher, Workbench & Cross-Platform Unit Tests
+        run: python3 -I -m unittest discover -s tests -v
 
-      - name: Verify Live Upstream @anthropic-ai/claude-code Compatibility (preview/main)
+      - name: Verify Live 3-OS Upstream @anthropic-ai/claude-code Compatibility (preview/main)
         if: github.ref == 'refs/heads/preview' || github.ref == 'refs/heads/main' || github.base_ref == 'preview' || github.base_ref == 'main'
-        run: |
-          mkdir -p /tmp/cc-upstream
-          npm install --prefix /tmp/cc-upstream @anthropic-ai/claude-code@latest --no-audit --no-fund
-          CAND_EXE="$(find /tmp/cc-upstream -type f -size +5M \( -name 'claude.exe' -o -name 'claude' -o -name 'cli.js' \) | sort | head -n 1)"
-          echo "Resolved upstream Claude Code artifact: $CAND_EXE"
-          test -n "$CAND_EXE"
-          python3 scripts/patch_claude_binary.py --verify --binary "$CAND_EXE"
+        run: python3 -I scripts/cc-maint.py --fetch-npm latest

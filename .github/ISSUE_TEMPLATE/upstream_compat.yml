@@ -1,0 +1,46 @@
+name: Upstream Compatibility Alert
+description: Report an upstream bundle/protocol change in Claude Code, Yazi, Lazygit, or iTerm2
+title: "[Compat Alert] "
+labels: ["compat", "bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      options:
+        - patcher (scripts/patch_claude_binary.py · @anthropic-ai/claude-code)
+        - hscroll-pager (Yazi 26.x / Lazygit / delta / glow)
+        - workspace (iTerm2 Python API / tmux)
+    validations:
+      required: true
+
+  - type: input
+    id: upstream_version
+    attributes:
+      label: Upstream Package & Version
+      placeholder: "@anthropic-ai/claude-code@2.1.323"
+    validations:
+      required: true
+
+  - type: textarea
+    id: verify_json
+    attributes:
+      label: Verification JSON (`patch_claude_binary.py --verify` or `ccide doctor --json`)
+      render: json
+      placeholder: |
+        {
+          "required_ok": false,
+          "patches": [...]
+        }
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      value: |
+        - [ ] `python3 -I scripts/patch_claude_binary.py --verify` passes against both previous and new upstream versions
+        - [ ] Synthetic mutation regression test added in `tests/test_patch_claude_binary.py`
+    validations:
+      required: true

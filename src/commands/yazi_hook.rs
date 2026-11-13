@@ -1,22 +1,46 @@
-//! `ccide-core yazi-hook`: Ultra-Fast Native `PostToolUse` / `SubagentStart` / `SubagentStop` Hook.
+//! `ccide-core yazi-hook`: Cross-Platform Native `PostToolUse` / `Subagent*` Hook.
 //!
-//! 1. Resolves the live `yazi_id` belonging ONLY to the calling Claude session (`CC_YAZI_ID`,
-//!    newest `tab_shell_<yazi_id>.txt` via `getppid()` ancestry, or `session_<sessionId>.yazi`).
-//! 2. Wakes `ccide-core sidebar` immediately via `SIGUSR2` (`< 0.05ms`) on every tool/task/subagent event.
-//! 3. Records `main`'s latest operated file (`Read`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`,
-//!    `LSP`, `Grep`, `Glob`) in `main_last_file_<yazi_id>.json` and reveals + highlights it in `Yazi`
-//!    whenever `main` is the active selected session.
+//! Fixes and enhancements for Claude Code 2.1.3xx & Windows/Linux/macOS:
+//! 1. Caches `permission_mode` BEFORE `raw_file.is_empty()` early return so `statusline` always
+//!    knows the active mode even when `statusLine` stdin omits `permission_mode`.
+//! 2. Distinguishes subagent tool calls (`agent_id` present) from main-thread calls: background
+//!    subagents NEVER overwrite `main_last_file_<yazi_id>.json` or hijack Yazi while viewing `main`.
+//! 3. Supports `filenames[0]` fallback for `Glob`/`Grep` tool responses and ignores `staged: true`
+//!    unapplied file previews.
 
-use std::env;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ffi::notify_sidebar;
-use crate::json::extract_json_str;
-use crate::session::{normalize_path_under_cwd, resolve_live_yazi_tab};
+use crate::ffi::{current_ppid, notify_sidebar};
+use crate::json::{extract_json_bool, extract_json_str};
+use crate::platform::{cache_dir, ipc_path, is_internal_or_temp_path, user_home_dir};
+use crate::session::{
+    emit_yazi_reveal_at, extract_tool_line_target, is_valid_model_name, normalize_path_under_cwd,
+    resolve_live_yazi_tab,
+};
+
+fn extract_first_filename_from_array(src: &str) -> Option<String> {
+    let pos = src.find("\"filenames\"")?;
+    let rest = src[pos + 11..].trim_start().strip_prefix(':')?.trim_start();
+    let arr = rest.strip_prefix('[')?.trim_start();
+    let q1 = arr.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut chars = q1.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(nc) = chars.next() {
+                out.push(nc);
+            }
+        } else if c == '"' {
+            return (!out.is_empty()).then_some(out);
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
 
 pub fn run() {
     let mut input = String::new();
@@ -25,96 +49,135 @@ pub fn run() {
         return;
     }
 
+    let hook_event = extract_json_str(&input, "hook_event_name").unwrap_or_default();
     let tool_name = extract_json_str(&input, "tool_name").unwrap_or_default();
     let session_id = extract_json_str(&input, "session_id").unwrap_or_default();
+    let agent_id = extract_json_str(&input, "agent_id").unwrap_or_default();
     let perm_mode = extract_json_str(&input, "permission_mode").unwrap_or_default();
     let cwd_path = extract_json_str(&input, "cwd").unwrap_or_default();
-    let raw_file = extract_json_str(&input, "file_path")
+
+    let home = user_home_dir();
+    let cdir = cache_dir(&home);
+    let cdir_str = cdir.to_string_lossy().into_owned();
+    let _ = fs::create_dir_all(cdir.join("status"));
+
+    // Always persist `permission_mode` upfront on EVERY hook (`SessionStart`, `SubagentStart`, `PostToolUse`, etc.)
+    if !perm_mode.is_empty() && !session_id.is_empty() {
+        let _ = fs::write(
+            cdir.join("status")
+                .join(format!("mode_{}.cache", session_id)),
+            &perm_mode,
+        );
+    }
+
+    // Official cross-version `PostModelSwitch` / `SessionStart` plugin model sync (zero binary patch required!)
+    if matches!(hook_event.as_str(), "PostModelSwitch" | "SessionStart") && !session_id.is_empty() {
+        let switched_model = extract_json_str(&input, "to_model")
+            .or_else(|| extract_json_str(&input, "model"))
+            .unwrap_or_default();
+        if is_valid_model_name(&switched_model) {
+            let _ = fs::write(
+                cdir.join("status")
+                    .join(format!("model_{}.cache", session_id)),
+                switched_model.trim(),
+            );
+        }
+    }
+
+    let (target_yazi_id, tab_cwd) = resolve_live_yazi_tab(&cdir_str, &session_id, &cwd_path);
+    if !target_yazi_id.is_empty() && !session_id.is_empty() {
+        let _ = fs::write(
+            cdir.join(format!("session_{}.yazi", session_id)),
+            &target_yazi_id,
+        );
+    }
+
+    // Always wake the Right Sidebar immediately on ANY hook event
+    notify_sidebar(&session_id, &target_yazi_id);
+
+    // Skip staged-only (unwritten) remote/review edits where disk file was not modified
+    if extract_json_bool(&input, "staged") == Some(true) {
+        return;
+    }
+
+    let mut raw_file = extract_json_str(&input, "file_path")
         .or_else(|| extract_json_str(&input, "filePath"))
         .or_else(|| extract_json_str(&input, "notebook_path"))
         .or_else(|| extract_json_str(&input, "path"))
         .unwrap_or_default();
 
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let cache_dir = format!("{}/.cache/cc-ide", home);
-
-    let (target_yazi_id, tab_cwd) = resolve_live_yazi_tab(&cache_dir, &session_id, &cwd_path);
-    if !target_yazi_id.is_empty() && !session_id.is_empty() {
-        let _ = fs::write(
-            format!("{}/session_{}.yazi", cache_dir, session_id),
-            &target_yazi_id,
-        );
-    }
-
-    // Always wake the Right Sidebar immediately on ANY hook event (TaskCreate, TaskUpdate, Read, Edit, Subagent*)
-    notify_sidebar(&session_id, &target_yazi_id);
-
-    if raw_file.is_empty() {
-        return;
-    }
-    let resolved_path = if Path::new(&raw_file).is_absolute() || cwd_path.is_empty() {
-        raw_file
-    } else {
-        format!("{}/{}", cwd_path.trim_end_matches('/'), raw_file)
+    let to_abs = |f: &str| -> String {
+        if Path::new(f).is_absolute() || cwd_path.is_empty() {
+            f.to_string()
+        } else {
+            Path::new(&cwd_path).join(f).to_string_lossy().into_owned()
+        }
     };
-    if !Path::new(&resolved_path).is_file() {
+
+    let mut resolved_path = if raw_file.is_empty() {
+        String::new()
+    } else {
+        to_abs(&raw_file)
+    };
+    if (resolved_path.is_empty() || !Path::new(&resolved_path).is_file())
+        && matches!(tool_name.as_str(), "Glob" | "Grep")
+    {
+        if let Some(first_fn) = extract_first_filename_from_array(&input) {
+            raw_file = first_fn;
+            resolved_path = to_abs(&raw_file);
+        }
+    }
+
+    if resolved_path.is_empty() || !Path::new(&resolved_path).is_file() {
         return;
     }
+
     let norm_base = if tab_cwd.is_empty() {
         &cwd_path
     } else {
         &tab_cwd
     };
     let file_path = normalize_path_under_cwd(&resolved_path, norm_base);
-
-    if file_path.starts_with(&format!("{}/.claude/projects/", home))
-        || file_path.starts_with("/tmp/")
-        || file_path.starts_with("/private/tmp/")
-        || file_path.contains("/.lib/")
-    {
+    if is_internal_or_temp_path(&file_path, &home) {
         return;
     }
-
-    let _ = fs::create_dir_all(format!("{}/status", cache_dir));
-    if !perm_mode.is_empty() && !session_id.is_empty() {
-        let _ = fs::write(
-            format!("{}/status/mode_{}.cache", cache_dir, session_id),
-            &perm_mode,
-        );
-    }
-
-    let now_s = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
 
     if target_yazi_id.is_empty() || !target_yazi_id.chars().all(|c| c.is_ascii_digit()) {
         return;
     }
 
-    let safe_fp = file_path.replace('\\', "\\\\").replace('"', "\\\"");
-    let main_json = format!(
-        "{{\"file\":\"{}\",\"tool\":\"{}\",\"ts\":{}}}\n",
-        safe_fp, tool_name, now_s
-    );
-    let _ = fs::write(
-        format!("{}/main_last_file_{}.json", cache_dir, target_yazi_id),
-        main_json,
-    );
+    let (target_line, target_span) = extract_tool_line_target(&input, &tool_name, &file_path);
+    let now_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Only write `main_last_file_<yazi_id>.json` when `agent_id` is empty (genuine Main thread!)
+    if agent_id.is_empty() {
+        let safe_fp = file_path.replace('\\', "\\\\").replace('"', "\\\"");
+        let main_json = format!(
+            "{{\"file\":\"{}\",\"tool\":\"{}\",\"line\":{},\"span\":{},\"ts\":{}}}\n",
+            safe_fp, tool_name, target_line, target_span, now_s
+        );
+        let _ = fs::write(
+            cdir.join(format!("main_last_file_{}.json", target_yazi_id)),
+            main_json,
+        );
+    }
 
     let mut active_view =
-        fs::read_to_string(format!("{}/active_view_{}.txt", cache_dir, target_yazi_id))
+        fs::read_to_string(cdir.join(format!("active_view_{}.txt", target_yazi_id)))
             .unwrap_or_else(|_| "main".to_string())
             .trim()
             .to_string();
-    let ppid = unsafe { crate::ffi::getppid() as u32 };
+    let ppid = current_ppid();
     let pid_cur = if ppid > 1 {
-        fs::read_to_string(format!("/tmp/.cc-ide/cur_pid_{}.txt", ppid)).ok()
+        fs::read_to_string(ipc_path(&format!("cur_pid_{}.txt", ppid))).ok()
     } else {
         None
     };
     let sess_cur = if !session_id.is_empty() {
-        fs::read_to_string(format!("/tmp/.cc-ide/cur_{}.txt", session_id)).ok()
+        fs::read_to_string(ipc_path(&format!("cur_{}.txt", session_id))).ok()
     } else {
         None
     };
@@ -124,31 +187,42 @@ pub fn run() {
             active_view = cn.to_string();
         }
     }
+    let norm_view = if active_view.is_empty() {
+        "main"
+    } else {
+        active_view.as_str()
+    };
 
-    if !active_view.is_empty() && active_view != "main" {
+    let should_reveal = if agent_id.is_empty() {
+        norm_view == "main"
+    } else {
+        norm_view == agent_id
+    };
+    if !should_reveal {
         return;
     }
 
-    let ya_bin = if Path::new("/opt/homebrew/bin/ya").exists() {
-        "/opt/homebrew/bin/ya"
-    } else {
-        "ya"
-    };
-    let hscroll_plugin = Path::new(&home).join(".config/yazi/plugins/hscroll.yazi/main.lua");
-    if hscroll_plugin.exists() {
-        let plugin_arg = format!("reveal '{}'", file_path.replace('\'', "'\\''"));
-        let _ = Command::new(ya_bin)
-            .args(["emit-to", &target_yazi_id, "plugin", "hscroll", &plugin_arg])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-    } else {
-        let _ = Command::new(ya_bin)
-            .args(["emit-to", &target_yazi_id, "reveal", &file_path])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+    emit_yazi_reveal_at(
+        &home,
+        &target_yazi_id,
+        norm_base,
+        &file_path,
+        target_line,
+        target_span,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_first_glob_filename_cleanly() {
+        let js =
+            r#"{"tool_name":"Glob","tool_response":{"filenames":["src/main.rs","src/lib.rs"]}}"#;
+        assert_eq!(
+            extract_first_filename_from_array(js),
+            Some("src/main.rs".to_string())
+        );
     }
 }

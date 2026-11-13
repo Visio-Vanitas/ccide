@@ -50,6 +50,38 @@ while [[ $# -gt 0 ]]; do
       [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
       exec "$CCIDE_CORE_BIN" workspace theme "${1:-list}"
       ;;
+    doctor|--doctor)
+      shift
+      SCRIPT_DIR="${0:A:h}"
+      REPO_ROOT="${SCRIPT_DIR:h}"
+      CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
+      [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
+      exec "$CCIDE_CORE_BIN" doctor "$REPO_ROOT" "$@"
+      ;;
+    setup|--setup)
+      shift
+      SCRIPT_DIR="${0:A:h}"
+      REPO_ROOT="${SCRIPT_DIR:h}"
+      CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
+      [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
+      exec "$CCIDE_CORE_BIN" setup "$REPO_ROOT"
+      ;;
+    --sync-pricing|sync-pricing)
+      shift
+      SCRIPT_DIR="${0:A:h}"
+      PYTHON_BIN="$(command -v python3 || echo /usr/bin/python3)"
+      exec "$PYTHON_BIN" -I "$SCRIPT_DIR/sync-pricing.py" "$@"
+      ;;
+    --check-cc|check-cc)
+      shift
+      SCRIPT_DIR="${0:A:h}"
+      PYTHON_BIN="$(command -v python3 || echo /usr/bin/python3)"
+      if [[ $# -eq 0 ]]; then
+        exec "$PYTHON_BIN" -I "$SCRIPT_DIR/cc-maint.py" --local
+      else
+        exec "$PYTHON_BIN" -I "$SCRIPT_DIR/cc-maint.py" "$@"
+      fi
+      ;;
     --ssh)
       shift
       mkdir -p "$HOME/.ssh"
@@ -86,6 +118,10 @@ Layout & Subagent Options:
   --keep-panes       Keep companion panes open after Claude exits
   --clear-subagents  Dismiss all completed subagents across open sidebars
   --theme [preset]   List or switch color palette preset (~/.config/cc-ide/palette.json)
+  doctor, --doctor   Run environment, companion tool & binary patch health check
+  setup, --setup     Launch interactive TUI Setup & Live Theme Studio
+  --sync-pricing     Sync ~/.config/cc-ide/pricing.json from LiteLLM & genai-prices
+  --check-cc [...]   Run Cross-OS Claude Code symbol & schema maintenance workbench
 EOF
       exit 0
       ;;
