@@ -13,8 +13,8 @@ use crate::json::{extract_json_str, extract_json_u64};
 
 pub use focus::{emit_yazi_reveal_at, extract_tool_line_target};
 pub use model::{
-    classify_model_family, load_config_models, map_alias_with_settings, short_model_label,
-    ConfigModels,
+    classify_model_family, is_valid_model_name, load_config_models, map_alias_with_settings,
+    short_model_label, ConfigModels,
 };
 
 /// Strictly resolves the `(sessionId, claude_pid)` belonging ONLY to this tab's Claude process.

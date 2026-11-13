@@ -1,10 +1,40 @@
 //! Bidirectional Signal (`SIGUSR2`), Yazi File+Line Reveal & Tab Registration IPC for `sidebar`.
 
 use std::fs;
+use std::time::SystemTime;
 
 use crate::commands::workspace::focus_center_after_view_switch;
 use crate::ffi::{kill, SIGUSR2};
-use crate::session::emit_yazi_reveal_at;
+use crate::session::{emit_yazi_reveal_at, is_valid_model_name};
+
+pub fn read_pushed_claude_state(
+    claude_pid: u32,
+    session_id: &str,
+) -> Option<(String, Option<(SystemTime, String)>)> {
+    let mut cands = Vec::with_capacity(2);
+    if claude_pid > 1 {
+        cands.push(format!("/tmp/.cc-ide/cur_pid_{}.txt", claude_pid));
+    }
+    if !session_id.is_empty() {
+        cands.push(format!("/tmp/.cc-ide/cur_{}.txt", session_id));
+    }
+    for path in cands {
+        if let (Ok(meta), Ok(txt)) = (fs::metadata(&path), fs::read_to_string(&path)) {
+            let mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let mut lines = txt.lines();
+            let view = lines.next().unwrap_or("main").trim();
+            let norm_view = if view.is_empty() { "main" } else { view }.to_string();
+            let raw_model = lines.next().unwrap_or("").trim();
+            let valid_model = if is_valid_model_name(raw_model) {
+                Some((mt, raw_model.to_string()))
+            } else {
+                None
+            };
+            return Some((norm_view, valid_model));
+        }
+    }
+    None
+}
 
 pub fn trigger_yazi_reveal(
     home: &str,

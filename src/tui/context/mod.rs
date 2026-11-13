@@ -14,7 +14,9 @@ use crate::commands::statusline::{
     compute_context_budget, load_compact_config, CompactConfig, ContextBudget,
 };
 use crate::json::{extract_json_str, extract_json_u64};
-use crate::session::{classify_model_family, map_alias_with_settings, short_model_label};
+use crate::session::{
+    classify_model_family, is_valid_model_name, map_alias_with_settings, short_model_label,
+};
 use crate::tui::pricing::PricingCatalog;
 pub use cost_panel::build_cost_panel;
 use parser::{update_transcript_ctx_tracker, TranscriptCtxTracker};
@@ -286,10 +288,10 @@ impl SessionContextAnalyzer {
             };
             for rec in tr.turns_by_id.values() {
                 session_turns += 1;
-                let raw_m = if rec.model.is_empty() || rec.model.starts_with('<') {
-                    fb_model
-                } else {
+                let raw_m = if is_valid_model_name(&rec.model) {
                     &rec.model
+                } else {
+                    fb_model
                 };
                 let mapped = map_alias_with_settings(raw_m, &self.cached_settings_txt);
                 let short = short_model_label(&mapped);

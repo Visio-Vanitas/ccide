@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::json::{extract_json_str, extract_json_u64};
-use crate::session::extract_tool_line_target;
+use crate::session::{extract_tool_line_target, is_valid_model_name};
 use crate::tui::width::floor_char_boundary;
 
 pub use crate::session::subagents::{
@@ -32,6 +32,7 @@ pub struct MainSessionOps {
     pub line: usize,
     pub span: usize,
     pub model: String,
+    pub model_mtime: SystemTime,
     pub seq: usize,
 }
 
@@ -164,14 +165,14 @@ pub fn update_jsonl_tracker(
                     .chars()
                     .take_while(|&c| c != '`' && c != '\\' && c != ' ' && c != '<' && c != '"')
                     .collect();
-                if !m.is_empty() {
+                if is_valid_model_name(&m) {
                     tracker.last_model = m;
                 }
             } else if line.contains("\"role\":\"assistant\"")
                 || line.contains("\"type\":\"message\"")
             {
                 if let Some(m) = extract_json_str(line, "model") {
-                    if !m.is_empty() {
+                    if is_valid_model_name(&m) {
                         tracker.last_model = m;
                     }
                 }
@@ -200,6 +201,7 @@ pub fn get_main_session_file_ops(
         line: 0,
         span: 0,
         model: String::new(),
+        model_mtime: SystemTime::UNIX_EPOCH,
         seq: 0,
     };
     let mut jsonl_mtime = SystemTime::UNIX_EPOCH;
@@ -246,6 +248,7 @@ pub fn get_main_session_file_ops(
             out.line = tr.last_line;
             out.span = tr.last_span;
             out.model = tr.last_model.clone();
+            out.model_mtime = jsonl_mtime;
             out.seq = tr.seq;
         }
     }

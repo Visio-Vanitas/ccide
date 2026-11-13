@@ -34,7 +34,8 @@ use crate::tui::palette::PaletteWatcher;
 
 use input::{default_cursor_for_active, parse_input_events, sync_scroll_to_cursor, InputEvent};
 use ipc::{
-    register_sidebar_tab, trigger_native_view_switch, trigger_yazi_reveal, write_active_view_state,
+    read_pushed_claude_state, register_sidebar_tab, trigger_native_view_switch,
+    trigger_yazi_reveal, write_active_view_state,
 };
 use subagents_panel::build_subagents_panel;
 
@@ -113,7 +114,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
     let mut main_span = 0usize;
     let mut subagents: Vec<SubagentItem> = Vec::new();
     let mut cached_cfg: ConfigModels =
-        load_config_models(&home, &cached_session_id, tab_yazi_id, "");
+        load_config_models(&home, &cached_session_id, tab_yazi_id, None, None);
     let mut prev_geom_key = (0usize, 0usize);
 
     while RUNNING.load(Ordering::Relaxed) {
@@ -168,7 +169,8 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             main_file = m_ops.file;
             main_line = m_ops.line;
             main_span = m_ops.span;
-            let mut transcript_model = m_ops.model;
+            let transcript_model = m_ops.model;
+            let transcript_mtime = m_ops.model_mtime;
             let main_seq = m_ops.seq;
             if let Some(prev_seq) = seen_main_seq {
                 if main_seq > prev_seq && active_view_id == "main" {
@@ -184,48 +186,33 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             }
             seen_main_seq = Some(main_seq);
 
-            let pid_cur = if cached_claude_pid > 1 {
-                fs::read_to_string(format!("/tmp/.cc-ide/cur_pid_{}.txt", cached_claude_pid)).ok()
-            } else {
-                None
-            };
-            let sess_cur = if !cached_session_id.is_empty() {
-                fs::read_to_string(format!("/tmp/.cc-ide/cur_{}.txt", cached_session_id)).ok()
-            } else {
-                None
-            };
-            if let Some(cur_txt) = pid_cur.or(sess_cur) {
-                let mut lines = cur_txt.lines();
-                let native_cur = lines.next().unwrap_or("main").trim();
-                let pushed_model = lines.next().unwrap_or("").trim();
-                if !pushed_model.is_empty() {
-                    transcript_model = pushed_model.to_string();
-                }
-                if last_click_instant.elapsed() > Duration::from_millis(600) {
-                    let target_cur = if native_cur.is_empty() {
-                        "main"
-                    } else {
-                        native_cur
-                    };
-                    if target_cur != active_view_id {
-                        active_view_id = target_cur.to_string();
-                        write_active_view_state(&home, tab_yazi_id, &active_view_id);
-                        if active_view_id == "main" {
-                            trigger_yazi_reveal(
-                                &home,
-                                tab_yazi_id,
-                                target_cwd,
-                                &main_file,
-                                main_line,
-                                main_span,
-                            );
-                        }
+            let mut pushed_model_cand: Option<(std::time::SystemTime, String)> = None;
+            if let Some((target_cur, p_mod)) =
+                read_pushed_claude_state(cached_claude_pid, &cached_session_id)
+            {
+                pushed_model_cand = p_mod;
+                if last_click_instant.elapsed() > Duration::from_millis(600)
+                    && target_cur != active_view_id
+                {
+                    active_view_id = target_cur;
+                    write_active_view_state(&home, tab_yazi_id, &active_view_id);
+                    if active_view_id == "main" {
+                        trigger_yazi_reveal(
+                            &home,
+                            tab_yazi_id,
+                            target_cwd,
+                            &main_file,
+                            main_line,
+                            main_span,
+                        );
                     }
                 }
             }
 
-            cached_cfg =
-                load_config_models(&home, &cached_session_id, tab_yazi_id, &transcript_model);
+            let t_cand = (!transcript_model.is_empty())
+                .then_some((transcript_mtime, transcript_model.as_str()));
+            let p_cand = pushed_model_cand.as_ref().map(|(mt, s)| (*mt, s.as_str()));
+            cached_cfg = load_config_models(&home, &cached_session_id, tab_yazi_id, t_cand, p_cand);
             subagents =
                 get_session_subagents(&home, &cached_session_id, target_cwd, &mut sub_trackers);
 
