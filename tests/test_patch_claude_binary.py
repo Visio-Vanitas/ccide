@@ -92,6 +92,9 @@ def build_js_bundle(include_optional_ui=True):
         b'function stateVar(){let t="taskDecorations";return t}'
     )
 
+    # 5c. Hidden footer task navigation flag (`pa=Di&&"tasks"`).
+    parts.append(b'function navFlag(Di,Ri){const pa=Di&&"tasks",gl=Ri&&"frame";return[pa,gl]}')
+
     if include_optional_ui:
         # 6a. Statusline mode pill.
         parts.append(
@@ -106,6 +109,32 @@ def build_js_bundle(include_optional_ui=True):
         b"let hv;if(condOne)hv=prettyFn(Inner,{...pp}),tailOne=1;else hv=otherOne;"
         b"let gh;if(condTwo)gh=prettyFn(ns.PromptHintPart,{innerOne:1}),tailTwo=2;"
         b"else gh=otherTwo;return gh};"
+    )
+
+    # 6c. Safe Escape exit from `viewing-agent` (`Lxe`).
+    parts.append(
+        b'function escComp(h){return{onKey:(ev)=>{if(ev.name==="escape"&&modeV==="viewing-agent"){'
+        b"if(h)return;ev.preventDefault();let idV=curId;if(idV){let tk=store.tasks[idV];"
+        b'if(isAg(tk)&&tk.status==="running"){killTask(tk);return}}fnExit9(setSt)}}}}'
+    )
+
+    # 6d. Keep `viewing-agent` pinned across main turn updates (`DPe`).
+    parts.append(
+        b"function watchView(){let setSt=useSet(),vId=useSel((s)=>s.viewingAgentTaskId),"
+        b"vTask=useSel((s)=>s.viewingAgentTaskId?s.tasks[s.viewingAgentTaskId]:void 0),"
+        b"pRef=useRef(void 0);if(isAg(vTask))pRef.current=vTask.parentAgentId;"
+        b"useEff(()=>{if(!vId)return;if(!vTask){fnExit9(setSt);return}},[vId,vTask,setSt])}"
+    )
+
+    # 7. Export exact monotonic stream `ttftMs` & `durationMs` (`tengu_api_success`).
+    parts.append(
+        b'function logApi(e,h,y,b,w,H,q){ev("tengu_api_success",{model:vt(e),messageCount:1,'
+        b"inputTokens:h.input_tokens,outputTokens:h.output_tokens,"
+        b"cachedInputTokens:h.cache_read_input_tokens??0,"
+        b"uncachedInputTokens:h.cache_creation_input_tokens??0,"
+        b"cache_creation_5m_input_tokens:h.cache_creation?.ephemeral_5m_input_tokens??0,"
+        b"cache_creation_1h_input_tokens:h.cache_creation?.ephemeral_1h_input_tokens??0,"
+        b"durationMs:y,durationMsIncludingRetries:b,attempt:w,ttftMs:H??void 0,firstContentMs:q??void 0})}"
     )
 
     return b"".join(parts)
@@ -217,7 +246,7 @@ class BunStandaloneMutationTests(unittest.TestCase):
         )
 
     def test_all_patches_applied_and_required_ok(self):
-        self.assertEqual(len(self.report["patches"]), 8)
+        self.assertEqual(len(self.report["patches"]), 12)
         for patch in self.report["patches"]:
             self.assertTrue(patch["applied"], msg=f"{patch['name']}: {patch['message']}")
         self.assertIs(self.report["required_ok"], True)
@@ -381,6 +410,7 @@ class BunLayoutParserEdgeCaseTests(unittest.TestCase):
             # 2.1.323 `Uk()` lookahead uses `idleTeammatesExpanded` instead of `taskDecorations`
             b"function pillFn(){let[rows]=useStore(stateVar),b=foo(x);return hasRows()?0:empty}"
             b'function stateVar(){let t="idleTeammatesExpanded";return t}',
+            b'function navFlag(Di,Ri){const pa=Di&&"tasks",gl=Ri&&"frame";return[pa,gl]}',
             b'function pillBadge(q){return{key:"mode",width:getW(q),node:el(Badge,{mode:q},"mode")}}',
             # 2.1.323 `PromptHintPart` spreads `{...pp,wrappedRowWidth:cc}`
             b"var hintComp=(arg)=>{let q=soma(4),pp,cc;if(zz)pp=arg;else pp=two;"
@@ -389,6 +419,20 @@ class BunLayoutParserEdgeCaseTests(unittest.TestCase):
             b"let hv;if(condOne)hv=prettyFn(Inner,{...pp,wrappedRowWidth:cc}),tailOne=1;else hv=otherOne;"
             b"let gh;if(condTwo)gh=prettyFn(ns.PromptHintPart,{innerOne:1}),tailTwo=2;"
             b"else gh=otherTwo;return gh};",
+            b'function escComp(h){return{onKey:(ev)=>{if(ev.name==="escape"&&modeV==="viewing-agent"){'
+            b"if(h)return;ev.preventDefault();let idV=curId;if(idV){let tk=store.tasks[idV];"
+            b'if(isAg(tk)&&tk.status==="running"){killTask(tk);return}}fnExit9(setSt)}}}}',
+            b"function watchView(){let setSt=useSet(),vId=useSel((s)=>s.viewingAgentTaskId),"
+            b"vTask=useSel((s)=>s.viewingAgentTaskId?s.tasks[s.viewingAgentTaskId]:void 0),"
+            b"pRef=useRef(void 0);if(isAg(vTask))pRef.current=vTask.parentAgentId;"
+            b"useEff(()=>{if(!vId)return;if(!vTask){fnExit9(setSt);return}},[vId,vTask,setSt])}",
+            b'function logApi(e,h,y,b,w,H,q){ev("tengu_api_success",{model:vt(e),messageCount:1,'
+            b"inputTokens:h.input_tokens,outputTokens:h.output_tokens,"
+            b"cachedInputTokens:h.cache_read_input_tokens??0,"
+            b"uncachedInputTokens:h.cache_creation_input_tokens??0,"
+            b"cache_creation_5m_input_tokens:h.cache_creation?.ephemeral_5m_input_tokens??0,"
+            b"cache_creation_1h_input_tokens:h.cache_creation?.ephemeral_1h_input_tokens??0,"
+            b"durationMs:y,durationMsIncludingRetries:b,attempt:w,ttftMs:H??void 0,firstContentMs:q??void 0})}",
         ]
         buf, _, _ = build_bun_standalone(b"".join(parts))
         report = patcher.patch_buffer_in_memory(buf)
@@ -397,11 +441,9 @@ class BunLayoutParserEdgeCaseTests(unittest.TestCase):
         for p in report["patches"]:
             self.assertTrue(p["applied"], msg=f"{p['name']}: {p['message']}")
         patched_bytes = bytes(buf)
-        self.assertIn(
-            b"var __cm=useZustandStore((x)=>x.mainLoopModelForSession??x.mainLoopModel);",
-            patched_bytes,
-        )
         self.assertNotIn(b"${Ie??", patched_bytes)
+        self.assertNotIn(b"__cm", patched_bytes)
+        self.assertIn(b"pf_${process.pid}.jsonl", patched_bytes)
         self.assertIn(b"{...pp,wrappedRowWidth:cc}", patched_bytes)
 
 
