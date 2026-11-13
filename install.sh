@@ -25,8 +25,20 @@ for d in "$HOME_DIR"/.nvm/versions/node/*/bin(N); do
 done
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME_DIR/.cargo/bin:$HOME_DIR/.local/bin:$CLAUDE_DIR/bin${NVM_NODE_BIN:+:$NVM_NODE_BIN}:$PATH"
 
-PYTHON_BIN="$HOME_DIR/miniconda3/bin/python3"
-[[ -x "$PYTHON_BIN" ]] || PYTHON_BIN="$(command -v python3 || echo /usr/bin/python3)"
+resolve_python_bin() {
+  local rec_py="$CACHE_DIR/python_bin"
+  if [[ -f "$rec_py" ]]; then
+    local cand
+    cand="$(tr -d '\r\n' < "$rec_py")"
+    [[ -x "$cand" ]] && { echo "$cand"; return; }
+  fi
+  local venv_py="$HOME_DIR/.local/share/cc-ide/pyenv/bin/python3"
+  [[ -x "$venv_py" ]] && { echo "$venv_py"; return; }
+  [[ -x "$HOME_DIR/miniconda3/bin/python3" ]] && { echo "$HOME_DIR/miniconda3/bin/python3"; return; }
+  command -v python3 || echo /usr/bin/python3
+}
+
+PYTHON_BIN="$(resolve_python_bin)"
 
 CARGO_BIN="$(command -v cargo || echo "$HOME_DIR/.cargo/bin/cargo")"
 [[ -x "$CARGO_BIN" ]] || CARGO_BIN="$HOME_DIR/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo"
@@ -102,13 +114,27 @@ if [[ "$MODE" == "-h" || "$MODE" == "--help" ]]; then
 Usage: ./install.sh [option]
 
 Options:
-  (no args)      Launch interactive TUI Setup, Theme Studio & Doctor (falls back to --yes if non-TTY)
-  --yes, -y      Non-interactive full build, plugin install, binary patch & hot-reload
-  --doctor       Run environment & companion dependency health check
-  --patch-only   Re-apply only the claude.exe structural binary patches
-  --uninstall    Cleanly restore claude.exe.bak, stop daemon, and remove managed config blocks
+  (no args)                     Launch interactive TUI Setup, Theme Studio & Doctor (falls back to --yes if non-TTY)
+  --yes, -y                     Non-interactive full build, plugin install, binary patch & hot-reload
+  --doctor [--json]             Run environment & companion dependency health check (human TUI or JSON)
+  --patch-only                  Re-apply only the claude.exe structural binary patches
+  --iterm-preferences-only      Back up & apply ccide's recommended iTerm2 preferences (idempotent)
+  --restore-iterm-preferences   Restore original iTerm2 preferences from backup (and optionally remove pyenv)
+  --uninstall                   Cleanly restore claude.exe.bak, stop daemon, and remove managed config blocks
 EOF
   exit 0
+fi
+
+if [[ "$MODE" == "--iterm-preferences-only" ]]; then
+  shift || true
+  log_step "Applying reversible ccide iTerm2 display & Python API preferences..."
+  exec "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --apply "$@"
+fi
+
+if [[ "$MODE" == "--restore-iterm-preferences" ]]; then
+  shift || true
+  log_step "Restoring original iTerm2 preferences from backup..."
+  exec "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --restore "$@"
 fi
 
 if [[ "$MODE" == "--uninstall" ]]; then
@@ -234,7 +260,7 @@ if [[ ! -f "$HOME_DIR/.config/cc-ide/pricing.json" ]]; then
   cp -f "$PROJECT_ROOT/assets/pricing.json" "$HOME_DIR/.config/cc-ide/pricing.json"
 fi
 
-for script_name in ccide_daemon.py iterm2_workspace.py pane-runner.sh lazygit-pager.sh lazygit-log.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py cc_tui_lib.py ccide ensure-ccide-core.sh; do
+for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py pane-runner.sh lazygit-pager.sh lazygit-log.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py cc_tui_lib.py ccide ensure-ccide-core.sh; do
   chmod +x "$PROJECT_ROOT/scripts/$script_name"
   ln -sf "$PROJECT_ROOT/scripts/$script_name" "$CLAUDE_DIR/scripts/$script_name"
 done
@@ -460,14 +486,28 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 3. Configure iTerm2 AutoLaunch Daemon & SSH ControlMaster Bridge (macOS)
+# 3. Sniff iTerm2, Provision PEP 668-Safe Venv, Apply Preferences & Start Daemon
 # ------------------------------------------------------------------------------
-log_step "3/7 Configuring iTerm2 AutoLaunch Daemon & SSH ControlMaster multiplexing..."
+log_step "3/7 Probing iTerm2 runtime (3a), preferences & SSH ControlMaster (3b)..."
 if [[ "$OPT_DAEMON" == "1" ]]; then
   if [[ "$OS_NAME" == "Darwin" ]]; then
-    AUTOLAUNCH_DIR="$HOME_DIR/Library/Application Support/iTerm2/Scripts/AutoLaunch"
-    mkdir -p "$AUTOLAUNCH_DIR"
-    ln -sf "$PROJECT_ROOT/scripts/ccide_daemon.py" "$AUTOLAUNCH_DIR/ccide_daemon.py"
+    ITERM_INSTALLED="$("$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --status --json | "$PYTHON_BIN" -I -c 'import json,sys; print("1" if json.load(sys.stdin).get("iterm_installed") else "0")' 2>/dev/null || echo "0")"
+    if [[ "$ITERM_INSTALLED" == "1" ]]; then
+      # Stage 3a: Provision dedicated `~/.local/share/cc-ide/pyenv` with PyPI mirror latency probe
+      "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-pyenv.py" --ensure || true
+      PYTHON_BIN="$(resolve_python_bin)"
+
+      # Stage 3b: Back up `com.googlecode.iterm2.plist` & apply recommended preferences (idempotent)
+      if [[ "${CCIDE_OPT_ITERM_PREFS:-1}" == "1" ]]; then
+        "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --apply || true
+      fi
+
+      AUTOLAUNCH_DIR="$HOME_DIR/Library/Application Support/iTerm2/Scripts/AutoLaunch"
+      mkdir -p "$AUTOLAUNCH_DIR"
+      ln -sf "$PROJECT_ROOT/scripts/ccide_daemon.py" "$AUTOLAUNCH_DIR/ccide_daemon.py"
+    else
+      log_ok "Skipping iTerm2 configuration (iTerm2 not installed); Tier 3 tmux backend ready"
+    fi
 
     mkdir -p "$HOME_DIR/.ssh"
     chmod 700 "$HOME_DIR/.ssh"
@@ -492,16 +532,20 @@ EOF
       chmod 600 "$HOME_DIR/.ssh/config"
     fi
 
-    pkill -f "ccide_daemon.py" >/dev/null 2>&1 || true
-    rm -f "/tmp/.cc-ide/iterm_daemon.sock"
-    nohup "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ccide_daemon.py" >/dev/null 2>&1 &
-    for _ in {1..20}; do
-      [[ -S "/tmp/.cc-ide/iterm_daemon.sock" ]] && break
-      sleep 0.05
-    done
-    log_ok "Started ccide_daemon.py (/tmp/.cc-ide/iterm_daemon.sock + OSC 1337 SSH listener)"
+    if [[ "$ITERM_INSTALLED" == "1" ]] && "$PYTHON_BIN" -I -c "import iterm2" >/dev/null 2>&1; then
+      pkill -f "ccide_daemon.py" >/dev/null 2>&1 || true
+      rm -f "/tmp/.cc-ide/iterm_daemon.sock"
+      nohup "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ccide_daemon.py" >/dev/null 2>&1 &
+      for _ in {1..20}; do
+        [[ -S "/tmp/.cc-ide/iterm_daemon.sock" ]] && break
+        sleep 0.05
+      done
+      log_ok "Started ccide_daemon.py via $PYTHON_BIN (/tmp/.cc-ide/iterm_daemon.sock)"
+    elif [[ "$ITERM_INSTALLED" == "1" ]]; then
+      log_ok "SSH ControlMaster ready; iTerm2 daemon deferred until Python API is active (Tier 3 tmux fallback active)"
+    fi
   else
-    log_ok "Linux host detected: OSC 1337 emitter & tmux backend ready"
+    log_ok "Linux host detected: skipping iTerm2 preferences; OSC 1337 emitter & tmux backend ready"
   fi
 else
   log_ok "Skipped iTerm2 AutoLaunch & SSH config per user selection"

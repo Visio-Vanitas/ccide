@@ -182,35 +182,65 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         }),
     }
 
-    if is_macos && is_iterm && !is_ssh && !is_tmux {
+    if is_macos && !is_ssh && !is_tmux {
+        let iterm_app = [
+            PathBuf::from("/Applications/iTerm.app"),
+            Path::new(home).join("Applications/iTerm.app"),
+        ]
+        .into_iter()
+        .find(|p| p.is_dir());
         let sock_live = Path::new("/tmp/.cc-ide/iterm_daemon.sock").exists();
-        let iterm_env = Path::new(home)
-            .join("Library/Application Support/iTerm2/iterm2env")
-            .exists();
-        let (st, lbl, det) = if sock_live {
-            (
-                CheckStatus::Ok,
-                "iTerm2 Daemon",
-                "warm socket active (/tmp/.cc-ide/iterm_daemon.sock)",
-            )
-        } else if iterm_env {
-            (
-                CheckStatus::Info,
-                "iTerm2 Daemon",
-                "Python API installed · socket starts on install",
-            )
+        let pyenv_py = Path::new(home).join(".local/share/cc-ide/pyenv/bin/python3");
+        let rec_py = fs::read_to_string(Path::new(home).join(".cache/cc-ide/python_bin"))
+            .ok()
+            .map(|s| PathBuf::from(s.trim()))
+            .filter(|p| p.is_file());
+        let py_cand = if pyenv_py.is_file() {
+            Some(pyenv_py)
         } else {
-            (
-                CheckStatus::Warn,
-                "iTerm2 API",
-                "enable iTerm2 -> Settings -> General -> Magic -> Python API",
-            )
+            rec_py
         };
-        items.push(DoctorItem {
-            status: st,
-            label: lbl.to_string(),
-            detail: det.to_string(),
-        });
+        let py_iterm_ok = py_cand
+            .as_ref()
+            .and_then(|py| {
+                Command::new(py)
+                    .args(["-I", "-c", "import iterm2"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .ok()
+            })
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if sock_live {
+            items.push(DoctorItem {
+                status: CheckStatus::Ok,
+                label: "iTerm2 Daemon".to_string(),
+                detail: "warm socket active (/tmp/.cc-ide/iterm_daemon.sock)".to_string(),
+            });
+        } else if iterm_app.is_some() && py_iterm_ok {
+            items.push(DoctorItem {
+                status: CheckStatus::Info,
+                label: "iTerm2 Daemon".to_string(),
+                detail: "iterm2 venv ready · socket starts on install / launch".to_string(),
+            });
+        } else if iterm_app.is_some() {
+            items.push(DoctorItem {
+                status: CheckStatus::Warn,
+                label: "iTerm2 API".to_string(),
+                detail: "run ./install.sh to provision ~/.local/share/cc-ide/pyenv + API"
+                    .to_string(),
+            });
+        } else if let Some(tbin) = find_in_path("tmux", home) {
+            let tv = cmd_first_line(&tbin, &["-V"]).unwrap_or_else(|| "tmux".to_string());
+            items.push(DoctorItem {
+                status: CheckStatus::Ok,
+                label: "Split Engine".to_string(),
+                detail: format!("{tv} (iTerm2 not found · Tier 3 active)"),
+            });
+        }
     } else if let Some(tbin) = find_in_path("tmux", home) {
         let tv = cmd_first_line(&tbin, &["-V"]).unwrap_or_else(|| "tmux".to_string());
         items.push(DoctorItem {
