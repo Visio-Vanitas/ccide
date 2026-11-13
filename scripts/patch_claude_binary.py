@@ -283,19 +283,6 @@ def patch_buffer_in_memory(buf: bytearray) -> dict:
     adopt_fn = syms.get("adopt_fn", "")
 
     if enter_fn and exit_fn and adopt_fn:
-        # Locate enclosing `TQ` model variable (`_e=Bu()`) if present in the same module
-        re_model_var = re.compile(
-            rb"showWorkflows:[A-Za-z0-9_$]+\}=[A-Za-z0-9_$]+,[A-Za-z0-9_$]+=[^;]{1,80}?([A-Za-z0-9_$]+)=[A-Za-z0-9_$]+\(\)"
-        )
-        model_expr = b'""'
-        for _, reg in iter_js_regions(buf, layout):
-            b_reg = bytes(reg)
-            if b".evictTerminal(" in b_reg and b'"local_workflow"' in b_reg:
-                mm = re_model_var.search(b_reg)
-                if mm:
-                    model_expr = mm.group(1) + b'??""'
-                break
-
         re_jn = re.compile(
             rb"([A-Za-z0-9_$]+)=\(\)=>\{let\s+([A-Za-z0-9_$]+)=Date\.now\(\);"
             rb"let\s+([A-Za-z0-9_$]+)=!1;"
@@ -323,6 +310,28 @@ def patch_buffer_in_memory(buf: bytearray) -> dict:
             hn_v = m.group(10)
             tail = m.group(11)
 
+            # Resolve the Zustand selector hook (`<tasksVar>=<useStoreHook>(<sel>)`) from the
+            # enclosing footer component header instead of blindly calling zero-arg helpers
+            # (which return booleans like `false` in Claude Code 2.1.322+).
+            prefix_win = m.string[max(0, m.start() - 4096) : m.start()]
+            re_store_hook = re.compile(
+                rb"(?<![A-Za-z0-9_$])"
+                + re.escape(te_v)
+                + rb"=([A-Za-z0-9_$]+)\([A-Za-z0-9_$]+\)"
+            )
+            hook_matches = re_store_hook.findall(prefix_win)
+            top_model_sub = b""
+            model_guard = b'""'
+            if hook_matches:
+                hook_fn = hook_matches[-1]
+                if hook_fn not in (b"Object", b"Array", b"String", b"Number", b"Boolean"):
+                    top_model_sub = (
+                        b"var __cm="
+                        + hook_fn
+                        + b"((x)=>x.mainLoopModelForSession??x.mainLoopModel);"
+                    )
+                    model_guard = b'(typeof __cm==="string"&&__cm&&!__cm.startsWith("<")?__cm:"")'
+
             hook = (
                 jn_v
                 + b"=()=>{let "
@@ -345,6 +354,7 @@ def patch_buffer_in_memory(buf: bytearray) -> dict:
                 + now_v
                 + b")}"
                 + tail
+                + top_model_sub
                 + b'try{let fs=import.meta.require("fs"),p=process.pid,g=globalThis,d="/tmp/.cc-ide";'
                 + b"g.__cc={Qt:"
                 + qt_v
@@ -369,7 +379,7 @@ def patch_buffer_in_memory(buf: bytearray) -> dict:
                 + b"let st=`${"
                 + lt_v
                 + b'??"main"}\\n${'
-                + model_expr
+                + model_guard
                 + b"}\\n${Object.keys("
                 + te_v
                 + b").length}`;if(g.__cc_s!==st){g.__cc_s=st;fs.writeFileSync(`${d}/cur_pid_${p}.txt`,st);"
@@ -410,7 +420,7 @@ def patch_buffer_in_memory(buf: bytearray) -> dict:
     re_uk = re.compile(
         rb"(function\s+[A-Za-z0-9_$]+\(\)\{let\[[A-Za-z0-9_$]+\]=[A-Za-z0-9_$]+\(([A-Za-z0-9_$]+)\),[A-Za-z0-9_$]+=[A-Za-z0-9_$]+\([A-Za-z0-9_$]+\);return\s+)"
         rb"[A-Za-z0-9_$]+\(\)"
-        rb"(\?0:[A-Za-z0-9_$]+\})(?=function\s+\2\(\)\{[^}]{0,220}taskDecorations)"
+        rb"(\?0:[A-Za-z0-9_$]+\})(?=function\s+\2\(\)\{[^}]{0,260}(?:idleTeammatesExpanded|taskDecorations))"
     )
     pos, msg = apply_regex_patch_in_regions(
         buf,
@@ -438,7 +448,7 @@ def patch_buffer_in_memory(buf: bytearray) -> dict:
     re_dfe = re.compile(
         rb"(var\s+[A-Za-z0-9_$]+=\([A-Za-z0-9_$]+\)=>\{let\s+[A-Za-z0-9_$]+=[A-Za-z0-9_$]+\(\d+\),([A-Za-z0-9_$]+),([A-Za-z0-9_$]+);[^;]+;else\s+\2=[^;]+;"
         rb"const\s+([A-Za-z0-9_$]+)=!\2\.isInputEmpty,([A-Za-z0-9_$]+)=\2\.isSearching\|\|\2\.exitMessage\.show\|\|[^;]+showExpandPasteHint[^;]+;)"
-        rb"let\s+([A-Za-z0-9_$]+);if\([^)]+\)\6=([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+),\{\.\.\.\2\}\),[^;]+;else\s+\6=[^;]+;"
+        rb"let\s+([A-Za-z0-9_$]+);if\([^)]+\)\6=([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+),(\{\.\.\.\2[^}]*\})\),[^;]+;else\s+\6=[^;]+;"
         rb"let\s+[A-Za-z0-9_$]+;if\([^)]+\)[A-Za-z0-9_$]+=\7\(([A-Za-z0-9_$]+\.PromptHintPart),\{([^}]+)\}\),[^;]+;else\s+[A-Za-z0-9_$]+=[^;]+;return\s+[A-Za-z0-9_$]+\};"
     )
     pos, msg = apply_regex_patch_in_regions(
@@ -455,16 +465,16 @@ def patch_buffer_in_memory(buf: bytearray) -> dict:
             + m.group(7)
             + b"("
             + m.group(8)
-            + b",{..."
-            + m.group(2)
-            + b"}):null;return "
+            + b","
+            + m.group(9)
+            + b"):null;return "
             + m.group(5)
             + b"?"
             + m.group(7)
             + b"("
-            + m.group(9)
-            + b",{"
             + m.group(10)
+            + b",{"
+            + m.group(11)
             + b"}):null};"
         ),
         "Hide bottom bypass-permissions row while keeping interactive hints",
