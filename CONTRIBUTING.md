@@ -8,7 +8,8 @@
 
 | Interface | Command | Output / Purpose |
 |---|---|---|
-| **Environment & Anchor Diagnostics** | `ccide doctor --json` (or `./install.sh --doctor --json`) | Schema-v1 JSON with OS/arch, active 3-Tier backend, companion versions, and `claude.exe` structural anchor status |
+| **Environment & Anchor Diagnostics** | `ccide doctor --json` (`./install.sh --doctor --json` / `.\install.ps1 -Doctor -Json`) | Schema-v1 JSON with OS/arch, active workspace backend, companion versions, and `claude.exe` structural anchor status |
+| **Cross-OS Symbol & Schema Workbench** | `ccide --check-cc [--local \| --fetch-npm [ver]] [--json]` | Probes `darwin-arm64`, `linux-x64`, and `win32-x64` Bun binaries simultaneously, extracts missed-anchor byte snippets, and diffs `assets/cc-schema.json` |
 | **Claude Binary Patcher Probe** | `python3 -I scripts/patch_claude_binary.py --verify [--binary <path>]` | Dry-run JSON report (`required_ok`, per-patch byte offsets, resolved runtime symbols, V8 ESM syntax validation) |
 | **Issue -> Agent Task Brief** | `python3 -I scripts/agent-task-context.py --issue <N>` | Structured JSON brief mapping an Issue Form / Markdown issue to `areas`, `relevant_paths`, `suggested_branch`, `acceptance_criteria`, and `Closes #<N>` |
 | **Modular File Size Gate** | `python3 -I scripts/agent-task-context.py --check-line-budget --changed-only` | JSON report checking touched `.rs` / `.py` modules against the `< 300`-line single-responsibility target |
@@ -43,7 +44,7 @@
 2. **RC Preview Promotion (`dev` -> `preview`)**:
    - Runs live upstream `@anthropic-ai/claude-code@latest` verification, transitions linked issues to `stage:in-preview`, and publishes `v<ver>-rc.<run>` pre-releases.
 3. **Immutable Stable Promotion (`preview` -> `main`)**:
-   - Publishes immutable `v<ver>` binaries + `SHA256SUMS.txt` across all 4 targets (`aarch64`/`x86_64` × `macOS`/`Linux`) and automatically closes all promoted `Closes #<N>` issues on `main`.
+   - Publishes immutable `v<ver>` binaries + `SHA256SUMS.txt` across all 6 targets (`aarch64`/`x86_64` × `macOS`/`Linux`/`Windows MSVC`) and automatically closes all promoted `Closes #<N>` issues on `main`.
 
 ---
 
