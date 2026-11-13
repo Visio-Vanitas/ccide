@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::json::{extract_json_str, extract_json_u64};
+use crate::platform::{is_internal_or_temp_path, normalize_slashes};
 use crate::session::{extract_tool_line_target, is_valid_model_name};
 use crate::tui::width::floor_char_boundary;
 
@@ -36,38 +37,40 @@ pub struct MainSessionOps {
     pub seq: usize,
 }
 
-fn resolve_valid_project_file(
-    cand: &str,
-    target_cwd: &str,
-    claude_projects_prefix: &str,
-) -> Option<String> {
+fn resolve_valid_project_file(cand: &str, target_cwd: &str, home: &str) -> Option<String> {
     if cand.is_empty() {
         return None;
     }
     let abs = if Path::new(cand).is_absolute() {
         cand.to_string()
     } else {
-        format!("{}/{}", target_cwd.trim_end_matches('/'), cand)
+        let sep = if cfg!(windows) && target_cwd.contains('\\') {
+            '\\'
+        } else {
+            '/'
+        };
+        format!(
+            "{}{}{}",
+            target_cwd.trim_end_matches(['/', '\\']),
+            sep,
+            cand
+        )
     };
-    if abs.starts_with(claude_projects_prefix)
-        || abs.contains("/tmp/claude-")
-        || abs.contains("/.cache/cc-ide/")
-        || abs.contains("/.lib/")
-    {
-        return None;
-    }
-    if (abs.starts_with("/tmp/") || abs.starts_with("/private/tmp/"))
-        && !target_cwd.starts_with("/tmp")
-        && !target_cwd.starts_with("/private/tmp")
-    {
-        let stripped = abs
-            .strip_prefix("/private/tmp/")
-            .or_else(|| abs.strip_prefix("/tmp/"))
-            .unwrap_or("");
-        if let Some((_wt, rel)) = stripped.split_once('/') {
-            let alt = format!("{}/{}", target_cwd.trim_end_matches('/'), rel);
-            if Path::new(&alt).exists() {
-                return Some(alt);
+    let norm = normalize_slashes(&abs);
+    if is_internal_or_temp_path(&abs, home) {
+        if (norm.starts_with("/tmp/") || norm.starts_with("/private/tmp/"))
+            && !normalize_slashes(target_cwd).starts_with("/tmp")
+            && !normalize_slashes(target_cwd).starts_with("/private/tmp")
+        {
+            let stripped = norm
+                .strip_prefix("/private/tmp/")
+                .or_else(|| norm.strip_prefix("/tmp/"))
+                .unwrap_or("");
+            if let Some((_wt, rel)) = stripped.split_once('/') {
+                let alt = Path::new(target_cwd).join(rel);
+                if alt.exists() {
+                    return Some(alt.to_string_lossy().into_owned());
+                }
             }
         }
         return None;
@@ -75,12 +78,7 @@ fn resolve_valid_project_file(
     Path::new(&abs).exists().then_some(abs)
 }
 
-fn parse_jsonl_line_for_tools(
-    line: &str,
-    target_cwd: &str,
-    claude_projects_prefix: &str,
-    tr: &mut JsonlTracker,
-) {
+fn parse_jsonl_line_for_tools(line: &str, target_cwd: &str, home: &str, tr: &mut JsonlTracker) {
     if !line.contains("\"tool_use\"") || !line.contains("\"assistant\"") {
         return;
     }
@@ -117,9 +115,7 @@ fn parse_jsonl_line_for_tools(
                     .or_else(|| extract_json_str(chunk, "notebook_path"))
                     .or_else(|| extract_json_str(chunk, "path"))
                     .unwrap_or_default();
-                if let Some(valid) =
-                    resolve_valid_project_file(&cand, target_cwd, claude_projects_prefix)
-                {
+                if let Some(valid) = resolve_valid_project_file(&cand, target_cwd, home) {
                     if Path::new(&valid).is_file() {
                         let (ln, sp) = extract_tool_line_target(chunk, &tname, &valid);
                         tr.last_file = valid;
@@ -137,7 +133,7 @@ fn parse_jsonl_line_for_tools(
 pub fn update_jsonl_tracker(
     jpath: &Path,
     target_cwd: &str,
-    claude_projects_prefix: &str,
+    home: &str,
     tracker: &mut JsonlTracker,
 ) {
     let Ok(meta) = fs::metadata(jpath) else {
@@ -178,8 +174,12 @@ pub fn update_jsonl_tracker(
                 }
             }
 
-            parse_jsonl_line_for_tools(line, target_cwd, claude_projects_prefix, tracker);
-            if line.contains("\"stop_reason\":\"end_turn\"") {
+            parse_jsonl_line_for_tools(line, target_cwd, home, tracker);
+            if line.contains("\"stop_reason\":\"end_turn\"")
+                || line.contains("\"stop_reason\":\"refusal\"")
+                || line.contains("\"stop_reason\":\"max_tokens\"")
+                || line.contains("\"stop_reason\":\"model_context_window_exceeded\"")
+            {
                 tracker.done_from_tail = true;
             }
         }
@@ -194,7 +194,6 @@ pub fn get_main_session_file_ops(
     target_cwd: &str,
     main_tracker: &mut HashMap<String, JsonlTracker>,
 ) -> MainSessionOps {
-    let claude_projects_prefix = format!("{}/.claude/projects/", home);
     let mut out = MainSessionOps {
         tool: String::new(),
         file: String::new(),
@@ -242,7 +241,7 @@ pub fn get_main_session_file_ops(
             if let Ok(m) = fs::metadata(jp).and_then(|m| m.modified()) {
                 jsonl_mtime = m;
             }
-            update_jsonl_tracker(jp, target_cwd, &claude_projects_prefix, tr);
+            update_jsonl_tracker(jp, target_cwd, home, tr);
             out.tool = tr.last_tool.clone();
             out.file = tr.last_file.clone();
             out.line = tr.last_line;

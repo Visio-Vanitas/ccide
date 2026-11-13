@@ -5,16 +5,20 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::json::{extract_json_str, extract_json_u64};
+use crate::json::{extract_json_object, extract_json_str, extract_json_u64};
+use crate::platform::{
+    clean_canonicalize, find_executable, ipc_dir, ipc_path, normalize_slashes, yazi_config_dir,
+};
 use crate::session::normalize_path_under_cwd;
 
 const MAX_SNIPPET_SCAN_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Matches `url_hash(s)` in `assets/yazi-hscroll.lua` bit-for-bit.
+/// Matches `url_hash(s)` in `assets/yazi-hscroll.lua` bit-for-bit across Unix and Windows (`/` normalized).
 pub fn yazi_url_hash(s: &str) -> String {
+    let norm = normalize_slashes(s);
     let mut h1: u64 = 5381;
     let mut h2: u64 = 52711;
-    for &b in s.as_bytes() {
+    for &b in norm.as_bytes() {
         h1 = ((h1 * 33) + u64::from(b)) % 2_147_483_647;
         h2 = ((h2 * 131) + u64::from(b)) % 2_147_483_647;
     }
@@ -49,13 +53,11 @@ fn find_snippet_line_in_file(file_path: &str, snippet: &str) -> Option<(usize, u
 }
 
 /// Resolves `(1-based start_line, span_lines)` for a Claude tool operation on `resolved_file`.
-/// Returns `(0, 0)` when no specific line anchor applies.
 pub fn extract_tool_line_target(
     raw_json: &str,
     tool_name: &str,
     resolved_file: &str,
 ) -> (usize, usize) {
-    // 1. Direct `structuredPatch` hunk coordinates in `PostToolUse` response (`Edit` / `Write`)
     if let Some(ns) = extract_json_u64(raw_json, "newStart") {
         if ns >= 1 {
             let nl = extract_json_u64(raw_json, "newLines").unwrap_or(1).max(1) as usize;
@@ -82,6 +84,14 @@ pub fn extract_tool_line_target(
             }
         }
         "Read" => {
+            if let Some(f_obj) = extract_json_object(raw_json, "file") {
+                if let Some(sl) = extract_json_u64(f_obj, "startLine") {
+                    if sl >= 1 {
+                        let nl = extract_json_u64(f_obj, "numLines").unwrap_or(1).clamp(1, 6);
+                        return (sl as usize, nl as usize);
+                    }
+                }
+            }
             if let Some(off) = extract_json_u64(raw_json, "offset") {
                 if off >= 1 {
                     let lim = extract_json_u64(raw_json, "limit").unwrap_or(1).clamp(1, 6);
@@ -116,15 +126,20 @@ fn write_focus_marker(path_key: &str, line: usize, span: usize, now_s: u64) {
     if path_key.is_empty() {
         return;
     }
-    let fpath = format!("/tmp/.cc-ide/yf_{}.txt", yazi_url_hash(path_key));
+    let fpath = ipc_path(&format!("yf_{}.txt", yazi_url_hash(path_key)));
     if line == 0 {
         let _ = fs::remove_file(&fpath);
         return;
     }
-    let tmp = format!("{}.tmp.{}", fpath, std::process::id());
+    let tmp = ipc_path(&format!(
+        "yf_{}.txt.tmp.{}",
+        yazi_url_hash(path_key),
+        std::process::id()
+    ));
     let body = format!("{}\n{}\n1\n{}\n", line, span.max(1), now_s);
-    if fs::write(&tmp, body).is_ok() {
-        let _ = fs::rename(&tmp, &fpath);
+    if fs::write(&tmp, &body).is_ok() && fs::rename(&tmp, &fpath).is_err() {
+        let _ = fs::write(&fpath, &body);
+        let _ = fs::remove_file(&tmp);
     }
 }
 
@@ -141,26 +156,24 @@ pub fn emit_yazi_reveal_at(
         return;
     }
     let mapped = normalize_path_under_cwd(file_path, target_cwd);
-    let _ = fs::create_dir_all("/tmp/.cc-ide");
+    let _ = fs::create_dir_all(ipc_dir());
     let now_s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
     write_focus_marker(&mapped, line, span, now_s);
-    if let Ok(canon) = fs::canonicalize(file_path) {
+    if let Ok(canon) = clean_canonicalize(file_path) {
         let canon_s = canon.to_string_lossy();
         if canon_s != mapped {
             write_focus_marker(&canon_s, line, span, now_s);
         }
     }
 
-    let ya_bin = if Path::new("/opt/homebrew/bin/ya").exists() {
-        "/opt/homebrew/bin/ya"
-    } else {
-        "ya"
+    let Some(ya_bin) = find_executable("ya", home) else {
+        return;
     };
-    let hscroll_plugin = Path::new(home).join(".config/yazi/plugins/hscroll.yazi/main.lua");
+    let hscroll_plugin = yazi_config_dir(home).join("plugins/hscroll.yazi/main.lua");
     if hscroll_plugin.exists() {
         let escaped = mapped.replace('\'', "'\\''");
         let plugin_arg = if line > 0 {
@@ -184,13 +197,35 @@ pub fn emit_yazi_reveal_at(
     }
 }
 
+/// Clears Yazi's file-list selection bar (`blur`) when keyboard/mouse focus moves to another column.
+pub fn emit_yazi_blur(home: &str, tab_yazi_id: &str) {
+    if tab_yazi_id.is_empty()
+        || !yazi_config_dir(home)
+            .join("plugins/hscroll.yazi/main.lua")
+            .exists()
+    {
+        return;
+    }
+    if let Some(ya_bin) = find_executable("ya", home) {
+        let _ = Command::new(ya_bin)
+            .args(["emit-to", tab_yazi_id, "plugin", "hscroll", "blur"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn yazi_hash_and_edit_line_locator_are_exact() {
-        assert_eq!(yazi_url_hash("/tmp/example.rs").len(), 16);
+        assert_eq!(
+            yazi_url_hash(r"C:\proj\src\a.rs"),
+            yazi_url_hash("C:/proj/src/a.rs")
+        );
         let tmp = std::env::temp_dir().join(format!("ccide_focus_test_{}.rs", std::process::id()));
         fs::write(&tmp, "fn a() {}\nfn b() {\n    let x = 42;\n}\nfn c() {}\n").unwrap();
         let path_s = tmp.to_string_lossy().into_owned();
@@ -204,8 +239,9 @@ mod tests {
             (19, 5)
         );
 
-        let read_json = r#"{"tool_name":"Read","offset":4,"limit":20}"#;
-        assert_eq!(extract_tool_line_target(read_json, "Read", &path_s), (4, 6));
+        let read_resp =
+            r#"{"tool_name":"Read","tool_response":{"file":{"startLine":4,"numLines":3}}}"#;
+        assert_eq!(extract_tool_line_target(read_resp, "Read", &path_s), (4, 3));
 
         let _ = fs::remove_file(&tmp);
     }

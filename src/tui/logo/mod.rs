@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::json::extract_json_str;
+use crate::json::{extract_json_str, extract_json_u64};
 use crate::tui::grid::{BoxRow, PanelSpec, TermGeom};
 use crate::tui::palette::{tint_ansi_logo_line, Palette};
 use crate::tui::width::display_width;
@@ -41,6 +41,7 @@ pub struct SpriteStore {
     viewer_path: PathBuf,
     last_viewer_mtime: Option<SystemTime>,
     pub mode: SpriteMode,
+    pub cost_lines: u8,
 }
 
 fn parse_sprite_mode_str(s: &str) -> Option<SpriteMode> {
@@ -52,21 +53,36 @@ fn parse_sprite_mode_str(s: &str) -> Option<SpriteMode> {
     }
 }
 
-fn read_sprite_mode(home: &str) -> SpriteMode {
+fn read_viewer_prefs(home: &str) -> (SpriteMode, u8) {
+    let mut mode = SpriteMode::Auto;
+    let mut cost_lines = 3u8;
+    if let Ok(raw) = fs::read_to_string(Path::new(home).join(".config/cc-ide/viewer.json")) {
+        if let Some(m) =
+            extract_json_str(&raw, "sprite_mode").and_then(|s| parse_sprite_mode_str(&s))
+        {
+            mode = m;
+        }
+        if let Some(cl) = extract_json_u64(&raw, "cost_lines") {
+            cost_lines = (cl as u8).clamp(1, 3);
+        } else if let Some(cm) = extract_json_str(&raw, "cost_mode") {
+            cost_lines = match cm.trim().to_ascii_lowercase().as_str() {
+                "1" | "single" | "compact" => 1,
+                "2" | "double" | "brief" => 2,
+                _ => 3,
+            };
+        }
+    }
     if let Ok(ev) = env::var("CCIDE_SPRITE_MODE") {
         if let Some(m) = parse_sprite_mode_str(&ev) {
-            return m;
+            mode = m;
         }
     }
-    let vp = Path::new(home).join(".config/cc-ide/viewer.json");
-    if let Ok(raw) = fs::read_to_string(vp) {
-        if let Some(s) = extract_json_str(&raw, "sprite_mode") {
-            if let Some(m) = parse_sprite_mode_str(&s) {
-                return m;
-            }
+    if let Ok(ev) = env::var("CCIDE_COST_LINES") {
+        if let Ok(cl) = ev.trim().parse::<u8>() {
+            cost_lines = cl.clamp(1, 3);
         }
     }
-    SpriteMode::Auto
+    (mode, cost_lines)
 }
 
 fn builtin_ansi_for(fam: &str) -> &'static str {
@@ -152,13 +168,15 @@ pub fn load_adaptive_logos(home: &str) -> SpriteStore {
     let viewer_path = Path::new(home).join(".config/cc-ide/viewer.json");
     let last_viewer_mtime = fs::metadata(&viewer_path).and_then(|m| m.modified()).ok();
 
+    let (mode, cost_lines) = read_viewer_prefs(home);
     SpriteStore {
         ansi_map,
         img_map,
         detected_proto: detect_terminal_image_proto(),
         viewer_path,
         last_viewer_mtime,
-        mode: read_sprite_mode(home),
+        mode,
+        cost_lines,
     }
 }
 
@@ -169,11 +187,11 @@ impl SpriteStore {
             .ok();
         if cur_mt != self.last_viewer_mtime {
             self.last_viewer_mtime = cur_mt;
-            let new_mode = read_sprite_mode(home);
-            if new_mode != self.mode {
-                self.mode = new_mode;
-                return true;
-            }
+            let (new_mode, new_cl) = read_viewer_prefs(home);
+            let changed = new_mode != self.mode || new_cl != self.cost_lines;
+            self.mode = new_mode;
+            self.cost_lines = new_cl;
+            return changed;
         }
         false
     }
@@ -192,7 +210,17 @@ impl SpriteStore {
             ImageProto::None => None,
             ImageProto::Osc1337 => Some((ImageProto::Osc1337, img)),
             ImageProto::Kitty if img.ext == "png" => Some((ImageProto::Kitty, img)),
-            ImageProto::Kitty => None,
+            ImageProto::Kitty => {
+                let term_prog = env::var("TERM_PROGRAM").unwrap_or_default();
+                if term_prog == "iTerm.app"
+                    || env::var("LC_TERMINAL").as_deref() == Ok("iTerm2")
+                    || term_prog == "WezTerm"
+                {
+                    Some((ImageProto::Osc1337, img))
+                } else {
+                    None
+                }
+            }
         }
     }
 }
@@ -258,6 +286,7 @@ pub fn build_top_logo_panel(
                 fixed_height: Some(top_h),
                 weight: 1.0,
                 raw_interior: true,
+                focused: false,
             },
             top_h,
         );
@@ -300,6 +329,7 @@ pub fn build_top_logo_panel(
             fixed_height: Some(top_h),
             weight: 1.0,
             raw_interior: false,
+            focused: false,
         },
         top_h,
     )

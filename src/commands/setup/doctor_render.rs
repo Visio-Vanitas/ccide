@@ -77,7 +77,14 @@ pub fn print_doctor_tui(report: &DoctorReport, home: &str) {
 
     println!(
         "{}",
-        format_top_border(cols, "CC-IDE DOCTOR", &report.os_arch, &pal.cyan, &pal)
+        format_top_border(
+            cols,
+            "CC-IDE DOCTOR",
+            &report.os_arch,
+            &pal.cyan,
+            true,
+            &pal
+        )
     );
     println!(
         "{}",
@@ -91,7 +98,7 @@ pub fn print_doctor_tui(report: &DoctorReport, home: &str) {
                 bg: String::new(),
                 tag: None,
             },
-            &pal,
+            &pal.cyan,
         )
     );
     for it in &report.items {
@@ -115,7 +122,7 @@ pub fn print_doctor_tui(report: &DoctorReport, home: &str) {
                     bg: String::new(),
                     tag: None,
                 },
-                &pal,
+                &pal.cyan,
             )
         );
     }
@@ -131,8 +138,8 @@ pub fn print_doctor_tui(report: &DoctorReport, home: &str) {
                 bg: String::new(),
                 tag: None,
             },
-            &pal,
+            &pal.cyan,
         )
     );
-    println!("{}", format_bottom_border(cols, &pal));
+    println!("{}", format_bottom_border(cols, &pal.cyan));
 }

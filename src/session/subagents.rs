@@ -1,4 +1,4 @@
-//! Session-Isolated Subagent Discovery & Dismissed-Item Persistence.
+//! Session-Isolated Subagent Discovery, Per-Agent Model/Effort & `stoppedByUser` Tracking.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -6,8 +6,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::json::extract_json_str;
+use crate::json::{extract_json_bool, extract_json_str};
 use crate::session::transcript::{update_jsonl_tracker, JsonlTracker};
+use crate::session::{is_valid_model_name, map_alias_with_settings, short_model_label};
 
 #[derive(Clone)]
 pub struct SubagentItem {
@@ -16,6 +17,9 @@ pub struct SubagentItem {
     pub short_type: String,
     pub desc: String,
     pub status: &'static str,
+    pub model_raw: Option<String>,
+    pub model_short: Option<String>,
+    pub effort: Option<String>,
     pub tool: String,
     pub file: String,
     pub line: usize,
@@ -88,8 +92,9 @@ pub fn get_session_subagents(
         return vec![];
     };
 
+    let settings_txt =
+        fs::read_to_string(format!("{}/.claude/settings.json", home)).unwrap_or_default();
     let dismissed = load_dismissed_subagents(home, session_id);
-    let claude_projects_prefix = format!("{}/.claude/projects/", home);
     let now_s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -117,6 +122,9 @@ pub fn get_session_subagents(
         let Ok(mtxt) = fs::read_to_string(&mpath) else {
             continue;
         };
+        if extract_json_bool(&mtxt, "isObserver") == Some(true) {
+            continue;
+        }
         let fname = mpath.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let agent_id = fname
             .strip_prefix("agent-")
@@ -126,6 +134,12 @@ pub fn get_session_subagents(
         if agent_id.is_empty() {
             continue;
         }
+
+        let agent_cwd = extract_json_str(&mtxt, "worktreePath")
+            .or_else(|| extract_json_str(&mtxt, "cwd"))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| target_cwd.to_string());
+
         let jpath = mpath.with_file_name(format!("agent-{}.jsonl", agent_id));
         let tr = trackers.entry(agent_id.clone()).or_insert_with(|| {
             let sz = fs::metadata(&jpath).map(|m| m.len()).unwrap_or(0);
@@ -141,7 +155,7 @@ pub fn get_session_subagents(
                 done_from_tail: false,
             }
         });
-        update_jsonl_tracker(&jpath, target_cwd, &claude_projects_prefix, tr);
+        update_jsonl_tracker(&jpath, &agent_cwd, home, tr);
 
         let j_mtime_s = fs::metadata(&jpath)
             .and_then(|m| m.modified())
@@ -151,15 +165,46 @@ pub fn get_session_subagents(
             .unwrap_or(mtime_ms / 1000);
         let age_s = now_s.saturating_sub(j_mtime_s);
 
-        let is_done = mtxt.contains("\"finished\"") || tr.done_from_tail || age_s > 25;
+        let stopped_by_user = extract_json_bool(&mtxt, "stoppedByUser") == Some(true);
+        let is_done = extract_json_bool(&mtxt, "finished") == Some(true)
+            || stopped_by_user
+            || tr.done_from_tail
+            || age_s > 25;
         if is_done && dismissed.contains(&agent_id) {
             continue;
         }
-        let status = if is_done { "done" } else { "running" };
+        let status = if stopped_by_user {
+            "stopped"
+        } else if is_done {
+            "done"
+        } else {
+            "running"
+        };
+
+        let meta_model = extract_json_str(&mtxt, "model")
+            .filter(|m| is_valid_model_name(m))
+            .or_else(|| {
+                extract_json_str(&mtxt, "pickedEffortModel").filter(|m| is_valid_model_name(m))
+            })
+            .or_else(|| {
+                (!tr.last_model.is_empty() && is_valid_model_name(&tr.last_model))
+                    .then(|| tr.last_model.clone())
+            });
+        let (model_raw, model_short) = if let Some(rm) = meta_model {
+            let mapped = map_alias_with_settings(&rm, &settings_txt);
+            let sh = short_model_label(&mapped);
+            (Some(mapped), Some(sh))
+        } else {
+            (None, None)
+        };
+        let effort = extract_json_str(&mtxt, "effort").filter(|e| !e.is_empty());
+
         let raw_type =
             extract_json_str(&mtxt, "agentType").unwrap_or_else(|| "general-purpose".to_string());
-        let short_raw = raw_type.rsplit(':').next().unwrap_or(&raw_type);
-        let short_type: String = short_raw.chars().take(12).collect();
+        let label_src = extract_json_str(&mtxt, "name")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| raw_type.rsplit(':').next().unwrap_or(&raw_type).to_string());
+        let short_type: String = label_src.chars().take(12).collect();
         let desc =
             extract_json_str(&mtxt, "description").unwrap_or_else(|| "Subagent task".to_string());
 
@@ -169,6 +214,9 @@ pub fn get_session_subagents(
             short_type,
             desc,
             status,
+            model_raw,
+            model_short,
+            effort,
             tool: tr.last_tool.clone(),
             file: tr.last_file.clone(),
             line: tr.last_line,

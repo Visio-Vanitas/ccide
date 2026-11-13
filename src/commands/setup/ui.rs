@@ -70,7 +70,7 @@ pub fn build_setup_panels(
     );
 
     let top_spec = PanelSpec {
-        title: "CC-IDE v0.5.0 · SETUP & DOCTOR".to_string(),
+        title: "CC-IDE v0.7.0 · SETUP & DOCTOR".to_string(),
         badge: report.os_arch.clone(),
         accent: cyan.clone(),
         rows: vec![
@@ -99,6 +99,7 @@ pub fn build_setup_panels(
         fixed_height: Some(4),
         weight: 0.2,
         raw_interior: false,
+        focused: false,
     };
 
     let mut doc_rows = Vec::with_capacity(report.items.len() + 1);
@@ -137,6 +138,7 @@ pub fn build_setup_panels(
         fixed_height: Some(doc_h),
         weight: 0.35,
         raw_interior: false,
+        focused: false,
     };
 
     if !logs.is_empty() {
@@ -173,6 +175,7 @@ pub fn build_setup_panels(
                 fixed_height: None,
                 weight: 1.0,
                 raw_interior: false,
+                focused: true,
             },
         ];
     }
@@ -236,27 +239,44 @@ pub fn build_setup_panels(
         tag: Some((TAG_SETUP_ROW, 2)),
     });
 
+    let cost_desc = match opts.cost_lines {
+        1 => "1 Line · Compact (USD + % Only)",
+        2 => "2 Lines · Brief (USD + Tokens)",
+        _ => "3 Lines · Detailed (USD + Tokens + TPS/TTFT)",
+    };
+    let (bg3, ptr3) = mk_ptr(3);
+    opt_rows.push(BoxRow {
+        text: trunc_to_width(
+            &format!(
+                " {ptr3} {amber}COST Density:{RESET}{bg3}   {amber}◀{RESET}{bg3} {BOLD}{white}{cost_desc}{RESET}{bg3} {amber}▶{RESET}"
+            ),
+            content_w,
+        ),
+        bg: bg3.to_string(),
+        tag: Some((TAG_SETUP_ROW, 3)),
+    });
+
     for (idx, enabled, title, sub) in [
         (
-            3usize,
+            4usize,
             opts.install_plugin,
             "Claude Plugin & Powerline Statusline",
             "~/.claude/plugins + statusLine",
         ),
         (
-            4usize,
+            5usize,
             opts.patch_claude,
             "Event-Driven claude.exe SIGUSR2 Patch",
             "instant <0.05ms subagent switch (.bak)",
         ),
         (
-            5usize,
+            6usize,
             opts.config_companions,
             "Yazi & Lazygit 120Hz Configs",
             "hscroll.yazi + compact diff (.ccide.bak)",
         ),
         (
-            6usize,
+            7usize,
             opts.setup_daemon_ssh,
             "iTerm2 Metal Daemon & SSH Multiplexer",
             "warm socket + ~/.ssh/ccide_config",
@@ -278,7 +298,7 @@ pub fn build_setup_panels(
         });
     }
 
-    let is_apply_cur = cursor == 7;
+    let is_apply_cur = cursor == 8;
     let btn_bg: &str = if is_apply_cur {
         &pal.active_cursor_bg
     } else {
@@ -297,7 +317,7 @@ pub fn build_setup_panels(
             content_w,
         ),
         bg: btn_bg.to_string(),
-        tag: Some((TAG_APPLY_BTN, 7)),
+        tag: Some((TAG_APPLY_BTN, 8)),
     });
 
     vec![
@@ -311,6 +331,7 @@ pub fn build_setup_panels(
             fixed_height: None,
             weight: 1.0,
             raw_interior: false,
+            focused: true,
         },
     ]
 }

@@ -1,18 +1,47 @@
 //! Middle Panel (`SUBAGENTS`) Renderer — Pinned `[main]` + Scrollable Subagent List.
+//!
+//! Renders full-bleed 2-row selection rectangles (`active_view_bg` / `cursor_bg` / `active_cursor_bg`)
+//! with a 2-row left vertical rail (`▎` active / `┃` cursor) and inline status/action badges.
 
 use std::path::Path;
 
 use crate::session::transcript::SubagentItem;
 use crate::session::ConfigModels;
 use crate::tui::grid::{BoxRow, PanelSpec};
+use crate::tui::layout::RowLayout;
 use crate::tui::palette::Palette;
-use crate::tui::width::{display_width, trunc_to_width};
+use crate::tui::width::display_width;
 use crate::tui::{BOLD, RESET, SPINNERS};
 
 pub struct SubagentPanelOutput {
     pub panel: PanelSpec,
     pub running_cnt: usize,
     pub viewport_h: usize,
+}
+
+fn resolve_row_bg(active: bool, cursor: bool, pal: &Palette) -> &str {
+    match (active, cursor) {
+        (true, true) => &pal.active_cursor_bg,
+        (true, false) => &pal.active_view_bg,
+        (false, true) => &pal.cursor_bg,
+        (false, false) => "",
+    }
+}
+
+fn format_rails(active: bool, cursor: bool, pal: &Palette) -> (String, String) {
+    if cursor {
+        (
+            format!("{}┃❯{RESET}", pal.amber),
+            format!("{}┃{RESET}  ", pal.amber),
+        )
+    } else if active {
+        (
+            format!("{}▎▸{RESET}", pal.cyan),
+            format!("{}▎{RESET}  ", pal.cyan),
+        )
+    } else {
+        ("  ".to_string(), "   ".to_string())
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -22,6 +51,7 @@ pub fn build_subagents_panel(
     target_cwd: &str,
     active_view_id: &str,
     cursor_idx: Option<usize>,
+    panel_focused: bool,
     sub_scroll_offset: &mut usize,
     main_tool: &str,
     main_file: &str,
@@ -31,13 +61,9 @@ pub fn build_subagents_panel(
     pal: &Palette,
 ) -> SubagentPanelOutput {
     let mid_interior = mid_h.saturating_sub(2);
-    let inner_w = cols.saturating_sub(4).max(10);
     let box_inner_w = cols.saturating_sub(2).max(12);
-    let white = &pal.text;
-    let dim = &pal.dim;
-    let cyan = &pal.cyan;
-    let green = &pal.green;
-    let amber = &pal.amber;
+    let row_fmt = RowLayout::new(box_inner_w).padding(0, 1);
+    let (white, dim, cyan, green, amber) = (&pal.text, &pal.dim, &pal.cyan, &pal.green, &pal.amber);
 
     let is_main_active = active_view_id == "main";
     let running_cnt = subagents.iter().filter(|a| a.status == "running").count();
@@ -45,46 +71,38 @@ pub fn build_subagents_panel(
     let mut sub_rows = Vec::with_capacity(mid_interior.max(4));
 
     let is_main_cursor = cursor_idx == Some(0);
-    let main_bg: &str = match (is_main_active, is_main_cursor) {
-        (true, true) => &pal.active_cursor_bg,
-        (true, false) => &pal.active_view_bg,
-        (false, true) => &pal.cursor_bg,
-        (false, false) => "",
-    };
-    let main_ptr = if is_main_cursor {
-        format!("{amber}❯{RESET}{main_bg}")
-    } else if is_main_active {
-        format!("{cyan}▸{RESET}{main_bg}")
-    } else {
-        " ".to_string()
-    };
+    let main_bg = resolve_row_bg(is_main_active, is_main_cursor, pal);
+    let (main_r1, main_r2) = format_rails(is_main_active, is_main_cursor, pal);
     let main_dot = if is_main_active {
-        format!("{green}●{RESET}{main_bg}")
+        format!("{green}●{RESET}")
     } else {
-        format!("{dim}○{RESET}{main_bg}")
+        format!("{dim}○{RESET}")
     };
     let tool_lbl = if main_tool.is_empty() {
         "chat"
     } else {
         main_tool
     };
-    let mut main_tail = if is_main_active {
-        format!("{amber}{tool_lbl}{RESET}{main_bg}")
-    } else {
-        format!("{dim}{tool_lbl}{RESET}{main_bg}")
-    };
+    let mut main_left = format!(
+        "{main_r1}{main_dot} {BOLD}{white}[main]{RESET} {}{tool_lbl}{RESET}",
+        if is_main_active { amber } else { dim }
+    );
     if !main_file.is_empty() {
-        let bname = Path::new(main_file)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        main_tail.push_str(&format!(
-            " {cyan}{}{RESET}{main_bg}",
-            trunc_to_width(bname, 15)
-        ));
+        if let Some(bname) = Path::new(main_file).file_name().and_then(|n| n.to_str()) {
+            if !bname.is_empty() {
+                main_left.push_str(&format!(" {cyan}{bname}{RESET}"));
+            }
+        }
     }
+    let main_r1_right = if is_main_cursor && !is_main_active {
+        format!("{amber}⏎{RESET}")
+    } else if is_main_active {
+        format!("{green}●{RESET}")
+    } else {
+        String::new()
+    };
     sub_rows.push(BoxRow {
-        text: format!("{main_ptr}{main_dot} {BOLD}{white}[main]{RESET}{main_bg} {main_tail}"),
+        text: row_fmt.split_with_bg(&main_left, &main_r1_right, 1, main_bg),
         bg: main_bg.to_string(),
         tag: Some((1, 0)),
     });
@@ -93,18 +111,19 @@ pub fn build_subagents_panel(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("~");
-    let main_sub_txt = if is_main_active {
-        format!("{} · {}", cached_cfg.main_model_short, cwd_base)
-    } else if is_main_cursor {
-        format!("{} (Enter to switch)", cached_cfg.main_model_short)
+    let main_sub_left = format!(
+        "{main_r2}{dim}{} · {cwd_base}{RESET}",
+        cached_cfg.main_model_short
+    );
+    let main_sub_right = if is_main_cursor && !is_main_active {
+        format!("{amber}⏎ switch{RESET}")
+    } else if is_main_active {
+        format!("{cyan}active{RESET}")
     } else {
-        format!("{} (click / ↑↓)", cached_cfg.main_model_short)
+        format!("{dim}click/↑↓{RESET}")
     };
     sub_rows.push(BoxRow {
-        text: format!(
-            "   {dim}{}",
-            trunc_to_width(&main_sub_txt, inner_w.saturating_sub(1))
-        ),
+        text: row_fmt.split_with_bg(&main_sub_left, &main_sub_right, 1, main_bg),
         bg: main_bg.to_string(),
         tag: Some((1, 0)),
     });
@@ -113,97 +132,87 @@ pub fn build_subagents_panel(
     for (i_ag, ag) in subagents.iter().enumerate() {
         let is_viewed = ag.full_id == active_view_id;
         let is_cur = cursor_idx == Some(i_ag + 1);
-        let row_bg: &str = match (is_viewed, is_cur) {
-            (true, true) => &pal.active_cursor_bg,
-            (true, false) => &pal.active_view_bg,
-            (false, true) => &pal.cursor_bg,
-            (false, false) => "",
-        };
-        let ptr = if is_cur {
-            format!("{amber}❯{RESET}{row_bg}")
-        } else if is_viewed {
-            format!("{cyan}▸{RESET}{row_bg}")
-        } else {
-            " ".to_string()
-        };
+        let row_bg = resolve_row_bg(is_viewed, is_cur, pal);
+        let (r1_rail, r2_rail) = format_rails(is_viewed, is_cur, pal);
         let is_done = ag.status != "running";
-        let (icon, mut tail_tag) = if !is_done {
+        let fallback_tag = if !is_done {
+            "run"
+        } else if ag.status == "stopped" {
+            "stop"
+        } else {
+            "done"
+        };
+        let eff_tag = if ag.tool.is_empty() {
+            fallback_tag
+        } else {
+            ag.tool.as_str()
+        };
+        let (icon, tag_col) = if !is_done {
             (
-                format!("{cyan}{}{RESET}{row_bg}", SPINNERS[tick % SPINNERS.len()]),
-                format!(
-                    "{amber}{}{RESET}{row_bg}",
-                    if ag.tool.is_empty() { "run" } else { &ag.tool }
-                ),
+                format!("{cyan}{}{RESET}", SPINNERS[tick % SPINNERS.len()]),
+                amber.as_str(),
             )
         } else {
-            let ic = if is_viewed {
-                format!("{green}●{RESET}{row_bg}")
+            let ic = if ag.status == "stopped" {
+                format!("{amber}■{RESET}")
+            } else if is_viewed {
+                format!("{green}●{RESET}")
             } else {
-                format!("{green}✓{RESET}{row_bg}")
+                format!("{green}✓{RESET}")
             };
-            let tc: &str = if is_viewed || is_cur { amber } else { dim };
-            (
-                ic,
-                format!(
-                    "{tc}{}{RESET}{row_bg}",
-                    if ag.tool.is_empty() { "done" } else { &ag.tool }
-                ),
-            )
+            let tc = if is_viewed || is_cur {
+                amber.as_str()
+            } else {
+                dim.as_str()
+            };
+            (ic, tc)
         };
 
-        let prefix_plain_w = 4
-            + display_width(&ag.short_type)
-            + 1
-            + display_width(if ag.tool.is_empty() {
-                if is_done {
-                    "done"
-                } else {
-                    "run"
-                }
-            } else {
-                &ag.tool
-            });
-        let right_reserve = if is_done { 3 } else { 1 };
-        let max_file_w = box_inner_w.saturating_sub(prefix_plain_w + right_reserve + 1);
-
-        if !ag.file.is_empty() && max_file_w >= 4 {
-            let bname = Path::new(&ag.file)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            tail_tag.push_str(&format!(
-                " {cyan}{}{RESET}{row_bg}",
-                trunc_to_width(bname, max_file_w.min(13))
-            ));
-        }
-
-        let left_hdr = format!(
-            "{ptr}{icon} {BOLD}{white}[{}]{RESET}{row_bg} {tail_tag}",
+        let mut left_hdr = format!(
+            "{r1_rail}{icon} {BOLD}{white}[{}]{RESET} {tag_col}{eff_tag}{RESET}",
             ag.short_type
         );
-        let hdr_text = if is_done {
-            let lw = display_width(&left_hdr);
-            if lw + 2 <= box_inner_w {
-                let pad = box_inner_w - lw - 2;
-                let x_col: &str = if is_cur { amber } else { dim };
-                format!("{left_hdr}{}{x_col}×{RESET}{row_bg} ", " ".repeat(pad))
-            } else {
-                left_hdr
+        if !ag.file.is_empty() {
+            if let Some(bname) = Path::new(&ag.file).file_name().and_then(|n| n.to_str()) {
+                left_hdr.push_str(&format!(" {cyan}{bname}{RESET}"));
             }
+        }
+        let right_close = if is_done {
+            let x_col = if is_cur { amber } else { dim };
+            format!("{x_col}×{RESET}")
+        } else if is_viewed {
+            format!("{cyan}●{RESET}")
         } else {
-            left_hdr
+            String::new()
         };
 
         all_agent_rows.push(BoxRow {
-            text: hdr_text,
+            text: row_fmt.split_with_bg(&left_hdr, &right_close, 1, row_bg),
             bg: row_bg.to_string(),
             tag: Some((2, i_ag)),
         });
-        let desc_line = format!("{} · {}", cached_cfg.sub_model_short, ag.desc);
+
+        let sub_mod_lbl = ag
+            .model_short
+            .as_deref()
+            .unwrap_or(&cached_cfg.sub_model_short);
+        let desc_line = match &ag.effort {
+            Some(eff) => format!("{sub_mod_lbl}·{eff} · {}", ag.desc),
+            None => format!("{sub_mod_lbl} · {}", ag.desc),
+        };
+        let r2_right = if is_cur && !is_viewed {
+            format!("{amber}⏎ view{RESET}")
+        } else if is_viewed {
+            format!("{cyan}viewing{RESET}")
+        } else {
+            String::new()
+        };
         all_agent_rows.push(BoxRow {
-            text: format!(
-                "   {dim}{}",
-                trunc_to_width(&desc_line, inner_w.saturating_sub(1))
+            text: row_fmt.split_with_bg(
+                &format!("{r2_rail}{dim}{desc_line}{RESET}"),
+                &r2_right,
+                1,
+                row_bg,
             ),
             bg: row_bg.to_string(),
             tag: Some((5, i_ag)),
@@ -211,20 +220,15 @@ pub fn build_subagents_panel(
     }
 
     let show_clear_bar = done_cnt > 0 && mid_interior >= 5;
-    let reserved_rows = 2 + usize::from(show_clear_bar);
-    let viewport_h = mid_interior.saturating_sub(reserved_rows);
+    let viewport_h = mid_interior.saturating_sub(2 + usize::from(show_clear_bar));
     let max_scroll = all_agent_rows.len().saturating_sub(viewport_h);
-    if *sub_scroll_offset > max_scroll {
-        *sub_scroll_offset = max_scroll;
-    }
-
-    for r in all_agent_rows
-        .into_iter()
-        .skip(*sub_scroll_offset)
-        .take(viewport_h)
-    {
-        sub_rows.push(r);
-    }
+    *sub_scroll_offset = (*sub_scroll_offset).min(max_scroll);
+    sub_rows.extend(
+        all_agent_rows
+            .into_iter()
+            .skip(*sub_scroll_offset)
+            .take(viewport_h),
+    );
 
     if show_clear_bar {
         while sub_rows.len() + 1 < mid_interior {
@@ -234,21 +238,16 @@ pub fn build_subagents_panel(
                 tag: None,
             });
         }
-        let clear_plain = format!(" ↑↓ ⏎ · x del · c clear {}", done_cnt);
-        let clear_styled = if display_width(&clear_plain) <= box_inner_w {
-            format!(
-                " {dim}↑↓ ⏎ · [{amber}x{dim}] del · [{amber}c{dim}] clear {}{RESET}",
-                done_cnt
-            )
+        let full_clear =
+            format!("{dim}↑↓ ⏎ · [{amber}x{dim}] del · [{amber}c{dim}] clear {done_cnt}{RESET}");
+        let short_clear = format!("{dim}[{amber}c{dim}] × clear {done_cnt} done{RESET}");
+        let chosen = if display_width(&full_clear) + 2 <= box_inner_w {
+            full_clear
         } else {
-            format!(" {dim}[{amber}c{dim}] × clear {} done{RESET}", done_cnt)
+            short_clear
         };
         sub_rows.push(BoxRow {
-            text: if display_width(&clear_styled) <= box_inner_w {
-                clear_styled
-            } else {
-                trunc_to_width(&clear_plain, inner_w)
-            },
+            text: RowLayout::new(box_inner_w).split(&chosen, "", 0),
             bg: String::new(),
             tag: Some((3, 0)),
         });
@@ -256,23 +255,19 @@ pub fn build_subagents_panel(
 
     let sub_badge = if max_scroll > 0 {
         let first_item = (*sub_scroll_offset / 2) + 1;
-        let vis_items = (viewport_h / 2).max(1);
-        let last_item = (first_item + vis_items - 1).min(subagents.len());
+        let last_item = (first_item + (viewport_h / 2).max(1) - 1).min(subagents.len());
         if running_cnt > 0 {
             format!(
-                "{}run · ↕{}-{}/{}",
-                running_cnt,
-                first_item,
-                last_item,
+                "{running_cnt}run · ↕{first_item}-{last_item}/{}",
                 subagents.len()
             )
         } else {
-            format!("↕ {}-{}/{}", first_item, last_item, subagents.len())
+            format!("↕ {first_item}-{last_item}/{}", subagents.len())
         }
     } else if running_cnt == 0 {
         format!("main+{}", subagents.len())
     } else {
-        format!("{} run/{}", running_cnt, subagents.len())
+        format!("{running_cnt} run/{}", subagents.len())
     };
 
     SubagentPanelOutput {
@@ -284,6 +279,7 @@ pub fn build_subagents_panel(
             fixed_height: Some(mid_h),
             weight: 0.88,
             raw_interior: false,
+            focused: panel_focused,
         },
         running_cnt,
         viewport_h,

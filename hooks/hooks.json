@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.sh\" yazi-hook",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs\" yazi-hook",
             "timeout": 15
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.sh\" yazi-hook",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs\" yazi-hook",
             "timeout": 15
           }
         ]
@@ -28,8 +28,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.sh\" yazi-hook",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs\" yazi-hook",
             "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs\" yazi-hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs\" yazi-hook",
+            "timeout": 10
           }
         ]
       }

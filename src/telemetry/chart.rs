@@ -2,6 +2,7 @@
 
 use crate::telemetry::TelemetrySampler;
 use crate::tui::grid::BoxRow;
+use crate::tui::layout::RowLayout;
 use crate::tui::palette::Palette;
 use crate::tui::{BOLD, RESET, SPARK_BLOCKS};
 
@@ -136,10 +137,15 @@ pub fn build_telemetry_panel_rows(
     } else {
         mint
     };
+    let row_fmt = RowLayout::new(inner_w + 2);
     rows.push(BoxRow {
-        text: format!(
-            " {cpu_c}●{RESET} {BOLD}{white}CPU{RESET} {dim}{}C{RESET}  {BOLD}{cpu_c}{:4.1}%{RESET}  {dim}load {:.2}{RESET}",
-            sampler.cpu_cores, sampler.cpu_pct, sampler.load_1m
+        text: row_fmt.split(
+            &format!(
+                "{cpu_c}●{RESET} {BOLD}{white}CPU{RESET} {dim}{}C{RESET}  {BOLD}{cpu_c}{:4.1}%{RESET}",
+                sampler.cpu_cores, sampler.cpu_pct
+            ),
+            &format!("{dim}load {:.2}{RESET}", sampler.load_1m),
+            1,
         ),
         bg: String::new(),
         tag: None,
@@ -180,9 +186,13 @@ pub fn build_telemetry_panel_rows(
     #[cfg(not(target_os = "macos"))]
     let gpu_tag = "DEV";
     rows.push(BoxRow {
-        text: format!(
-            " {gpu_c}●{RESET} {BOLD}{white}GPU{RESET} {dim}{gpu_tag}{RESET}  {BOLD}{gpu_c}{:4.1}%{RESET}  {dim}vram {:.1}G{RESET}",
-            sampler.gpu_pct, sampler.gpu_vram_gb
+        text: row_fmt.split(
+            &format!(
+                "{gpu_c}●{RESET} {BOLD}{white}GPU{RESET} {dim}{gpu_tag}{RESET}  {BOLD}{gpu_c}{:4.1}%{RESET}",
+                sampler.gpu_pct
+            ),
+            &format!("{dim}vram {:.1}G{RESET}", sampler.gpu_vram_gb),
+            1,
         ),
         bg: String::new(),
         tag: None,
@@ -219,9 +229,13 @@ pub fn build_telemetry_panel_rows(
         lavender
     };
     rows.push(BoxRow {
-        text: format!(
-            " {mem_c}●{RESET} {BOLD}{white}MEM{RESET} {dim}{:.0}G{RESET}  {BOLD}{mem_c}{:4.1}%{RESET}  {dim}{:.1}/{:.0}G{RESET}",
-            sampler.total_mem_gb, sampler.mem_pct, sampler.mem_used_gb, sampler.total_mem_gb
+        text: row_fmt.split(
+            &format!(
+                "{mem_c}●{RESET} {BOLD}{white}MEM{RESET} {dim}{:.0}G{RESET}  {BOLD}{mem_c}{:4.1}%{RESET}",
+                sampler.total_mem_gb, sampler.mem_pct
+            ),
+            &format!("{dim}{:.1}/{:.0}G{RESET}", sampler.mem_used_gb, sampler.total_mem_gb),
+            1,
         ),
         bg: String::new(),
         tag: None,
@@ -253,11 +267,13 @@ pub fn build_telemetry_panel_rows(
     let rx_s = fmt_rate(sampler.net_rx_bps);
     let tx_s = fmt_rate(sampler.net_tx_bps);
     rows.push(BoxRow {
-        text: format!(
-            " {cyan}●{RESET} {BOLD}{white}NET{RESET} {green}▼{:>4}{RESET} {amber}▲{:>4}{RESET} {dim}pk {}/s{RESET}",
-            rx_s,
-            tx_s,
-            fmt_rate(sampler.net_peak_bps)
+        text: row_fmt.split(
+            &format!(
+                "{cyan}●{RESET} {BOLD}{white}NET{RESET} {green}▼{:>4}{RESET} {amber}▲{:>4}{RESET}",
+                rx_s, tx_s
+            ),
+            &format!("{dim}pk {}/s{RESET}", fmt_rate(sampler.net_peak_bps)),
+            1,
         ),
         bg: String::new(),
         tag: None,

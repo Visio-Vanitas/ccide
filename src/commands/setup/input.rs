@@ -2,11 +2,11 @@
 
 use std::io::Write;
 
-use crate::ffi::{tcgetattr, tcsetattr, Termios};
+use crate::ffi::ConsoleRawSession;
 
 pub const TAG_SETUP_ROW: u8 = 20;
 pub const TAG_APPLY_BTN: u8 = 21;
-pub const TOTAL_SETUP_ROWS: usize = 8;
+pub const TOTAL_SETUP_ROWS: usize = 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SetupKey {
@@ -55,18 +55,55 @@ pub fn parse_setup_keys(raw: &str) -> Vec<SetupKey> {
                     continue;
                 }
             }
-            if i + 2 < len && (bytes[i + 1] == b'[' || bytes[i + 1] == b'O') {
-                match bytes[i + 2] {
-                    b'A' => out.push(SetupKey::Up),
-                    b'B' => out.push(SetupKey::Down),
-                    b'C' => out.push(SetupKey::Right),
-                    b'D' => out.push(SetupKey::Left),
-                    _ => {}
+            if i + 1 < len && bytes[i + 1] == b'[' {
+                if i + 2 < len {
+                    match bytes[i + 2] {
+                        b'A' => {
+                            out.push(SetupKey::Up);
+                            i += 3;
+                            continue;
+                        }
+                        b'B' => {
+                            out.push(SetupKey::Down);
+                            i += 3;
+                            continue;
+                        }
+                        b'C' => {
+                            out.push(SetupKey::Right);
+                            i += 3;
+                            continue;
+                        }
+                        b'D' => {
+                            out.push(SetupKey::Left);
+                            i += 3;
+                            continue;
+                        }
+                        _ => {}
+                    }
                 }
-                i += 3;
+                let mut j = i + 2;
+                while j < len && !(0x40..=0x7e).contains(&bytes[j]) {
+                    j += 1;
+                }
+                i = (j + 1).min(len);
                 continue;
             }
-            out.push(SetupKey::Quit);
+            if i + 1 < len && bytes[i + 1] == b'O' {
+                if i + 2 < len {
+                    match bytes[i + 2] {
+                        b'A' => out.push(SetupKey::Up),
+                        b'B' => out.push(SetupKey::Down),
+                        b'C' => out.push(SetupKey::Right),
+                        b'D' => out.push(SetupKey::Left),
+                        _ => {}
+                    }
+                }
+                i = (i + 3).min(len);
+                continue;
+            }
+            if i + 1 == len || bytes[i + 1] == 0x1b {
+                out.push(SetupKey::Quit);
+            }
             i += 1;
             continue;
         }
@@ -90,26 +127,16 @@ pub fn parse_setup_keys(raw: &str) -> Vec<SetupKey> {
 }
 
 pub struct RawTermGuard {
-    fd: i32,
-    orig: Termios,
-    active: bool,
+    pub session: ConsoleRawSession,
 }
 
 impl RawTermGuard {
-    pub fn enter(fd: i32) -> Self {
-        let mut orig = Termios::zeroed();
-        let active = unsafe { tcgetattr(fd, &mut orig) == 0 };
-        if active {
-            let mut raw = orig;
-            raw.make_raw();
-            unsafe {
-                let _ = tcsetattr(fd, 0, &raw);
-            }
-        }
+    pub fn enter() -> Self {
+        let session = ConsoleRawSession::enter();
         let mut out = std::io::stdout();
         let _ = out.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[49m\x1b[2J\x1b[3J");
         let _ = out.flush();
-        Self { fd, orig, active }
+        Self { session }
     }
 }
 
@@ -118,10 +145,5 @@ impl Drop for RawTermGuard {
         let mut out = std::io::stdout();
         let _ = out.write_all(b"\x1b[?1000l\x1b[?1006l\x1b[?1049l\x1b[?25h\x1b[0m");
         let _ = out.flush();
-        if self.active {
-            unsafe {
-                let _ = tcsetattr(self.fd, 0, &self.orig);
-            }
-        }
     }
 }

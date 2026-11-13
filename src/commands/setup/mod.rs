@@ -7,13 +7,11 @@ pub mod runner;
 pub mod ui;
 
 use std::collections::HashMap;
-use std::env;
-use std::ffi::c_void;
 use std::io::Write;
-use std::os::unix::io::AsRawFd;
 use std::sync::atomic::Ordering;
 
-use crate::ffi::{handle_sig, poll, read, signal, PollFd, RUNNING};
+use crate::ffi::{install_signal_handlers, RUNNING};
+use crate::platform::user_home_dir;
 use crate::tui::grid::{get_terminal_geometry, render_multi_panel_grid};
 use crate::tui::palette::{render_palette_template, Palette};
 
@@ -26,16 +24,12 @@ use runner::{execute_install_pipeline, load_initial_options, step_row_value, PRE
 use ui::build_setup_panels;
 
 pub fn run_setup(args: &[String]) {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let home = user_home_dir();
     let project_root = resolve_project_root(args.get(2).map(|s| s.as_str()), &home);
 
-    unsafe {
-        signal(2, handle_sig);
-        signal(15, handle_sig);
-    }
+    install_signal_handlers(false);
 
-    let stdin_fd = std::io::stdin().as_raw_fd();
-    let _guard = RawTermGuard::enter(stdin_fd);
+    let guard = RawTermGuard::enter();
     let mut stdout = std::io::stdout();
 
     let mut report = collect_doctor_report(&home, &project_root);
@@ -81,22 +75,13 @@ pub fn run_setup(args: &[String]) {
             let _ = stdout.flush();
         }
 
-        let mut pfd = PollFd {
-            fd: stdin_fd,
-            events: 1,
-            revents: 0,
-        };
-        if unsafe { poll(&mut pfd, 1, 500) } <= 0 || (pfd.revents & 1) == 0 {
-            continue;
-        }
         let mut in_buf = [0u8; 256];
-        let n = unsafe { read(stdin_fd, in_buf.as_mut_ptr() as *mut c_void, 256) };
-        if n <= 0 {
-            break;
-        }
+        let Some(n) = guard.session.poll_stdin(&mut in_buf, 500) else {
+            continue;
+        };
         let mut run_action: Option<bool> = None;
 
-        for key in parse_setup_keys(&String::from_utf8_lossy(&in_buf[..n as usize])) {
+        for key in parse_setup_keys(&String::from_utf8_lossy(&in_buf[..n])) {
             if finished_msg.is_some() {
                 if matches!(
                     key,
@@ -230,7 +215,7 @@ mod tests {
             }],
             missing_hint: "OK".to_string(),
         };
-        let panels = build_setup_panels(80, 24, &rep, &SetupOptions::default(), 7, &[], None, &pal);
+        let panels = build_setup_panels(80, 24, &rep, &SetupOptions::default(), 8, &[], None, &pal);
         assert_eq!(panels.len(), 3);
     }
 }

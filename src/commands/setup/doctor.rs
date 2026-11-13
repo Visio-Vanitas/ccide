@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 
 use crate::commands::setup::doctor_render::{format_doctor_json, print_doctor_tui};
 use crate::json::{extract_json_bool, extract_json_str};
+use crate::platform::{clean_canonicalize, find_executable, ipc_path, user_home_dir};
 use crate::tui::width::trunc_to_width;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,34 +32,6 @@ pub struct DoctorReport {
     pub missing_hint: String,
 }
 
-fn find_in_path(bin_name: &str, home: &str) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
-        .iter()
-        .map(PathBuf::from)
-        .collect();
-    if !home.is_empty() {
-        for rel in [".local/bin", ".cargo/bin", ".claude/bin"] {
-            dirs.push(Path::new(home).join(rel));
-        }
-        if let Ok(rd) = fs::read_dir(Path::new(home).join(".nvm/versions/node")) {
-            for e in rd.flatten() {
-                dirs.push(e.path().join("bin"));
-            }
-        }
-    }
-    if let Ok(path_var) = env::var("PATH") {
-        dirs.extend(
-            path_var
-                .split(':')
-                .filter(|s| !s.is_empty())
-                .map(PathBuf::from),
-        );
-    }
-    dirs.into_iter()
-        .map(|d| d.join(bin_name))
-        .find(|cand| cand.is_file())
-}
-
 fn cmd_first_line(bin: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new(bin)
         .args(args)
@@ -78,32 +51,36 @@ fn cmd_first_line(bin: &Path, args: &[&str]) -> Option<String> {
         .map(String::from)
 }
 
+fn has_installer_marker(dir: &Path) -> bool {
+    dir.join("install.sh").is_file() || dir.join("install.ps1").is_file()
+}
+
 pub fn resolve_project_root(explicit_arg: Option<&str>, home: &str) -> PathBuf {
     if let Some(s) = explicit_arg {
         let t = s.trim();
         if !t.is_empty() && !t.starts_with('-') {
             let p = PathBuf::from(t);
-            if p.join("install.sh").is_file() {
+            if has_installer_marker(&p) {
                 return p;
             }
         }
     }
-    if let Ok(exe) = env::current_exe().and_then(fs::canonicalize) {
+    if let Ok(exe) = env::current_exe().and_then(clean_canonicalize) {
         if let Some(parent) = exe.parent().and_then(|p| p.parent()) {
-            if parent.join("install.sh").is_file() {
+            if has_installer_marker(parent) {
                 return parent.to_path_buf();
             }
         }
     }
     if let Ok(cwd) = env::current_dir() {
-        if cwd.join("install.sh").is_file() {
+        if has_installer_marker(&cwd) {
             return cwd;
         }
     }
     if let Ok(txt) = fs::read_to_string(Path::new(home).join(".claude/settings.json")) {
         if let Some(p) = extract_json_str(&txt, "path") {
             let pb = PathBuf::from(&p);
-            if pb.join("install.sh").is_file() {
+            if has_installer_marker(&pb) {
                 return pb;
             }
         }
@@ -115,18 +92,27 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     let os_arch = format!("{}/{}", env::consts::OS, env::consts::ARCH);
     let is_ssh = env::var("SSH_CONNECTION").is_ok() || env::var("SSH_TTY").is_ok();
     let is_tmux = env::var("TMUX").is_ok();
-    let is_iterm = env::var("TERM_PROGRAM")
-        .map(|v| v == "iTerm.app")
-        .unwrap_or(false)
-        || env::var("LC_TERMINAL")
-            .map(|v| v == "iTerm2")
-            .unwrap_or(false)
+    let is_wezterm =
+        env::var("WEZTERM_PANE").is_ok() || env::var("TERM_PROGRAM").as_deref() == Ok("WezTerm");
+    let is_wt = env::var("WT_SESSION").is_ok();
+    let is_iterm = env::var("TERM_PROGRAM").as_deref() == Ok("iTerm.app")
+        || env::var("LC_TERMINAL").as_deref() == Ok("iTerm2")
         || env::var("ITERM_SESSION_ID").is_ok();
 
-    let backend_tier = if !is_ssh && !is_tmux && is_iterm {
+    let backend_tier = if cfg!(windows) {
+        if is_wezterm {
+            "Tier 1 (Win) · WezTerm Native Split CLI".to_string()
+        } else if is_wt {
+            "Tier 2 (Win) · Windows Terminal (wt.exe) 3-Column".to_string()
+        } else {
+            "Windows · Launch via WezTerm or Windows Terminal (wt.exe)".to_string()
+        }
+    } else if !is_ssh && !is_tmux && is_iterm {
         "Tier 1 · Local iTerm2 Metal Daemon (< 5ms split)".to_string()
     } else if is_ssh && !is_tmux && is_iterm {
         "Tier 2 · SSH + Client iTerm2 OSC 1337 Bridge".to_string()
+    } else if is_wezterm && !is_tmux {
+        "WezTerm · Native CLI Split Engine".to_string()
     } else {
         "Tier 3 · Universal tmux 3-Column Engine".to_string()
     };
@@ -135,14 +121,14 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     let mut missing_pkgs: Vec<&str> = Vec::new();
     let is_macos = cfg!(target_os = "macos");
 
-    let claude_bin = find_in_path("claude", home);
+    let claude_bin = find_executable("claude", home);
     let patcher_py = [
         project_root.join("scripts/patch_claude_binary.py"),
         Path::new(home).join(".claude/scripts/patch_claude_binary.py"),
     ]
     .into_iter()
     .find(|p| p.is_file());
-    let python_bin = find_in_path("python3", home);
+    let python_bin = find_executable("python3", home).or_else(|| find_executable("python", home));
 
     match (&claude_bin, &patcher_py, &python_bin) {
         (Some(cbin), Some(ppy), Some(py)) => {
@@ -182,14 +168,37 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         }),
     }
 
-    if is_macos && !is_ssh && !is_tmux {
+    if cfg!(windows) {
+        let wez = find_executable("wezterm", home);
+        let wt = find_executable("wt", home);
+        let (st, det) = match (wez.is_some(), wt.is_some()) {
+            (true, true) => (CheckStatus::Ok, "WezTerm + Windows Terminal (wt.exe) ready"),
+            (true, false) => (CheckStatus::Ok, "WezTerm CLI split engine ready"),
+            (false, true) => (
+                CheckStatus::Ok,
+                "Windows Terminal (wt.exe) split engine ready",
+            ),
+            (false, false) => {
+                missing_pkgs.push("Microsoft.WindowsTerminal");
+                (
+                    CheckStatus::Warn,
+                    "install Windows Terminal (wt.exe) or WezTerm",
+                )
+            }
+        };
+        items.push(DoctorItem {
+            status: st,
+            label: "Split Engine".to_string(),
+            detail: det.to_string(),
+        });
+    } else if is_macos && !is_ssh && !is_tmux {
         let iterm_app = [
             PathBuf::from("/Applications/iTerm.app"),
             Path::new(home).join("Applications/iTerm.app"),
         ]
         .into_iter()
         .find(|p| p.is_dir());
-        let sock_live = Path::new("/tmp/.cc-ide/iterm_daemon.sock").exists();
+        let sock_live = ipc_path("iterm_daemon.sock").exists();
         let pyenv_py = Path::new(home).join(".local/share/cc-ide/pyenv/bin/python3");
         let rec_py = fs::read_to_string(Path::new(home).join(".cache/cc-ide/python_bin"))
             .ok()
@@ -233,7 +242,7 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
                 detail: "run ./install.sh to provision ~/.local/share/cc-ide/pyenv + API"
                     .to_string(),
             });
-        } else if let Some(tbin) = find_in_path("tmux", home) {
+        } else if let Some(tbin) = find_executable("tmux", home) {
             let tv = cmd_first_line(&tbin, &["-V"]).unwrap_or_else(|| "tmux".to_string());
             items.push(DoctorItem {
                 status: CheckStatus::Ok,
@@ -241,7 +250,7 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
                 detail: format!("{tv} (iTerm2 not found · Tier 3 active)"),
             });
         }
-    } else if let Some(tbin) = find_in_path("tmux", home) {
+    } else if let Some(tbin) = find_executable("tmux", home) {
         let tv = cmd_first_line(&tbin, &["-V"]).unwrap_or_else(|| "tmux".to_string());
         items.push(DoctorItem {
             status: CheckStatus::Ok,
@@ -253,18 +262,18 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         items.push(DoctorItem {
             status: CheckStatus::Warn,
             label: "Split Engine".to_string(),
-            detail: "tmux not found (required outside local iTerm2)".to_string(),
+            detail: "tmux not found (required outside local iTerm2/WezTerm)".to_string(),
         });
     }
 
-    match (find_in_path("yazi", home), find_in_path("ya", home)) {
+    match (find_executable("yazi", home), find_executable("ya", home)) {
         (Some(yb), Some(_)) => items.push(DoctorItem {
             status: CheckStatus::Ok,
             label: "Yazi + ya".to_string(),
             detail: cmd_first_line(&yb, &["--version"]).unwrap_or_else(|| "installed".to_string()),
         }),
         _ => {
-            missing_pkgs.push("yazi");
+            missing_pkgs.push(if cfg!(windows) { "sxyazi.yazi" } else { "yazi" });
             items.push(DoctorItem {
                 status: CheckStatus::Warn,
                 label: "Yazi + ya".to_string(),
@@ -273,7 +282,7 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         }
     }
 
-    if let Some(lgb) = find_in_path("lazygit", home) {
+    if let Some(lgb) = find_executable("lazygit", home) {
         let lv = cmd_first_line(&lgb, &["--version"]).unwrap_or_else(|| "installed".to_string());
         let short_lv = lv
             .split(',')
@@ -286,7 +295,11 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
             detail: trunc_to_width(&short_lv, 44),
         });
     } else {
-        missing_pkgs.push("lazygit");
+        missing_pkgs.push(if cfg!(windows) {
+            "JesseDuffield.lazygit"
+        } else {
+            "lazygit"
+        });
         items.push(DoctorItem {
             status: CheckStatus::Warn,
             label: "Lazygit".to_string(),
@@ -294,13 +307,21 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         });
     }
 
-    let has_delta = find_in_path("delta", home).is_some();
-    let has_glow = find_in_path("glow", home).is_some();
+    let has_delta = find_executable("delta", home).is_some();
+    let has_glow = find_executable("glow", home).is_some();
     if !has_delta {
-        missing_pkgs.push("git-delta");
+        missing_pkgs.push(if cfg!(windows) {
+            "dandavison.delta"
+        } else {
+            "git-delta"
+        });
     }
     if !has_glow {
-        missing_pkgs.push("glow");
+        missing_pkgs.push(if cfg!(windows) {
+            "charmbracelet.glow"
+        } else {
+            "glow"
+        });
     }
     items.push(DoctorItem {
         status: if has_delta && has_glow {
@@ -320,6 +341,11 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
 
     let missing_hint = if missing_pkgs.is_empty() {
         "All companion tools & optional renderers are installed.".to_string()
+    } else if cfg!(windows) {
+        format!(
+            "Optional/missing tools: winget install {}",
+            missing_pkgs.join(" ")
+        )
     } else if is_macos {
         format!(
             "Optional/missing tools: brew install {}",
@@ -338,7 +364,7 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
 }
 
 pub fn run_doctor(args: &[String]) {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let home = user_home_dir();
     let json_mode = args.iter().skip(2).any(|a| a == "--json" || a == "-j");
     let root_arg = args
         .iter()
@@ -361,8 +387,8 @@ mod tests {
     #[test]
     fn formats_valid_doctor_json_schema() {
         let rep = DoctorReport {
-            os_arch: "darwin/aarch64".to_string(),
-            backend_tier: "Tier 1 · Local iTerm2".to_string(),
+            os_arch: "windows/x86_64".to_string(),
+            backend_tier: "Tier 1 (Win) · WezTerm".to_string(),
             items: vec![DoctorItem {
                 status: CheckStatus::Ok,
                 label: "Claude Code".to_string(),

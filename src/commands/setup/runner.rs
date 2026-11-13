@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::json::{extract_json_bool, extract_json_str};
+use crate::json::{extract_json_bool, extract_json_str, extract_json_u64};
 use crate::tui::palette::{render_palette_template, resolve_palette_path, Palette};
 
 pub const PRESETS: [&str; 6] = [
@@ -24,6 +24,7 @@ pub struct SetupOptions {
     pub preset_idx: usize,
     pub sprite_mode_idx: usize,
     pub wrap_lines: bool,
+    pub cost_lines: u8,
     pub install_plugin: bool,
     pub patch_claude: bool,
     pub config_companions: bool,
@@ -36,6 +37,7 @@ impl Default for SetupOptions {
             preset_idx: 0,
             sprite_mode_idx: 0,
             wrap_lines: false,
+            cost_lines: 3,
             install_plugin: true,
             patch_claude: true,
             config_companions: true,
@@ -62,6 +64,9 @@ pub fn load_initial_options(home: &str) -> SetupOptions {
                 opts.sprite_mode_idx = pos;
             }
         }
+        if let Some(cl) = extract_json_u64(&raw, "cost_lines") {
+            opts.cost_lines = (cl as u8).clamp(1, 3);
+        }
     }
     opts
 }
@@ -81,9 +86,10 @@ pub fn write_user_preferences(home: &str, opts: &SetupOptions) {
 
     let chosen_sprite = SPRITE_MODES[opts.sprite_mode_idx % SPRITE_MODES.len()];
     let viewer_json = format!(
-        "{{\n  // Line-wrapping & sprite rendering mode (\"auto\" uses PNG/JPG on iTerm2/Kitty/Ghostty, .ansi elsewhere)\n  \"wrap\": {},\n  \"wrap_style\": \"vi\",\n  \"sprite_mode\": \"{}\"\n}}\n",
+        "{{\n  // Line-wrapping, sprite & COST density (\"cost_lines\": 3 detailed | 2 brief | 1 compact)\n  \"wrap\": {},\n  \"wrap_style\": \"vi\",\n  \"sprite_mode\": \"{}\",\n  \"cost_lines\": {}\n}}\n",
         if opts.wrap_lines { "true" } else { "false" },
-        chosen_sprite
+        chosen_sprite,
+        opts.cost_lines.clamp(1, 3)
     );
     let _ = fs::write(cfg_dir.join("viewer.json"), viewer_json);
 }
@@ -131,18 +137,26 @@ pub fn step_row_value(opts: &mut SetupOptions, row_idx: usize, forward: bool) ->
             false
         }
         3 => {
-            opts.install_plugin = !opts.install_plugin;
+            opts.cost_lines = match (opts.cost_lines, forward) {
+                (3, true) | (1, false) => 2,
+                (2, true) | (3, false) => 1,
+                _ => 3,
+            };
             false
         }
         4 => {
-            opts.patch_claude = !opts.patch_claude;
+            opts.install_plugin = !opts.install_plugin;
             false
         }
         5 => {
-            opts.config_companions = !opts.config_companions;
+            opts.patch_claude = !opts.patch_claude;
             false
         }
         6 => {
+            opts.config_companions = !opts.config_companions;
+            false
+        }
+        7 => {
             opts.setup_daemon_ssh = !opts.setup_daemon_ssh;
             false
         }
@@ -165,6 +179,61 @@ pub fn execute_install_pipeline(
             SPRITE_MODES[opts.sprite_mode_idx % SPRITE_MODES.len()],
             opts.wrap_lines
         ));
+    }
+
+    if cfg!(windows) {
+        let install_ps1 = project_root.join("install.ps1");
+        if !install_ps1.is_file() {
+            on_log(format!(
+                "[ERR] install.ps1 not found under {}",
+                project_root.display()
+            ));
+            return false;
+        }
+        let shell_bin = crate::platform::find_executable("pwsh", home)
+            .or_else(|| crate::platform::find_executable("powershell", home))
+            .unwrap_or_else(|| std::path::PathBuf::from("powershell.exe"));
+        let mode_arg = if uninstall { "-Uninstall" } else { "-Apply" };
+        let mut child = match Command::new(shell_bin)
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                install_ps1.to_str().unwrap_or("install.ps1"),
+                mode_arg,
+            ])
+            .env("CCIDE_NONINTERACTIVE", "1")
+            .env("CCIDE_SKIP_BUILD", "1")
+            .env(
+                "CCIDE_OPT_PLUGIN",
+                if opts.install_plugin { "1" } else { "0" },
+            )
+            .env("CCIDE_OPT_PATCH", if opts.patch_claude { "1" } else { "0" })
+            .env(
+                "CCIDE_OPT_COMPANION",
+                if opts.config_companions { "1" } else { "0" },
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                on_log(format!("[ERR] Failed to spawn install.ps1: {e}"));
+                return false;
+            }
+        };
+        if let Some(stdout) = child.stdout.take() {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let clean = strip_ansi_simple(&line);
+                if !clean.trim().is_empty() {
+                    on_log(clean);
+                }
+            }
+        }
+        return child.wait().map(|s| s.success()).unwrap_or(false);
     }
 
     let install_sh = project_root.join("install.sh");

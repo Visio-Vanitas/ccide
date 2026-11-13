@@ -103,6 +103,24 @@ pub fn parse_image_dimensions(bytes: &[u8]) -> (u32, u32) {
     (256, 256)
 }
 
+fn iterm_supports_kitty_graphics() -> bool {
+    for key in ["TERM_PROGRAM_VERSION", "LC_TERMINAL_VERSION"] {
+        if let Ok(ver) = env::var(key) {
+            let mut nums = ver
+                .split(|c: char| !c.is_ascii_digit())
+                .filter(|s| !s.is_empty());
+            if let (Some(maj_s), Some(min_s)) = (nums.next(), nums.next()) {
+                if let (Ok(maj), Ok(min)) = (maj_s.parse::<u32>(), min_s.parse::<u32>()) {
+                    if maj > 3 || (maj == 3 && min >= 5) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 pub fn detect_terminal_image_proto() -> ImageProto {
     if env::var("TMUX").is_ok() {
         return ImageProto::None;
@@ -111,20 +129,29 @@ pub fn detect_terminal_image_proto() -> ImageProto {
     let lc_term = env::var("LC_TERMINAL").unwrap_or_default();
     let term = env::var("TERM").unwrap_or_default();
 
-    if term_prog == "iTerm.app"
-        || lc_term == "iTerm2"
-        || env::var("ITERM_SESSION_ID").is_ok()
-        || term_prog == "WezTerm"
-        || term_prog == "WarpTerminal"
-    {
-        return ImageProto::Osc1337;
-    }
+    // Prefer Kitty Graphics Protocol (`APC _G`, `q=2,C=1`) on Kitty, Ghostty, WezTerm,
+    // and iTerm2 >= 3.5: it renders native Retina RGBA PNGs directly on the GPU WITHOUT
+    // creating a draggable Cocoa `NSImage` attachment (`iTermImageMark`), preventing
+    // mouse drags over the sprite from bypassing XTerm mouse capture.
     if env::var("KITTY_WINDOW_ID").is_ok()
         || term == "xterm-kitty"
         || term_prog.eq_ignore_ascii_case("ghostty")
         || env::var("GHOSTTY_RESOURCES_DIR").is_ok()
+        || term_prog == "WezTerm"
+        || env::var("WEZTERM_PANE").is_ok()
     {
         return ImageProto::Kitty;
+    }
+
+    if term_prog == "iTerm.app" || lc_term == "iTerm2" || env::var("ITERM_SESSION_ID").is_ok() {
+        if iterm_supports_kitty_graphics() {
+            return ImageProto::Kitty;
+        }
+        return ImageProto::Osc1337;
+    }
+
+    if term_prog == "WarpTerminal" {
+        return ImageProto::Osc1337;
     }
     ImageProto::None
 }

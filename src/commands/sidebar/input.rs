@@ -1,11 +1,18 @@
-//! SGR Mouse & Keyboard Escape-Sequence Parser for `ccide-core sidebar`.
+//! Atomic SGR Mouse & Keyboard Escape-Sequence Parser for `ccide-core sidebar`.
+//!
+//! Design invariants:
+//! 1. Consumes complete CSI (`\x1b[...<0x40..=0x7E>`), SS3 (`\x1bO<ch>`), OSC (`\x1b]...\x07`),
+//!    APC (`\x1b_...\x1b\\`), and DCS (`\x1bP...\x1b\\`) sequences atomically so truncated or
+//!    unrecognized control packets NEVER emit phantom `Escape` or stray ASCII command bytes.
+//! 2. Emits both `MouseDown` and `MouseUp` (discarding `(btn & 32) != 0` drag motion packets)
+//!    so `hit_mask.rs` can enforce standard press-and-release hit-box capture.
 
 use crate::session::transcript::SubagentItem;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputEvent {
-    LeftClick { col: usize, row: usize },
-    SecondaryClick { row: usize },
+    MouseDown { btn: u8, col: usize, row: usize },
+    MouseUp { btn: u8, col: usize, row: usize },
     WheelUp { row: usize },
     WheelDown { row: usize },
     CursorUp,
@@ -18,7 +25,23 @@ pub enum InputEvent {
     DismissSelected,
     ClearAllDone,
     ToggleBottomPanel,
+    FocusIn,
+    FocusOut,
     Escape,
+}
+
+fn skip_st_terminated(bytes: &[u8], mut i: usize) -> usize {
+    let len = bytes.len();
+    while i < len {
+        if bytes[i] == 0x07 {
+            return i + 1;
+        }
+        if bytes[i] == 0x1b && i + 1 < len && bytes[i + 1] == b'\\' {
+            return i + 2;
+        }
+        i += 1;
+    }
+    len
 }
 
 pub fn parse_input_events(input: &str) -> Vec<InputEvent> {
@@ -29,89 +52,117 @@ pub fn parse_input_events(input: &str) -> Vec<InputEvent> {
 
     while i < len {
         if bytes[i] == 0x1b {
-            if i + 2 < len && bytes[i + 1] == b'[' && bytes[i + 2] == b'<' {
-                let rest = &input[i + 3..];
-                if let Some(end_idx) = rest.find(['M', 'm']) {
-                    let kind = rest.as_bytes()[end_idx] as char;
-                    let body = &rest[..end_idx];
-                    let mut parts = body.split(';');
-                    if let (Some(b_str), Some(c_str), Some(r_str)) =
-                        (parts.next(), parts.next(), parts.next())
-                    {
-                        if kind == 'M' {
+            if i + 1 == len {
+                events.push(InputEvent::Escape);
+                break;
+            }
+            let next_b = bytes[i + 1];
+            if next_b == 0x1b {
+                events.push(InputEvent::Escape);
+                i += 1;
+                continue;
+            }
+            if matches!(next_b, b']' | b'_' | b'P' | b'^' | b'X') {
+                i = skip_st_terminated(bytes, i + 2);
+                continue;
+            }
+            if next_b == b'[' {
+                // SGR extended mouse: `\x1b[<btn;col;rowM` (press/motion) or `...m` (release)
+                if i + 2 < len && bytes[i + 2] == b'<' {
+                    let rest = &input[i + 3..];
+                    if let Some(end_idx) = rest.find(['M', 'm']) {
+                        let is_press = rest.as_bytes()[end_idx] == b'M';
+                        let mut parts = rest[..end_idx].split(';');
+                        if let (Some(b_s), Some(c_s), Some(r_s)) =
+                            (parts.next(), parts.next(), parts.next())
+                        {
                             if let (Ok(btn), Ok(col), Ok(row)) = (
-                                b_str.parse::<u32>(),
-                                c_str.parse::<usize>(),
-                                r_str.parse::<usize>(),
+                                b_s.parse::<u32>(),
+                                c_s.parse::<usize>(),
+                                r_s.parse::<usize>(),
                             ) {
-                                match btn {
-                                    0 => events.push(InputEvent::LeftClick { col, row }),
-                                    1 | 2 => events.push(InputEvent::SecondaryClick { row }),
-                                    64 => events.push(InputEvent::WheelUp { row }),
-                                    65 => events.push(InputEvent::WheelDown { row }),
-                                    _ => {}
+                                if (btn & 64) != 0 {
+                                    if is_press {
+                                        if (btn & 1) == 0 {
+                                            events.push(InputEvent::WheelUp { row });
+                                        } else {
+                                            events.push(InputEvent::WheelDown { row });
+                                        }
+                                    }
+                                } else if (btn & 32) == 0 {
+                                    let low_btn = (btn & 3) as u8;
+                                    if is_press {
+                                        events.push(InputEvent::MouseDown {
+                                            btn: low_btn,
+                                            col,
+                                            row,
+                                        });
+                                    } else {
+                                        events.push(InputEvent::MouseUp {
+                                            btn: low_btn,
+                                            col,
+                                            row,
+                                        });
+                                    }
                                 }
                             }
                         }
-                    }
-                    i += 3 + end_idx + 1;
-                    continue;
-                }
-            }
-
-            if i + 2 < len && (bytes[i + 1] == b'[' || bytes[i + 1] == b'O') {
-                let mode = bytes[i + 1];
-                let code = bytes[i + 2];
-                if mode == b'[' && code.is_ascii_digit() {
-                    let mut j = i + 2;
-                    while j < len && (bytes[j].is_ascii_digit() || bytes[j] == b';') {
-                        j += 1;
-                    }
-                    if j < len {
-                        let final_b = bytes[j];
-                        let param = &input[i + 2..j];
-                        match (param, final_b) {
-                            ("5", b'~') => events.push(InputEvent::PageUp),
-                            ("6", b'~') => events.push(InputEvent::PageDown),
-                            ("3", b'~') => events.push(InputEvent::DismissSelected),
-                            ("1", b'~') | ("7", b'~') => events.push(InputEvent::Home),
-                            ("4", b'~') | ("8", b'~') => events.push(InputEvent::End),
-                            (_, b'A') => events.push(InputEvent::CursorUp),
-                            (_, b'B') => events.push(InputEvent::CursorDown),
-                            (_, b'C') => events.push(InputEvent::ActivateSelected),
-                            (_, b'D') => events.push(InputEvent::DismissSelected),
-                            _ => {}
-                        }
-                        i = j + 1;
+                        i += 3 + end_idx + 1;
                         continue;
                     }
-                } else {
-                    match code {
+                    // Truncated SGR tail at buffer boundary: discard cleanly, never emit Escape!
+                    break;
+                }
+
+                // Standard CSI sequence: scan to final byte in `0x40..=0x7E`
+                let mut j = i + 2;
+                while j < len && !(0x40..=0x7e).contains(&bytes[j]) {
+                    j += 1;
+                }
+                if j >= len {
+                    break;
+                }
+                let final_b = bytes[j];
+                let param = &input[i + 2..j];
+                match (param, final_b) {
+                    ("5", b'~') => events.push(InputEvent::PageUp),
+                    ("6", b'~') => events.push(InputEvent::PageDown),
+                    ("3", b'~') => events.push(InputEvent::DismissSelected),
+                    ("1", b'~') | ("7", b'~') | ("", b'H') => events.push(InputEvent::Home),
+                    ("4", b'~') | ("8", b'~') | ("", b'F') => events.push(InputEvent::End),
+                    (_, b'A') => events.push(InputEvent::CursorUp),
+                    (_, b'B') => events.push(InputEvent::CursorDown),
+                    ("", b'I') => events.push(InputEvent::FocusIn),
+                    ("", b'O') => events.push(InputEvent::FocusOut),
+                    // Horizontal arrows (`C`/`D`) are intentionally ignored.
+                    _ => {}
+                }
+                i = j + 1;
+                continue;
+            }
+            if next_b == b'O' {
+                if i + 2 < len {
+                    match bytes[i + 2] {
                         b'A' => events.push(InputEvent::CursorUp),
                         b'B' => events.push(InputEvent::CursorDown),
-                        b'C' => events.push(InputEvent::ActivateSelected),
-                        b'D' => events.push(InputEvent::DismissSelected),
                         b'H' => events.push(InputEvent::Home),
                         b'F' => events.push(InputEvent::End),
                         _ => {}
                     }
-                    i += 3;
-                    continue;
                 }
+                i = (i + 3).min(len);
+                continue;
             }
-
-            events.push(InputEvent::Escape);
-            i += 1;
+            // Alt-modified key (`\x1b<ch>`): skip the 2-byte pair without firing Escape.
+            i = (i + 2).min(len);
             continue;
         }
 
         match bytes[i] {
             b'k' | b'K' => events.push(InputEvent::CursorUp),
             b'j' | b'J' => events.push(InputEvent::CursorDown),
-            b'\r' | b'\n' | b' ' | b'l' | b'L' => events.push(InputEvent::ActivateSelected),
-            b'x' | b'X' | b'd' | b'D' | b'h' | b'H' | 0x7f | 0x08 => {
-                events.push(InputEvent::DismissSelected);
-            }
+            b'\r' | b'\n' | b' ' => events.push(InputEvent::ActivateSelected),
+            b'x' | b'X' | b'd' | b'D' | 0x7f | 0x08 => events.push(InputEvent::DismissSelected),
             b'c' | b'C' => events.push(InputEvent::ClearAllDone),
             b't' | b'T' | b'\t' => events.push(InputEvent::ToggleBottomPanel),
             b'g' => events.push(InputEvent::Home),
@@ -159,45 +210,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_sgr_wheel_and_click_events() {
-        let stream = "\x1b[<64;10;18M\x1b[<65;10;18M\x1b[<0;37;14M\x1b[<0;37;14m\x1b[<2;8;16M";
+    fn parses_sgr_press_release_wheel_and_ignores_drag_and_truncated_tails() {
+        let stream = "\x1b[<64;10;18M\x1b[<65;10;18M\x1b[<0;37;14M\x1b[<32;20;9M\x1b[<0;37;14m\x1b[<2;8;16M\x1b[<32;12;";
         let parsed = parse_input_events(stream);
         assert_eq!(
             parsed,
             vec![
                 InputEvent::WheelUp { row: 18 },
                 InputEvent::WheelDown { row: 18 },
-                InputEvent::LeftClick { col: 37, row: 14 },
-                InputEvent::SecondaryClick { row: 16 },
+                InputEvent::MouseDown {
+                    btn: 0,
+                    col: 37,
+                    row: 14
+                },
+                InputEvent::MouseUp {
+                    btn: 0,
+                    col: 37,
+                    row: 14
+                },
+                InputEvent::MouseDown {
+                    btn: 2,
+                    col: 8,
+                    row: 16
+                },
             ]
         );
     }
 
     #[test]
-    fn parses_arrow_bursts_and_keyboard_shortcuts() {
-        let stream = "\x1b[B\x1bOB\r\x1b[3~c\x1b";
+    fn parses_arrows_and_never_emits_escape_on_focus_or_apc_replies() {
+        let stream = "\x1b[I\x1b_Gi=71;OK\x1b\\\x1b[B\x1bOB\x1b[D\x1b[C\r\x1b[3~c\x1b[O\x1b";
         let parsed = parse_input_events(stream);
         assert_eq!(
             parsed,
             vec![
+                InputEvent::FocusIn,
                 InputEvent::CursorDown,
                 InputEvent::CursorDown,
                 InputEvent::ActivateSelected,
                 InputEvent::DismissSelected,
                 InputEvent::ClearAllDone,
+                InputEvent::FocusOut,
                 InputEvent::Escape,
             ]
         );
-    }
-
-    #[test]
-    fn sync_scroll_tracks_cursor_into_viewport() {
-        let mut off = 0usize;
-        sync_scroll_to_cursor(3, &mut off, 6, 14);
-        assert_eq!(off, 0);
-        sync_scroll_to_cursor(4, &mut off, 6, 14);
-        assert_eq!(off, 2);
-        sync_scroll_to_cursor(1, &mut off, 6, 14);
-        assert_eq!(off, 0);
     }
 }

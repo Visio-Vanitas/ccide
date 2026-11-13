@@ -4,7 +4,7 @@ use std::fs;
 use std::time::SystemTime;
 
 use crate::json::extract_json_str;
-use crate::tui::width::floor_char_boundary;
+use crate::tui::width::{display_width, floor_char_boundary};
 
 #[derive(Clone)]
 pub struct ConfigModels {
@@ -47,13 +47,89 @@ pub fn classify_model_family(model_str: &str) -> &'static str {
     }
 }
 
+/// Strips noisy routing prefixes (`anthropic/`, `us.anthropic.`), context-window tags
+/// (`[1M]`), Bedrock revision suffixes (`-v1:0`), and trailing 8-digit snapshot dates
+/// (`-20250929`, `@20250929`) WITHOUT chopping semantic model characters like `-flash`.
 pub fn short_model_label(raw: &str) -> String {
-    let base = raw.split('[').next().unwrap_or(raw).trim();
-    if base.len() <= 18 {
-        base.to_string()
-    } else {
-        base[..floor_char_boundary(base, 18)].to_string()
+    let mut s = raw.split('[').next().unwrap_or(raw).trim();
+    if let Some((_, rhs)) = s.rsplit_once('/') {
+        if !rhs.is_empty() {
+            s = rhs;
+        }
     }
+    for pfx in [
+        "us.anthropic.",
+        "eu.anthropic.",
+        "apac.anthropic.",
+        "global.anthropic.",
+    ] {
+        if let Some(rest) = s.strip_prefix(pfx) {
+            s = rest;
+            break;
+        }
+    }
+    if let Some((lhs, _)) = s.split_once("-v1:") {
+        s = lhs;
+    }
+    if let Some((lhs, rhs)) = s.rsplit_once(['-', '@']) {
+        if rhs.len() == 8 && rhs.bytes().all(|b| b.is_ascii_digit()) && lhs.len() >= 4 {
+            s = lhs;
+        }
+    }
+    s.to_string()
+}
+
+/// Progressive semantic compactor when a pane is narrower than `max_cols`:
+/// 1. Full canonical name (`deepseek-v4.1-flash`) when `width <= max_cols`.
+/// 2. Vendor-prefix compaction (`deepseek-` -> `ds-`, `gemini-` -> `gm-`, `claude-` -> ``)
+///    since the colored `●` / panel title already encodes the vendor family.
+/// 3. Middle-ellipsis (`head…tail`) so distinguishing suffixes (`-flash`, `-tiered`, `-mini`)
+///    are never cut off.
+pub fn compact_model_for_width(name: &str, max_cols: usize) -> String {
+    if max_cols == 0 {
+        return String::new();
+    }
+    if display_width(name) <= max_cols {
+        return name.to_string();
+    }
+    let low = name.to_ascii_lowercase();
+    let compact_cand = if let Some(rest) = name.get(7..).filter(|_| low.starts_with("claude-")) {
+        rest.to_string()
+    } else if let Some(rest) = name.get(9..).filter(|_| low.starts_with("deepseek-")) {
+        format!("ds-{rest}")
+    } else if let Some(rest) = name.get(7..).filter(|_| low.starts_with("gemini-")) {
+        format!("gm-{rest}")
+    } else if let Some(rest) = name.get(7..).filter(|_| low.starts_with("openai-")) {
+        rest.to_string()
+    } else {
+        name.to_string()
+    };
+    if display_width(&compact_cand) <= max_cols {
+        return compact_cand;
+    }
+    if max_cols <= 4 {
+        let end = floor_char_boundary(&compact_cand, max_cols);
+        return compact_cand[..end].to_string();
+    }
+    let avail = max_cols - 1;
+    let tail_cols = (avail / 2).max(3);
+    let head_cols = avail - tail_cols;
+    let head_end = floor_char_boundary(&compact_cand, head_cols);
+    let mut tail_start = compact_cand.len();
+    let mut acc = 0usize;
+    for (idx, ch) in compact_cand.char_indices().rev() {
+        let cw = if ch.is_ascii() { 1 } else { 2 };
+        if acc + cw > tail_cols {
+            break;
+        }
+        acc += cw;
+        tail_start = idx;
+    }
+    format!(
+        "{}…{}",
+        &compact_cand[..head_end],
+        &compact_cand[tail_start..]
+    )
 }
 
 pub fn map_alias_with_settings(raw_model: &str, settings_content: &str) -> String {
@@ -103,6 +179,14 @@ pub fn load_config_models(
             if let Some(m) = extract_json_str(&stxt, "model").filter(|m| is_valid_model_name(m)) {
                 let mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 candidates.push((mt, m));
+            }
+        }
+        let mcache = format!("{}/status/model_{}.cache", cache_dir, session_id);
+        if let (Ok(meta), Ok(mtxt)) = (fs::metadata(&mcache), fs::read_to_string(&mcache)) {
+            let trimmed = mtxt.trim();
+            if is_valid_model_name(trimmed) {
+                let mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                candidates.push((mt, trimmed.to_string()));
             }
         }
     }

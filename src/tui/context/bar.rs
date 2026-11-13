@@ -28,6 +28,71 @@ pub fn fmt_usd(v: f64) -> String {
     }
 }
 
+/// High-precision USD formatter (`4–5` significant digits) for the dedicated `COST` panel.
+pub fn fmt_usd_precise(v: f64) -> String {
+    if v <= 0.0 {
+        "$0.00".to_string()
+    } else if v >= 1_000.0 {
+        format!("${:.1}", v)
+    } else if v >= 10.0 {
+        format!("${:.2}", v)
+    } else if v >= 0.1 {
+        format!("${:.3}", v)
+    } else if v >= 0.0001 {
+        format!("${:.4}", v)
+    } else {
+        "<$0.0001".to_string()
+    }
+}
+
+/// Formats model share percentage without misleading `100%` / `0%` rounding when non-zero.
+pub fn fmt_share_pct(cost: f64, total_cost: f64, fallback_pct: u64) -> String {
+    if total_cost <= 1e-7 {
+        return format!("{fallback_pct}%");
+    }
+    if cost <= 0.0 {
+        return "0%".to_string();
+    }
+    let raw = ((cost / total_cost) * 100.0).clamp(0.0, 100.0);
+    if (total_cost - cost) <= 1e-6 || raw >= 99.95 {
+        "100%".to_string()
+    } else if !(10.0..=99.0).contains(&raw) {
+        if raw < 0.1 {
+            "<0.1%".to_string()
+        } else {
+            format!("{:.1}%", raw)
+        }
+    } else {
+        format!("{:.0}%", raw)
+    }
+}
+
+/// Computes prompt-cache hit ratio to `0.1%` precision, strictly capped at `99.9%` (never `100%`).
+pub fn compute_cache_hit_pct(cache_read: u64, total_prompt: u64) -> f64 {
+    if total_prompt == 0 || cache_read == 0 {
+        return 0.0;
+    }
+    let raw = (cache_read as f64 / total_prompt as f64) * 100.0;
+    ((raw * 10.0).round() / 10.0).clamp(0.0, 99.9)
+}
+
+pub fn fmt_tps(tps: Option<f64>) -> String {
+    match tps.filter(|&v| v > 0.05 && v.is_finite()) {
+        Some(v) if v >= 100.0 => format!("{:.0}", v),
+        Some(v) => format!("{:.1}", v),
+        None => "--".to_string(),
+    }
+}
+
+pub fn fmt_ttft(ttft_ms: Option<u64>) -> String {
+    match ttft_ms.filter(|&ms| ms > 0) {
+        Some(ms) if ms >= 10_000 => format!("{:.1}s", ms as f64 / 1000.0),
+        Some(ms) if ms >= 1_000 => format!("{:.2}s", ms as f64 / 1000.0),
+        Some(ms) => format!("{}ms", ms),
+        None => "--".to_string(),
+    }
+}
+
 pub fn model_family_color<'a>(family: &str, idx_in_family: usize, pal: &'a Palette) -> &'a str {
     if idx_in_family == 0 {
         match family {

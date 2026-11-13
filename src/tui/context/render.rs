@@ -1,11 +1,13 @@
 //! Clean Context Window & Prompt Cache Breakdown Panel Renderer (`CONTEXT`).
+//!
+//! Powered by `crate::tui::layout::{Align, ColSpec, ColumnWidths, RowLayout}`.
 
 use crate::commands::statusline::CtxTier;
-use crate::tui::context::bar::{fmt_tok_compact, render_prop_bar, render_segmented_spectrum_bar};
+use crate::tui::context::bar::{fmt_tok_compact, render_segmented_spectrum_bar};
 use crate::tui::context::{ContextSnapshot, TAG_CTX_TOGGLE};
 use crate::tui::grid::{BoxRow, PanelSpec};
+use crate::tui::layout::{Align, ColSpec, ColumnWidths, RowLayout};
 use crate::tui::palette::Palette;
-use crate::tui::width::{display_width, trunc_to_width};
 use crate::tui::{BOLD, RESET};
 
 pub fn build_context_panel(
@@ -13,22 +15,25 @@ pub fn build_context_panel(
     cols: usize,
     ctx_h: usize,
     include_toggle_footer: bool,
+    panel_focused: bool,
     pal: &Palette,
 ) -> PanelSpec {
     let box_inner_w = cols.saturating_sub(2).max(14);
-    let content_w = cols.saturating_sub(4).max(12);
     let interior_h = ctx_h.saturating_sub(2).max(4);
     let bar_full_w = box_inner_w.saturating_sub(2).max(8);
+    let row_fmt = RowLayout::new(box_inner_w);
 
-    let white = &pal.text;
-    let dim = &pal.dim;
-    let cyan = &pal.cyan;
-    let green = &pal.green;
-    let amber = &pal.amber;
-    let coral = &pal.coral;
-    let blue = &pal.blue;
-    let mint = &pal.mint;
-    let lavender = &pal.lavender;
+    let (white, dim, cyan, green, amber, coral, blue, mint, lavender) = (
+        &pal.text,
+        &pal.dim,
+        &pal.cyan,
+        &pal.green,
+        &pal.amber,
+        &pal.coral,
+        &pal.blue,
+        &pal.mint,
+        &pal.lavender,
+    );
 
     let tier_col: &str = match snap.budget.tier {
         CtxTier::Crit => coral,
@@ -46,23 +51,15 @@ pub fn build_context_panel(
     let used_s = fmt_tok_compact(snap.total_in_tokens);
     let lim_s = fmt_tok_compact(snap.budget.limit_tokens);
     let free_s = fmt_tok_compact(free_tokens);
-    let head_left = format!(
-        " {tier_col}●{RESET} {BOLD}{white}{used_s}{dim}/{lim_s}{RESET} {BOLD}{tier_col}{}%{RESET}",
-        snap.budget.used_pct
-    );
-    let head_right_plain = format!("free {free_s} ");
-    let lw = display_width(&head_left);
-    let rw = display_width(&head_right_plain);
-    let head_line = if lw + rw < box_inner_w {
-        format!(
-            "{head_left}{}{dim}free {white}{free_s}{RESET} ",
-            " ".repeat(box_inner_w - lw - rw)
-        )
-    } else {
-        head_left
-    };
     rows.push(BoxRow {
-        text: head_line,
+        text: row_fmt.split(
+            &format!(
+                "{tier_col}●{RESET} {BOLD}{white}{used_s}{dim}/{lim_s}{RESET} {BOLD}{tier_col}{}%{RESET}",
+                snap.budget.used_pct
+            ),
+            &format!("{dim}free {white}{free_s}{RESET}"),
+            1,
+        ),
         bg: String::new(),
         tag: None,
     });
@@ -84,7 +81,11 @@ pub fn build_context_panel(
         ("CHAT", snap.chat_tokens, mint),
     ];
 
-    let inline_bar_w = box_inner_w.saturating_sub(23).max(4);
+    let mut tok_samples: Vec<[String; 1]> =
+        cats.iter().map(|&(_, t, _)| [fmt_tok_compact(t)]).collect();
+    tok_samples.push([free_s.clone()]);
+    let tok_w = ColumnWidths::measure(&tok_samples, [5]).widths[0];
+
     for &(label, tok, col) in &cats {
         if rows.len() + reserve_bot >= interior_h {
             break;
@@ -96,34 +97,46 @@ pub fn build_context_panel(
         } else {
             0.0
         };
+        let dot = format!("{col}●{RESET}");
         let tok_s = fmt_tok_compact(tok);
-        let pct_u = share_pct as u64;
-        if box_inner_w >= 28 {
-            let mini = render_prop_bar(share_pct, inline_bar_w, col, &pal.divider);
-            rows.push(BoxRow {
-                text: format!(
-                    " {col}●{RESET} {white}{:<7}{RESET} {mini} {white}{:>5}{RESET} {dim}{:>3}%{RESET}",
-                    label, tok_s, pct_u
-                ),
-                bg: String::new(),
-                tag: None,
-            });
-        } else {
-            rows.push(BoxRow {
-                text: trunc_to_width(
-                    &format!(
-                        " {col}●{RESET} {white}{:<7}{RESET} {:>5} {:>3}%",
-                        label, tok_s, pct_u
-                    ),
-                    content_w,
-                ),
-                bg: String::new(),
-                tag: None,
-            });
-        }
+        let pct_s = format!("{}%", share_pct as u64);
+        rows.push(BoxRow {
+            text: row_fmt.columns(
+                &[
+                    ColSpec::Styled(&dot),
+                    ColSpec::Fixed {
+                        text: label,
+                        width: 7,
+                        align: Align::Left,
+                        style: white,
+                    },
+                    ColSpec::FillBar {
+                        pct: share_pct,
+                        fill_col: col,
+                        track_col: &pal.divider,
+                        min_w: 4,
+                    },
+                    ColSpec::Fixed {
+                        text: &tok_s,
+                        width: tok_w,
+                        align: Align::Right,
+                        style: white,
+                    },
+                    ColSpec::Fixed {
+                        text: &pct_s,
+                        width: 4,
+                        align: Align::Right,
+                        style: dim,
+                    },
+                ],
+                1,
+            ),
+            bg: String::new(),
+            tag: None,
+        });
     }
 
-    if rows.len() + reserve_bot + 1 < interior_h && box_inner_w >= 28 {
+    if rows.len() + reserve_bot + 1 < interior_h {
         let free_pct = if snap.budget.limit_tokens > 0 {
             ((free_tokens as f64 / snap.budget.limit_tokens as f64) * 100.0)
                 .round()
@@ -138,13 +151,38 @@ pub fn build_context_panel(
         } else {
             green
         };
-        let mini = render_prop_bar(free_pct, inline_bar_w, free_col, &pal.divider);
+        let dot = format!("{free_col}○{RESET}");
+        let pct_s = format!("{}%", free_pct as u64);
         rows.push(BoxRow {
-            text: format!(
-                " {free_col}○{RESET} {dim}{:<7}{RESET} {mini} {free_col}{:>5}{RESET} {dim}{:>3}%{RESET}",
-                "FREE",
-                free_s,
-                free_pct as u64
+            text: row_fmt.columns(
+                &[
+                    ColSpec::Styled(&dot),
+                    ColSpec::Fixed {
+                        text: "FREE",
+                        width: 7,
+                        align: Align::Left,
+                        style: dim,
+                    },
+                    ColSpec::FillBar {
+                        pct: free_pct,
+                        fill_col: free_col,
+                        track_col: &pal.divider,
+                        min_w: 4,
+                    },
+                    ColSpec::Fixed {
+                        text: &free_s,
+                        width: tok_w,
+                        align: Align::Right,
+                        style: free_col,
+                    },
+                    ColSpec::Fixed {
+                        text: &pct_s,
+                        width: 4,
+                        align: Align::Right,
+                        style: dim,
+                    },
+                ],
+                1,
             ),
             bg: String::new(),
             tag: None,
@@ -155,38 +193,28 @@ pub fn build_context_panel(
         let hit_pct = snap.session_hit_pct;
         let hit_col: &str = if snap.turns == 0 {
             dim
-        } else if hit_pct >= 70 {
+        } else if hit_pct >= 70.0 {
             green
-        } else if hit_pct >= 35 {
+        } else if hit_pct >= 35.0 {
             amber
         } else {
             coral
         };
         let r_s = fmt_tok_compact(snap.cum_cache_read_tokens);
-        let is_cold = snap.turns >= 2 && snap.last_hit_pct == 0;
-        let now_plain = if is_cold {
-            "cold 0%".to_string()
+        let now_styled = if snap.turns >= 2 && snap.last_hit_pct < 0.05 {
+            format!("{coral}cold 0.0%{RESET}")
         } else {
-            format!("now {}%", snap.last_hit_pct)
-        };
-        let now_styled = if is_cold {
-            format!("{coral}cold 0%{RESET}")
-        } else {
-            format!("{dim}now {cyan}{}%{RESET}", snap.last_hit_pct)
-        };
-        let cache_plain = format!(" ● CACHE {:>3}% · {} · R {}", hit_pct, now_plain, r_s);
-        let cache_line = if display_width(&cache_plain) <= box_inner_w {
-            format!(
-                " {hit_col}●{RESET} {BOLD}{white}CACHE{RESET} {hit_col}{:>3}%{RESET} {dim}·{RESET} {now_styled} {dim}· R{RESET} {cyan}{r_s}{RESET}",
-                hit_pct
-            )
-        } else {
-            format!(
-                " {hit_col}●{RESET} {white}CACHE{RESET} {hit_col}{hit_pct}%{RESET} {now_styled}"
-            )
+            format!("{dim}now {cyan}{:.1}%{RESET}", snap.last_hit_pct)
         };
         rows.push(BoxRow {
-            text: cache_line,
+            text: row_fmt.split(
+                &format!(
+                    "{hit_col}●{RESET} {BOLD}{white}CACHE{RESET} {hit_col}{:.1}%{RESET} {dim}·{RESET} {now_styled} {dim}· R{RESET} {cyan}{r_s}{RESET}",
+                    hit_pct
+                ),
+                "",
+                0,
+            ),
             bg: String::new(),
             tag: None,
         });
@@ -194,9 +222,22 @@ pub fn build_context_panel(
 
     if rows.len() + reserve_bot < interior_h {
         let win_s = fmt_tok_compact(snap.model_win_tokens);
-        let meta_plain = format!("   win {} · cmp {} · {}t", win_s, lim_s, snap.turns);
+        let mut meta_plain = format!("win {} · cmp {} · {}t", win_s, lim_s, snap.turns);
+        match (snap.rl_5h_pct, snap.rl_7d_pct) {
+            (Some(h5), Some(d7)) => meta_plain.push_str(&format!(" · 5h:{h5}% 7d:{d7}%")),
+            (Some(h5), None) => meta_plain.push_str(&format!(" · 5h:{h5}%")),
+            (None, Some(d7)) => meta_plain.push_str(&format!(" · 7d:{d7}%")),
+            (None, None) if snap.lines_added > 0 || snap.lines_removed > 0 => {
+                meta_plain.push_str(&format!(" · +{}/-{}", snap.lines_added, snap.lines_removed));
+            }
+            _ => {}
+        }
         rows.push(BoxRow {
-            text: format!("{dim}{}{RESET}", trunc_to_width(&meta_plain, box_inner_w)),
+            text: RowLayout::new(box_inner_w).padding(3, 1).split(
+                &format!("{dim}{meta_plain}{RESET}"),
+                "",
+                0,
+            ),
             bg: String::new(),
             tag: None,
         });
@@ -210,20 +251,12 @@ pub fn build_context_panel(
                 tag: None,
             });
         }
-        let foot_left = format!(" {dim}[{amber}t{dim}/{amber}Tab{dim}] toggle");
-        let foot_right_plain = "[HW] ";
-        let flw = display_width(&foot_left);
-        let frw = display_width(foot_right_plain);
-        let foot_row = if flw + frw < box_inner_w {
-            format!(
-                "{foot_left}{}{dim}[{amber}HW{dim}]{RESET} ",
-                " ".repeat(box_inner_w - flw - frw)
-            )
-        } else {
-            format!(" {dim}[{amber}t{dim}] ⇄ [{amber}HW{dim}]{RESET}")
-        };
         rows.push(BoxRow {
-            text: foot_row,
+            text: row_fmt.split(
+                &format!("{dim}[{amber}t{dim}/{amber}Tab{dim}] toggle{RESET}"),
+                &format!("{dim}[{amber}HW{dim}]{RESET}"),
+                1,
+            ),
             bg: String::new(),
             tag: Some((TAG_CTX_TOGGLE, 0)),
         });
@@ -241,5 +274,6 @@ pub fn build_context_panel(
         fixed_height: Some(ctx_h),
         weight: 0.56,
         raw_interior: false,
+        focused: panel_focused,
     }
 }

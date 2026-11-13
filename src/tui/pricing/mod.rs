@@ -46,6 +46,38 @@ fn progressive_tiered_cost(tokens: u64, base_mtok: f64, above: Option<u64>, tier
 }
 
 impl ModelRate {
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_turn_cost_full(
+        &self,
+        in_tok: u64,
+        cc_total_tok: u64,
+        cc_1h_tok: u64,
+        cr_tok: u64,
+        out_tok: u64,
+        fast_mode: bool,
+        us_geo: bool,
+        web_search_reqs: u64,
+    ) -> (f64, f64) {
+        let (mut actual, mut uncached) =
+            self.compute_turn_cost(in_tok, cc_total_tok, cc_1h_tok, cr_tok, out_tok);
+        if fast_mode {
+            // Fast Mode (`/fast`) applies Claude Code's 2x speed multiplier unless overridden
+            actual *= 2.0;
+            uncached *= 2.0;
+        }
+        if us_geo {
+            // `inference_geo: "us"` applies upstream's 1.1x surcharge (`AD(n)`)
+            actual *= 1.1;
+            uncached *= 1.1;
+        }
+        if web_search_reqs > 0 {
+            let ws_usd = (web_search_reqs as f64) * 0.01;
+            actual += ws_usd;
+            uncached += ws_usd;
+        }
+        (actual, uncached)
+    }
+
     /// Computes `(actual_cost_usd, uncached_baseline_usd)` using `tokscale`'s tiered billing model.
     pub fn compute_turn_cost(
         &self,
