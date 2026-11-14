@@ -133,7 +133,12 @@ def clean_glow_line(line: str) -> str:
 
 def char_cols(ch: str) -> int:
     o = ord(ch)
-    if o < 0x20 or 0x7F <= o < 0xA0 or unicodedata.combining(ch):
+    if (
+        o < 0x20
+        or 0x7F <= o < 0xA0
+        or unicodedata.combining(ch)
+        or unicodedata.category(ch) in ("Mn", "Me", "Cf")
+    ):
         return 0
     return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
 
@@ -158,8 +163,17 @@ def wrap_plain(text: str, width: int) -> list[str]:
 
 
 def style_inline(text: str) -> str:
-    text = re.sub(r"`([^`]+)`", "\x1b[38;5;115;48;5;236m\\1\x1b[0m", text)
+    code_spans: list[str] = []
+
+    def _save_code(m: re.Match[str]) -> str:
+        idx = len(code_spans)
+        code_spans.append(f"\x1b[38;5;115;48;5;236m{m.group(1)}\x1b[0m")
+        return f"\x00CODE{idx}\x00"
+
+    text = re.sub(r"`([^`]+)`", _save_code, text)
     text = re.sub(r"\*\*([^*]+)\*\*", "\x1b[1;38;5;255m\\1\x1b[0m", text)
+    for idx, span in enumerate(code_spans):
+        text = text.replace(f"\x00CODE{idx}\x00", span)
     return text
 
 
@@ -174,12 +188,28 @@ def render_fallback_markdown(md_text: str, width: int, wrap_enabled: bool = Fals
         6: ("· ", "\x1b[1;38;5;246m", ""),
     }
     in_fence = False
+    fence_char = ""
+    fence_len = 0
     out: list[str] = []
     for line in md_text.split("\n"):
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
+        fm = FENCE_RE.match(line)
+        if not in_fence and fm:
+            marker = fm.group(1)
+            in_fence = True
+            fence_char = marker[0]
+            fence_len = len(marker)
             continue
         if in_fence:
+            if (
+                fm
+                and fm.group(1)[0] == fence_char
+                and len(fm.group(1)) >= fence_len
+                and not line[fm.end() :].strip()
+            ):
+                in_fence = False
+                fence_char = ""
+                fence_len = 0
+                continue
             full_code = f"\x1b[38;5;240m│\x1b[0m \x1b[38;5;115m{line.expandtabs(4)}\x1b[0m"
             out.extend(wrap_vi_ansi(full_code, width) if wrap_enabled else [full_code])
             continue
@@ -211,8 +241,8 @@ def wrap_vi_ansi(s: str, max_cols: int) -> list[str]:
     """`vi`-style (`:set wrap nolinebreak showbreak=↪`) exact-column ANSI wrapper."""
     showbreak = "\x1b[38;5;242m↪\x1b[0m"
     cjk_pad = "\x1b[38;5;240m↩\x1b[0m"
-    first_budget = max(8, max_cols)
-    cont_budget = max(6, max_cols - 1)
+    first_budget = max(1, max_cols)
+    cont_budget = max(1, max_cols - 1)
     s = re.sub(r"\x1b\[0?K", "", s).expandtabs(4)
 
     tokens: list[tuple[bool, str, int]] = []
@@ -227,6 +257,15 @@ def wrap_vi_ansi(s: str, max_cols: int) -> list[str]:
                 if seq.endswith("m"):
                     tokens.append((True, seq, 0))
                 i = j + 1
+                continue
+        if s[i] == "\x1b" and i + 1 < n and s[i + 1] == "]":
+            bel = s.find("\x07", i + 2)
+            st = s.find("\x1b\\", i + 2)
+            if bel != -1 and (st == -1 or bel < st):
+                i = bel + 1
+                continue
+            if st != -1:
+                i = st + 2
                 continue
         ch = s[i]
         tokens.append((False, ch, char_cols(ch)))
@@ -274,6 +313,7 @@ def render_markdown(md_text: str, width: int, wrap_enabled: bool = False) -> str
                 text=True,
                 capture_output=True,
                 env=env,
+                timeout=5.0,
             )
             if res.returncode == 0 and res.stdout.strip():
                 cleaned = []

@@ -223,8 +223,8 @@ def apply_all_structural_patches(
             buf, layout, re_perf,
             lambda m: (
                 m.group(1)
-                + b'...(()=>{try{let f=import.meta.require("fs"),d=(process.env.TEMP||"/tmp")+"/.cc-ide";'
-                + b"f.mkdirSync(d,{recursive:!0});f.appendFileSync(`${d}/pf_${process.pid}.jsonl`,JSON.stringify({m:"
+                + b'...(()=>{try{let p=process,r=import.meta.require,d=p.env.CCIDE_IPC_DIR||(p.platform>"w"?r("os").tmpdir():"/tmp")+"/.cc-ide";'
+                + b'r("fs").appendFileSync(`${d}/pf_${process.pid}.jsonl`,JSON.stringify({m:'
                 + m.group(2) + b",o:" + m.group(3) + b".output_tokens,d:" + m.group(5)
                 + b",t:" + m.group(6) + b"??" + m.group(7) + b"})+`\\n`)}catch{}})(),"
                 + m.group(4)

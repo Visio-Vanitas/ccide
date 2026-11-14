@@ -30,7 +30,7 @@ git:
     showGraph: always
   paging:
     colorArg: always
-    pager: $HOME/.claude/scripts/lazygit-pager.sh --col-width={{columnWidth}}
+    pager: '"$HOME/.claude/scripts/lazygit-pager.sh" --col-width={{columnWidth}}'
   branchLogCmd: lazygit-log.py --branch={{branchName}}
   allBranchesLogCmds:
     - lazygit-log.py --all

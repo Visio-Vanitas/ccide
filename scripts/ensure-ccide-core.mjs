@@ -37,7 +37,7 @@ function runEngine(exePath) {
   child.on("error", () => process.exit(0));
 }
 
-for (const cand of [path.join(pluginRoot, "bin", binName), targetBin]) {
+for (const cand of [targetBin, path.join(pluginRoot, "bin", binName)]) {
   if (isRunnable(cand)) {
     runEngine(cand);
     await new Promise(() => {});
@@ -94,9 +94,46 @@ if (!triple) process.exit(0);
 
 const archive = `ccide-core-${triple}.tar.gz`;
 const baseUrl = `https://github.com/${repoSlug}/releases/latest/download`;
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccide-dl-"));
+const lockDir = path.join(claudeBinDir, ".ensure-ccide-core.lock");
+let lockHeld = false;
+let tmpDir = "";
+let stagedBin = "";
+
+async function acquireLock() {
+  fs.mkdirSync(claudeBinDir, { recursive: true });
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    try {
+      fs.mkdirSync(lockDir);
+      lockHeld = true;
+      return true;
+    } catch (err) {
+      if (err && err.code !== "EEXIST") return false;
+      try {
+        const st = fs.statSync(lockDir);
+        if (Date.now() - st.mtimeMs > 60000) {
+          fs.rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  return false;
+}
 
 try {
+  await acquireLock();
+  if (isRunnable(targetBin)) {
+    if (lockHeld) {
+      try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {}
+      lockHeld = false;
+    }
+    runEngine(targetBin);
+    await new Promise(() => {});
+  }
+
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccide-dl-"));
   const [tarBuf, sumsBuf] = await Promise.all([
     fetchBytes(`${baseUrl}/${archive}`),
     fetchBytes(`${baseUrl}/SHA256SUMS.txt`),
@@ -122,24 +159,36 @@ try {
   if (!fs.existsSync(extracted)) process.exit(0);
 
   fs.mkdirSync(claudeBinDir, { recursive: true });
-  if (!isWin) fs.chmodSync(extracted, 0o755);
+  stagedBin = `${targetBin}.tmp.${process.pid}`;
+  fs.copyFileSync(extracted, stagedBin);
+  if (!isWin) fs.chmodSync(stagedBin, 0o755);
   if (process.platform === "darwin") {
-    spawnSync("codesign", ["-f", "-s", "-", extracted], { stdio: "ignore" });
+    spawnSync("codesign", ["-f", "-s", "-", stagedBin], { stdio: "ignore" });
   }
-  fs.copyFileSync(extracted, targetBin);
-  if (!isWin) fs.chmodSync(targetBin, 0o755);
+  fs.renameSync(stagedBin, targetBin);
+  stagedBin = "";
 
   try {
     const plugBinDir = path.join(pluginRoot, "bin");
     fs.mkdirSync(plugBinDir, { recursive: true });
-    fs.copyFileSync(targetBin, path.join(plugBinDir, binName));
+    const plugBin = path.join(plugBinDir, binName);
+    const plugStaged = `${plugBin}.tmp.${process.pid}`;
+    fs.copyFileSync(targetBin, plugStaged);
+    if (!isWin) fs.chmodSync(plugStaged, 0o755);
+    fs.renameSync(plugStaged, plugBin);
   } catch {}
 } catch {
   process.exit(0);
 } finally {
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {}
+  if (stagedBin) {
+    try { fs.rmSync(stagedBin, { force: true }); } catch {}
+  }
+  if (tmpDir) {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+  if (lockHeld) {
+    try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {}
+  }
 }
 
 if (isRunnable(targetBin)) {

@@ -27,6 +27,10 @@ fi
 [[ -d "$TARGET_DIR" ]] && cd "$TARGET_DIR"
 
 clear_terminal_buffers() {
+  # Drain any unread terminal query replies (DA1/OSC/APC) left in the PTY input queue so a respawned TUI never wedges
+  if [[ -t 0 ]]; then
+    while read -r -t 0 -k 256 _discard 2>/dev/null; do :; done
+  fi
   printf '\033[?1049l\033[2J\033[3J\033[H\033]1337;ClearScrollback\007\033[?1049h\033[2J\033[3J\033[H\033]1337;ClearScrollback\007'
 }
 
@@ -53,7 +57,9 @@ case "$ROLE" in
     fi
     {
       [[ -n "$YA_BIN" && -x "$YA_BIN" ]] && "$YA_BIN" cache --clear >/dev/null 2>&1 || true
-      find "$HOME/.cache/cc-ide" -maxdepth 1 -type f -mmin +720 -delete 2>/dev/null || true
+      find "$HOME/.cache/cc-ide" -maxdepth 1 -type f -mmin +10080 \
+        ! -name "tab_shell_*" ! -name "session_*" ! -name "active_view_*" ! -name "main_last_file_*" ! -name "live_*" \
+        -delete 2>/dev/null || true
     } </dev/null >/dev/null 2>&1 &!
     while true; do
       clear_terminal_buffers

@@ -64,7 +64,35 @@ def resolve_paths(home_dir: str) -> tuple[str, str, bool]:
     return plist_path, backup_dir, bool(custom_plist)
 
 
-def load_plist_dict(plist_path: str) -> dict:
+def parse_plist_bool(val: object) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return val != 0
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ("0", "no", "false", "off", ""):
+            return False
+        if s in ("1", "yes", "true", "on"):
+            return True
+    return bool(val)
+
+
+def load_plist_dict(plist_path: str, use_file_mode: bool = True) -> dict:
+    if not use_file_mode and platform.system() == "Darwin" and shutil.which("defaults"):
+        try:
+            proc = subprocess.run(
+                ["defaults", "export", "com.googlecode.iterm2", "-"],
+                capture_output=True,
+                timeout=5.0,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                data = plistlib.loads(proc.stdout)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
     if not os.path.isfile(plist_path):
         return {}
     try:
@@ -106,12 +134,12 @@ def collect_status(home_dir: str) -> dict:
     plist_path, backup_dir, use_file_mode = resolve_paths(home_dir)
     bundle = discover_iterm_bundle(home_dir)
     installed = bool(bundle) or use_file_mode
-    cur = load_plist_dict(plist_path)
+    cur = load_plist_dict(plist_path, use_file_mode=use_file_mode)
     prefs_state = {}
     pending_changes = 0
     for k, rec in RECOMMENDED_PREFS.items():
         present = k in cur
-        actual = bool(cur[k]) if present else None
+        actual = parse_plist_bool(cur[k]) if present else None
         matches = present and (actual is rec)
         if not matches:
             pending_changes += 1
@@ -122,7 +150,7 @@ def collect_status(home_dir: str) -> dict:
         "bundle_path": bundle,
         "plist_path": plist_path,
         "backup_dir": backup_dir,
-        "api_enabled": bool(cur.get("EnableAPIServer", False)),
+        "api_enabled": parse_plist_bool(cur.get("EnableAPIServer", False)),
         "pending_changes": pending_changes,
         "preferences": prefs_state,
     }
@@ -135,8 +163,8 @@ def apply_preferences(home_dir: str) -> int:
         print("  [SKIP] Skipping iTerm2 configuration (iTerm2 not installed); Tier 3 tmux backend ready.")
         return 0
 
-    cur = load_plist_dict(plist_path)
-    if not bool(cur.get("EnableAPIServer", False)):
+    cur = load_plist_dict(plist_path, use_file_mode=use_file_mode)
+    if not parse_plist_bool(cur.get("EnableAPIServer", False)):
         print(
             "  [INFO] iTerm2 Python API (`EnableAPIServer`) was disabled.\n"
             "         Enabling via defaults (if prompted inside iTerm2, confirm under:\n"
@@ -146,7 +174,7 @@ def apply_preferences(home_dir: str) -> int:
 
     diffs: list[tuple[str, object, bool]] = []
     for key, rec_val in RECOMMENDED_PREFS.items():
-        if key not in cur or bool(cur[key]) is not rec_val:
+        if key not in cur or parse_plist_bool(cur[key]) is not rec_val:
             old_repr = cur[key] if key in cur else "<unset>"
             diffs.append((key, old_repr, rec_val))
 
@@ -156,13 +184,27 @@ def apply_preferences(home_dir: str) -> int:
 
     os.makedirs(backup_dir, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    if os.path.isfile(plist_path):
-        plist_bak = os.path.join(backup_dir, f"com.googlecode.iterm2.{stamp}.plist")
+    plist_bak = os.path.join(backup_dir, f"com.googlecode.iterm2.{stamp}.plist")
+    backed_up = False
+    if not use_file_mode and platform.system() == "Darwin" and shutil.which("defaults"):
+        try:
+            exp = subprocess.run(
+                ["defaults", "export", "com.googlecode.iterm2", plist_bak],
+                capture_output=True,
+                timeout=5.0,
+                check=False,
+            )
+            if exp.returncode == 0 and os.path.isfile(plist_bak):
+                print(f"  [OK] Backed up live iTerm2 preferences -> {plist_bak}")
+                backed_up = True
+        except Exception:
+            pass
+    if not backed_up and os.path.isfile(plist_path):
         shutil.copy2(plist_path, plist_bak)
         print(f"  [OK] Backed up iTerm2 plist -> {plist_bak}")
 
     snap_entries = {
-        k: ({"absent": False, "value": bool(cur[k])} if k in cur else {"absent": True})
+        k: ({"absent": False, "value": parse_plist_bool(cur[k])} if k in cur else {"absent": True})
         for k in RECOMMENDED_PREFS
     }
     snap_payload = {"created_at": stamp, "plist_path": plist_path, "keys": snap_entries}
@@ -190,7 +232,7 @@ def restore_preferences(home_dir: str, assume_yes: bool, purge_venv: bool) -> in
     if os.path.isfile(snap_file):
         with open(snap_file, encoding="utf-8") as f:
             snap = json.load(f)
-        cur = load_plist_dict(plist_path)
+        cur = load_plist_dict(plist_path, use_file_mode=use_file_mode)
         restored = 0
         for key, meta in snap.get("keys", {}).items():
             cur_repr = cur[key] if key in cur else "<unset>"
@@ -200,13 +242,20 @@ def restore_preferences(home_dir: str, assume_yes: bool, purge_venv: bool) -> in
                     print(f"  [RESTORE] {key}: {cur_repr} -> <unset>")
                     restored += 1
             else:
-                orig_val = bool(meta.get("value"))
-                if key not in cur or bool(cur[key]) is not orig_val:
+                orig_val = parse_plist_bool(meta.get("value"))
+                if key not in cur or parse_plist_bool(cur[key]) is not orig_val:
                     write_pref_key(plist_path, use_file_mode, key, orig_val)
                     print(f"  [RESTORE] {key}: {cur_repr} -> {orig_val}")
                     restored += 1
         if restored == 0:
             print("  [OK] iTerm2 preferences already match backed-up original values.")
+        for snap_name in ("baseline_snapshot.json", "latest_snapshot.json"):
+            p = os.path.join(backup_dir, snap_name)
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
     else:
         print("  [SKIP] No ccide iTerm2 preference backup snapshot found; nothing to restore.")
 

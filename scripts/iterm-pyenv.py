@@ -214,7 +214,21 @@ def ensure_iterm_pyenv(home_dir: str, mirrors: list[tuple[str, str]] | None = No
     print(f"  [INFO] Selected PyPI index ({source_desc}): {chosen_idx}")
     try:
         os.makedirs(os.path.dirname(venv_dir), exist_ok=True)
-        if not os.path.isfile(venv_py):
+        venv_ok = os.path.isfile(venv_py)
+        if venv_ok:
+            try:
+                pip_chk = subprocess.run(
+                    [venv_py, "-m", "pip", "--version"],
+                    capture_output=True,
+                    timeout=10.0,
+                    check=False,
+                )
+                venv_ok = pip_chk.returncode == 0
+            except Exception:
+                venv_ok = False
+        if not venv_ok:
+            if os.path.exists(venv_dir):
+                shutil.rmtree(venv_dir, ignore_errors=True)
             subprocess.run([base_py, "-m", "venv", venv_dir], check=True, timeout=45.0)
         subprocess.run(
             [

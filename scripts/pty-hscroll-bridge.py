@@ -423,6 +423,7 @@ class VtScreen:
         self._csi_buf = ""
         self.frame_gate = VtFrameGate()
         self.stdin_tail = b""
+        self.stdin_tail_ts = 0.0
         self.focused_panel = "1"
         self.pan_x: dict[str, int] = {str(i): 0 for i in range(6)}
         self.main_dirty_on_term = False
@@ -745,14 +746,27 @@ class VtScreen:
             return b""
         self._dimmed_unfocused = True
         out: list[str] = ["\x1b7\x1b[0m"]
-        top_s = "".join(ch if ch != "" else "" for ch in self.grid[y0][x0 : end_x + 1])
+
+        def _slice_row(row: list[str]) -> str:
+            parts: list[str] = []
+            for x in range(x0, end_x + 1):
+                ch = row[x]
+                if x == x0 and ch == "":
+                    parts.append(" ")
+                elif x == end_x and ch != "" and char_cols(ch) == 2:
+                    parts.append(" ")
+                else:
+                    parts.append(ch)
+            return "".join(parts)
+
+        top_s = _slice_row(self.grid[y0])
         out.append(f"\x1b[{y0 + 1};{x0 + 1}H{top_s}")
-        bot_s = "".join(ch if ch != "" else "" for ch in self.grid[end_y][x0 : end_x + 1])
+        bot_s = _slice_row(self.grid[end_y])
         out.append(f"\x1b[{end_y + 1};{x0 + 1}H{bot_s}")
         repaint_interior = self.focused_panel != "0"
         for ry in range(y0 + 1, end_y):
             if repaint_interior:
-                full_s = "".join(ch if ch != "" else "" for ch in self.grid[ry][x0 : end_x + 1])
+                full_s = _slice_row(self.grid[ry])
                 out.append(f"\x1b[{ry + 1};{x0 + 1}H{full_s}")
             else:
                 lc = self.grid[ry][x0] or "│"
@@ -842,8 +856,11 @@ class VtScreen:
             if gr:
                 anchor_k = k
                 break
+        if n_lines <= anchor_k:
+            self.matched_top_idx = None
+            return None
         anchor_txt = grid_rows[anchor_k]
-        for idx in range(0, max(1, n_lines - anchor_k)):
+        for idx in range(0, n_lines - anchor_k):
             if clips[idx + anchor_k] == anchor_txt and matches_at(idx):
                 self.matched_top_idx = idx
                 return idx
@@ -1204,6 +1221,7 @@ def translate_input(
     if screen.stdin_tail:
         buf = screen.stdin_tail + buf
         screen.stdin_tail = b""
+        screen.stdin_tail_ts = 0.0
     if not buf:
         return b""
 
@@ -1213,6 +1231,7 @@ def translate_input(
         tail = buf[last_esc:]
         if len(tail) == 1 or (tail.startswith(b"\x1b[") and not COMPLETE_CSI_PREFIX_RE.match(tail)):
             screen.stdin_tail = tail
+            screen.stdin_tail_ts = time.monotonic()
             buf = buf[:last_esc]
             if not buf:
                 return b""
@@ -1307,7 +1326,8 @@ def read_master_burst(master_fd: int) -> bytes:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    cmd_args = sys.argv[2:] if len(sys.argv) > 1 and sys.argv[1] == "--" else sys.argv[1:]
+    if not cmd_args:
         return 1
 
     stdin_fd = sys.stdin.fileno()
@@ -1331,7 +1351,7 @@ def main() -> int:
         os.environ["CCIDE_LG_COLS"] = str(init_cols)
         os.environ["CCIDE_LG_SID"] = str(os.getpid())
         write_geom_file(os.getpid(), init_rows, init_cols)
-        os.execvp(sys.argv[1], sys.argv[1:])
+        os.execvp(cmd_args[0], cmd_args)
 
     try:
         fcntl.ioctl(master_fd, termios.TIOCSWINSZ, init_packed)
@@ -1405,8 +1425,13 @@ def main() -> int:
     exit_code = 0
     try:
         while True:
+            sel_timeout = (
+                max(0.0, 0.035 - (time.monotonic() - screen.stdin_tail_ts))
+                if screen.stdin_tail
+                else None
+            )
             try:
-                rlist, _, _ = select.select([stdin_fd, master_fd, wake_r], [], [])
+                rlist, _, _ = select.select([stdin_fd, master_fd, wake_r], [], [], sel_timeout)
             except InterruptedError:
                 continue
             except select.error as exc:
@@ -1463,8 +1488,21 @@ def main() -> int:
                     write_all(master_fd, translated)
                 if had_focus_in and getattr(screen, "_dimmed_unfocused", False):
                     screen._dimmed_unfocused = False
-                    if not translated:
+                    if not FOCUS_EVENT_RE.sub(b"", translated):
                         request_winch(force_nudge=True)
+
+            if screen.stdin_tail and (
+                not rlist or (time.monotonic() - screen.stdin_tail_ts) >= 0.035
+            ):
+                pending = screen.stdin_tail
+                screen.stdin_tail = b""
+                screen.stdin_tail_ts = 0.0
+                direct_out = []
+                translated = translate_key_chunk(pending, screen, direct_out)
+                if direct_out and not screen.frame_gate.has_pending():
+                    write_all(stdout_fd, b"".join(direct_out))
+                if translated:
+                    write_all(master_fd, translated)
     finally:
         try:
             write_all(stdout_fd, b"\x1b[?1004l")

@@ -9,8 +9,10 @@ consistent column widths across all tabs/windows, locks TUI side-pane scrollback
 Claude Code's native `viewing-agent` state machine (`YU` / `EL`) without ever splitting or burying panes.
 """
 import asyncio
+import glob
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -40,7 +42,7 @@ def try_daemon_fastpath(action: str) -> bool:
         req["yazi_id"] = sys.argv[3] if len(sys.argv) > 3 else "1000"
         req["show_git"] = (sys.argv[4] == "1") if len(sys.argv) > 4 else True
         req["show_mon"] = (sys.argv[5] == "1") if len(sys.argv) > 5 else False
-        req["left_pct"] = int(sys.argv[6]) if len(sys.argv) > 6 else 30
+        req["left_pct"] = int((sys.argv[6] if len(sys.argv) > 6 else "") or 30)
         req["git_root"] = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] else req["target_dir"]
         req["show_right"] = (sys.argv[8] == "1") if len(sys.argv) > 8 else True
     elif action == "close":
@@ -51,7 +53,7 @@ def try_daemon_fastpath(action: str) -> bool:
         req["yazi_id"] = sys.argv[2] if len(sys.argv) > 2 else ""
         req["session_id"] = sys.argv[3] if len(sys.argv) > 3 else ""
         req["view_id"] = sys.argv[4] if len(sys.argv) > 4 else "main"
-        req["footer_rank"] = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+        req["footer_rank"] = int((sys.argv[5] if len(sys.argv) > 5 else "") or 0)
 
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -127,8 +129,6 @@ def make_command_profile(cmd: str, cwd: str) -> iterm2.LocalWriteOnlyProfile:
     prof.set_mouse_reporting_allow_mouse_wheel(True)
     if hasattr(prof, "_simple_set"):
         prof._simple_set("Mouse Reporting allow clicks and drags", True)
-    if hasattr(prof, "set_background_image_location"):
-        prof.set_background_image_location("")
     if cwd and os.path.isdir(cwd):
         prof.set_initial_directory_mode(
             iterm2.InitialWorkingDirectory.INITIAL_WORKING_DIRECTORY_CUSTOM
@@ -232,7 +232,7 @@ async def cmd_open(connection):
     yazi_id = sys.argv[3]
     show_git = sys.argv[4] == "1"
     show_mon = sys.argv[5] == "1"
-    left_pct = int(sys.argv[6]) if len(sys.argv) > 6 else 30
+    left_pct = int((sys.argv[6] if len(sys.argv) > 6 else "") or 30)
     git_root = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] else target_dir
     show_right = (sys.argv[8] == "1") if len(sys.argv) > 8 else True
     right_pct = 16 if show_right else 0
@@ -255,6 +255,7 @@ async def cmd_open(connection):
             or "[TREE] yazi" in name
             or "[GIT] lazygit" in name
             or "[SYS] macmon" in name
+            or "[SYS] monitor" in name
             or "[AI] Companion" in name
             or "[PET] clawd" in name
         ):
@@ -276,11 +277,14 @@ async def cmd_open(connection):
         except Exception:
             pass
 
-    runner = os.path.expanduser("~/.claude/scripts/pane-runner.sh")
-    yazi_cmd = f"'{runner}' yazi '{target_dir}' {yazi_id}"
-    git_cmd = f"'{runner}' lazygit '{git_root}'"
-    mon_cmd = f"'{runner}' macmon '{target_dir}'"
-    sidebar_cmd = f"'{runner}' sidebar '{target_dir}' {yazi_id} {shell_pid}"
+    runner = shlex.quote(os.path.expanduser("~/.claude/scripts/pane-runner.sh"))
+    q_dir = shlex.quote(target_dir)
+    q_git = shlex.quote(git_root)
+    q_yid = shlex.quote(str(yazi_id))
+    yazi_cmd = f"{runner} yazi {q_dir} {q_yid}"
+    git_cmd = f"{runner} lazygit {q_git}"
+    mon_cmd = f"{runner} macmon {q_dir}"
+    sidebar_cmd = f"{runner} sidebar {q_dir} {q_yid} {int(shell_pid)}"
 
     created_ids = []
 
@@ -389,6 +393,7 @@ async def cmd_close(connection):
             or "[TREE] yazi" in name
             or "[GIT] lazygit" in name
             or "[SYS] macmon" in name
+            or "[SYS] monitor" in name
             or "[AI] Companion" in name
             or "[PET] clawd" in name
         ):
@@ -430,7 +435,7 @@ async def cmd_switch_subagent(connection):
     tab_yazi_id = sys.argv[2] if len(sys.argv) > 2 else ""
     session_id = sys.argv[3] if len(sys.argv) > 3 else ""
     view_id = sys.argv[4] if len(sys.argv) > 4 else "main"
-    footer_rank = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+    footer_rank = int((sys.argv[5] if len(sys.argv) > 5 else "") or 0)
 
     app = await iterm2.async_get_app(connection)
     await app.async_refresh()
@@ -445,11 +450,20 @@ async def cmd_switch_subagent(connection):
                     break
             if target_claude:
                 break
+        if target_claude:
+            break
 
     if target_claude is None:
         return
 
     await target_claude.async_activate()
+
+    if glob.glob("/tmp/.cc-ide/cur_pid_*.txt"):
+        for _ in range(7):
+            if not glob.glob("/tmp/.cc-ide/req_pid_*.json"):
+                break
+            await asyncio.sleep(0.05)
+        return
 
     req_file = f"/tmp/.cc-ide/req_{session_id}.json" if session_id else ""
     if req_file:
