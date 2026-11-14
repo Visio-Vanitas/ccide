@@ -23,6 +23,7 @@ pub struct JsonlTracker {
     pub last_line: usize,
     pub last_span: usize,
     pub last_model: String,
+    pub last_model_mtime: SystemTime,
     pub seq: usize,
     pub done_from_tail: bool,
 }
@@ -140,6 +141,8 @@ pub fn update_jsonl_tracker(
         return;
     };
     let len = meta.len();
+    let is_initial_scan = tracker.offset == 0 || tracker.last_model.is_empty();
+    let file_mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
     if len < tracker.offset {
         tracker.offset = 0;
         tracker.seq = 0;
@@ -169,6 +172,11 @@ pub fn update_jsonl_tracker(
                     .collect();
                 if is_valid_model_name(&m) {
                     tracker.last_model = m;
+                    tracker.last_model_mtime = if is_initial_scan {
+                        SystemTime::UNIX_EPOCH
+                    } else {
+                        file_mt
+                    };
                 }
             } else if line.contains("\"role\":\"assistant\"")
                 || line.contains("\"type\":\"message\"")
@@ -176,6 +184,13 @@ pub fn update_jsonl_tracker(
                 if let Some(m) = extract_json_str(line, "model") {
                     if is_valid_model_name(&m) {
                         tracker.last_model = m;
+                        // Assistant turn models serve as baseline fallback (`UNIX_EPOCH`) unless
+                        // a new turn just streamed live after initial load.
+                        tracker.last_model_mtime = if is_initial_scan {
+                            SystemTime::UNIX_EPOCH
+                        } else {
+                            file_mt
+                        };
                     }
                 }
             }
@@ -248,6 +263,7 @@ pub fn get_main_session_file_ops(
                     last_line: 0,
                     last_span: 0,
                     last_model: String::new(),
+                    last_model_mtime: SystemTime::UNIX_EPOCH,
                     seq: 0,
                     done_from_tail: false,
                 }
@@ -255,6 +271,8 @@ pub fn get_main_session_file_ops(
         if tr.jpath.as_ref().map(|p| !p.is_file()).unwrap_or(true) {
             tr.jpath = find_session_jsonl(home, session_id);
             tr.offset = 0;
+            tr.last_model.clear();
+            tr.last_model_mtime = SystemTime::UNIX_EPOCH;
         }
         if let Some(ref jp) = tr.jpath.clone() {
             if let Ok(m) = fs::metadata(jp).and_then(|m| m.modified()) {
@@ -266,7 +284,7 @@ pub fn get_main_session_file_ops(
             out.line = tr.last_line;
             out.span = tr.last_span;
             out.model = tr.last_model.clone();
-            out.model_mtime = jsonl_mtime;
+            out.model_mtime = tr.last_model_mtime;
             out.seq = tr.seq;
         }
     }

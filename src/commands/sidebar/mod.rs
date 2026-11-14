@@ -16,13 +16,11 @@ use std::sync::atomic::Ordering;
 
 use crate::ffi::{install_signal_handlers, ConsoleRawSession, DIRTY_EVENT, RUNNING};
 use crate::orchestrator::OrchestratorWatcher;
-use crate::platform::{cache_dir, ipc_dir, ipc_path, user_home_dir};
+use crate::platform::{cache_dir, ipc_dir, user_home_dir};
 use crate::session::transcript::SubagentItem;
-use crate::session::{
-    classify_model_family, load_config_models, resolve_isolated_session_id, ConfigModels,
-};
+use crate::session::{classify_model_family, load_config_models, ConfigModels};
 use crate::telemetry::TelemetrySampler;
-use crate::tui::context::{ContextSnapshot, SessionContextAnalyzer};
+use crate::tui::context::SessionContextAnalyzer;
 use crate::tui::grid::{get_terminal_geometry, render_multi_panel_grid};
 use crate::tui::logo::{build_top_logo_panel, load_adaptive_logos};
 use crate::tui::palette::PaletteWatcher;
@@ -65,23 +63,21 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         ..SidebarSelectState::default()
     };
 
-    let mut active_view_id = "main".to_string();
-    let mut cost_max_scroll = 0usize;
+    let (mut active_view_id, mut cost_max_scroll, mut tick) = ("main".to_string(), 0usize, 0usize);
+    let (mut cached_ctx_snap, mut seen_main_seq, mut fast_input_redraw) = (None, None, false);
     let mut ctx_analyzer = SessionContextAnalyzer::new();
-    let mut cached_ctx_snap: Option<ContextSnapshot> = None;
-    let mut fast_input_redraw = false;
-    let mut seen_main_seq: Option<usize> = None;
-    let mut tick = 0usize;
     write_active_view_state(&home, tab_yazi_id, "main");
 
-    let (mut c_sid, mut c_pid) =
-        resolve_isolated_session_id(&home, tab_yazi_id, target_cwd, shell_pid_arg);
-    if !c_sid.is_empty() {
-        let _ = fs::write(ipc_path(&format!("sb_{c_sid}.pid")), &my_pid_str);
-    }
-    if c_pid > 1 {
-        let _ = fs::write(ipc_path(&format!("sb_pid_{c_pid}.pid")), &my_pid_str);
-    }
+    let (mut c_sid, mut c_pid) = (String::new(), 0u32);
+    let _ = update_isolated_session_binding(
+        &home,
+        tab_yazi_id,
+        target_cwd,
+        shell_pid_arg,
+        &my_pid_str,
+        &mut c_sid,
+        &mut c_pid,
+    );
 
     let (mut main_tool, mut main_file) = (String::new(), String::new());
     let (mut main_line, mut main_span) = (0usize, 0usize);
@@ -109,9 +105,9 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         }
         let pal = &pal_watcher.palette;
 
-        if !fast_input_redraw && (is_dirty || has_running_sub || c_sid.is_empty() || tick % 30 == 0)
+        if !fast_input_redraw && (is_dirty || has_running_sub || c_sid.is_empty() || tick % 2 == 0)
         {
-            if (c_sid.is_empty() || is_dirty || tick % 30 == 0)
+            if (c_sid.is_empty() || is_dirty || tick % 2 == 0)
                 && update_isolated_session_binding(
                     &home,
                     tab_yazi_id,
@@ -122,11 +118,14 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                     &mut c_pid,
                 )
             {
+                main_tracker.clear();
                 sub_trackers.clear();
                 seen_sub_seq.clear();
                 ctx_analyzer.clear();
-                cached_ctx_snap = None;
-                (seen_main_seq, sel.cost_scroll) = (None, 0);
+                prev_rows.clear();
+                active_view_id = "main".to_string();
+                write_active_view_state(&home, tab_yazi_id, "main");
+                (cached_ctx_snap, seen_main_seq, sel.cost_scroll) = (None, None, 0);
             }
             (
                 main_tool, main_file, main_line, main_span, cached_cfg, subagents,
@@ -246,7 +245,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             fast_input_redraw = false;
             DIRTY_EVENT.store(true, Ordering::Relaxed);
             8
-        } else if running_cnt > 0 {
+        } else if running_cnt > 0 || c_sid.is_empty() {
             250
         } else {
             1000

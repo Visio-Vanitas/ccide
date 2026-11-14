@@ -10,7 +10,9 @@ use std::path::PathBuf;
 
 use crate::ffi::{current_ppid, get_ppid_of, is_descendant_of, is_pid_alive};
 use crate::json::{extract_json_bool, extract_json_str, extract_json_u64};
-use crate::platform::{cache_dir, clean_canonicalize, ipc_dir, normalize_slashes};
+use crate::platform::{
+    cache_dir, clean_canonicalize, find_executable, ipc_dir, ipc_path, normalize_slashes,
+};
 
 pub use focus::{emit_yazi_blur, emit_yazi_reveal_at, extract_tool_line_target};
 pub use model::{
@@ -45,7 +47,73 @@ fn ancestor_distance(mut pid: u32, target_ancestor: u32) -> Option<usize> {
     None
 }
 
-/// Strictly resolves the `(sessionId, claude_pid)` belonging ONLY to this tab's Claude process.
+/// Strips terminal job suffixes (` (claude)`, ` (node)`) and leading spinner/status glyphs
+/// (`✳ `, `◐ `, `● `) from a Center pane title to recover Claude Code's session `name`.
+pub fn clean_claude_pane_title(raw: &str) -> Option<String> {
+    let mut s = raw.trim();
+    if s.ends_with(')') {
+        if let Some(idx) = s.rfind(" (") {
+            let job = s[idx + 2..s.len() - 1].trim().to_ascii_lowercase();
+            if job.starts_with("claude") || job.starts_with("node") {
+                s = s[..idx].trim_end();
+            }
+        }
+    }
+    let cleaned = s
+        .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '/')
+        .trim();
+    if cleaned.is_empty()
+        || cleaned.eq_ignore_ascii_case("claude")
+        || cleaned.eq_ignore_ascii_case("claude code")
+    {
+        return None;
+    }
+    Some(cleaned.to_string())
+}
+
+fn read_tab_pane_title(home: &str, tab_yazi_id: &str, query_tmux: bool) -> Option<String> {
+    if tab_yazi_id.is_empty() {
+        return None;
+    }
+    if let Ok(raw) = fs::read_to_string(ipc_path(&format!("tab_title_{tab_yazi_id}.txt"))) {
+        if let Some(t) = clean_claude_pane_title(&raw) {
+            return Some(t);
+        }
+    }
+    if query_tmux {
+        if let Ok(spec) = fs::read_to_string(ipc_path(&format!("panes_{tab_yazi_id}.txt"))) {
+            if let Some(rest) = spec.trim().strip_prefix("tmux:") {
+                let center_pane = rest.split(':').next().unwrap_or("");
+                if !center_pane.is_empty() {
+                    if let Some(tmux) = find_executable("tmux", home) {
+                        if let Ok(out) = std::process::Command::new(tmux)
+                            .args([
+                                "-L",
+                                "ccide",
+                                "display-message",
+                                "-p",
+                                "-t",
+                                center_pane,
+                                "#{pane_title}",
+                            ])
+                            .output()
+                        {
+                            if out.status.success() {
+                                return clean_claude_pane_title(&String::from_utf8_lossy(
+                                    &out.stdout,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Strictly resolves the `(sessionId, claude_pid)` belonging ONLY to this tab's Claude process,
+/// including FleetView (`/subtask`) tabs attached to `bg` sessions under `claude.exe daemon`.
 pub fn resolve_isolated_session_id(
     home: &str,
     tab_yazi_id: &str,
@@ -72,6 +140,9 @@ pub fn resolve_isolated_session_id(
         session_id: String,
         cwd: PathBuf,
         kind: String,
+        name: String,
+        job_id: String,
+        parked_job_id: String,
         is_busy: bool,
         updated_at: u64,
         started_at: u64,
@@ -98,6 +169,9 @@ pub fn resolve_isolated_session_id(
                 let cwd_raw = extract_json_str(&txt, "cwd").unwrap_or_default();
                 let cwd = clean_canonicalize(&cwd_raw).unwrap_or_else(|_| PathBuf::from(&cwd_raw));
                 let kind = extract_json_str(&txt, "kind").unwrap_or_default();
+                let name = extract_json_str(&txt, "name").unwrap_or_default();
+                let job_id = extract_json_str(&txt, "jobId").unwrap_or_default();
+                let parked_job_id = extract_json_str(&txt, "parkedJobId").unwrap_or_default();
                 let status = extract_json_str(&txt, "status").unwrap_or_default();
                 let started_at = extract_json_u64(&txt, "startedAt").unwrap_or(0);
                 let updated_at = extract_json_u64(&txt, "updatedAt").unwrap_or(started_at);
@@ -106,6 +180,9 @@ pub fn resolve_isolated_session_id(
                     session_id: sid,
                     cwd,
                     kind,
+                    name,
+                    job_id,
+                    parked_job_id,
                     is_busy: status == "busy",
                     updated_at,
                     started_at,
@@ -116,6 +193,12 @@ pub fn resolve_isolated_session_id(
 
     alive_entries.sort_by_key(|b| std::cmp::Reverse((b.is_busy, b.updated_at, b.started_at)));
 
+    let matches_title = |cand: &SessEntry, title: &str| -> bool {
+        cand.name == title
+            || (!cand.job_id.is_empty() && cand.job_id == title)
+            || (title.len() >= 8 && cand.session_id.starts_with(title))
+    };
+
     if shell_pid > 0 {
         if let Some((_dist, e)) = alive_entries
             .iter()
@@ -123,19 +206,36 @@ pub fn resolve_isolated_session_id(
             .min_by_key(|(d, e)| {
                 (
                     *d,
+                    !e.parked_job_id.is_empty(),
                     std::cmp::Reverse((e.is_busy, e.updated_at, e.started_at)),
                 )
             })
         {
             let mut chosen = e;
-            if !e.is_busy {
-                if let Some(bg_active) = alive_entries.iter().find(|cand| {
-                    cand.kind == "bg"
-                        && cand.cwd == e.cwd
-                        && (cand.is_busy || cand.updated_at > e.updated_at)
-                        && (shell_pid == 0 || is_descendant_of(cand.pid, shell_pid))
-                }) {
-                    chosen = bg_active;
+            let is_viewer = !e.parked_job_id.is_empty();
+            if let Some(title) = read_tab_pane_title(home, tab_yazi_id, is_viewer) {
+                if !(e.parked_job_id.is_empty() && matches_title(e, &title)) {
+                    if let Some(bg_same_cwd) = alive_entries
+                        .iter()
+                        .find(|c| c.kind == "bg" && c.cwd == e.cwd && matches_title(c, &title))
+                    {
+                        chosen = bg_same_cwd;
+                    } else if is_viewer {
+                        if let Some(bg_any) = alive_entries
+                            .iter()
+                            .find(|c| c.kind == "bg" && matches_title(c, &title))
+                        {
+                            chosen = bg_any;
+                        }
+                    }
+                }
+            }
+            if chosen.pid == e.pid && is_viewer {
+                if let Some(bg_fb) = alive_entries
+                    .iter()
+                    .find(|c| c.kind == "bg" && c.cwd == e.cwd)
+                {
+                    chosen = bg_fb;
                 }
             }
             if !tab_yazi_id.is_empty() {
@@ -146,22 +246,38 @@ pub fn resolve_isolated_session_id(
             }
             return (chosen.session_id.clone(), chosen.pid);
         }
+
+        // If this tab's Center shell is alive locally, never fall back to `cwd` matching
+        // while `claude` is still booting, or we would steal a sibling tab's active session!
+        if is_pid_alive(shell_pid) {
+            if let Some(title) = read_tab_pane_title(home, tab_yazi_id, false) {
+                if let Some(bg) = alive_entries
+                    .iter()
+                    .find(|c| c.kind == "bg" && c.cwd == canon_target && matches_title(c, &title))
+                {
+                    return (bg.session_id.clone(), bg.pid);
+                }
+            }
+            return (String::new(), 0);
+        }
     }
 
     if !tab_yazi_id.is_empty() {
         for e in &alive_entries {
-            if let Ok(bound_yid) =
-                fs::read_to_string(cdir.join(format!("session_{}.yazi", e.session_id)))
-            {
-                if bound_yid.trim() == tab_yazi_id {
-                    return (e.session_id.clone(), e.pid);
+            if e.parked_job_id.is_empty() {
+                if let Ok(bound_yid) =
+                    fs::read_to_string(cdir.join(format!("session_{}.yazi", e.session_id)))
+                {
+                    if bound_yid.trim() == tab_yazi_id {
+                        return (e.session_id.clone(), e.pid);
+                    }
                 }
             }
         }
     }
 
     for e in &alive_entries {
-        if e.cwd == canon_target {
+        if e.cwd == canon_target && e.parked_job_id.is_empty() {
             if !tab_yazi_id.is_empty() {
                 let _ = fs::write(
                     cdir.join(format!("session_{}.yazi", e.session_id)),
@@ -339,4 +455,31 @@ pub fn resolve_live_yazi_tab(
         return (env_yid, cwd_path.to_string());
     }
     (bound_yid, cwd_path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_claude_pane_title;
+
+    #[test]
+    fn cleans_iterm_and_spinner_pane_titles_accurately() {
+        assert_eq!(
+            clean_claude_pane_title("palette-syntax-ghostty-support (claude)"),
+            Some("palette-syntax-ghostty-support".to_string())
+        );
+        assert_eq!(
+            clean_claude_pane_title("✳ high-concurrency-optimization (claude)"),
+            Some("high-concurrency-optimization".to_string())
+        );
+        assert_eq!(
+            clean_claude_pane_title("✳ agent connection test (claude)"),
+            Some("agent connection test".to_string())
+        );
+        assert_eq!(
+            clean_claude_pane_title("◐ 并发优化测试 (claude.exe)"),
+            Some("并发优化测试".to_string())
+        );
+        assert_eq!(clean_claude_pane_title("Claude Code (claude)"), None);
+        assert_eq!(clean_claude_pane_title("claude"), None);
+    }
 }

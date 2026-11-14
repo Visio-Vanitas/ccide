@@ -12,7 +12,7 @@ pub use crate::tui::context::json_scan::{
 };
 use crate::tui::context::perf::parse_iso8601_ms;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TurnRecord {
     pub model: String,
     pub in_tok: u64,
@@ -22,8 +22,12 @@ pub struct TurnRecord {
     pub out_tok: u64,
     pub first_ms: u64,
     pub dur_ms: u64,
+    pub first_blk_ms: u64,
+    pub stream_ms: u64,
     pub first_bytes: u64,
     pub total_bytes: u64,
+    pub first_vis_bytes: u64,
+    pub total_vis_bytes: u64,
     pub fast_mode: bool,
     pub us_geo: bool,
     pub web_search_reqs: u64,
@@ -188,34 +192,28 @@ pub fn update_transcript_ctx_tracker(jpath: &Path, is_sub: bool, tr: &mut Transc
                     let i_out = extract_json_u64(it_obj, "output_tokens").unwrap_or(0);
                     if it_type == "advisor_message" && (i_in + i_cc + i_cr + i_out > 0) {
                         let adv_m = extract_json_str(it_obj, "model").unwrap_or_default();
-                        tr.turns_by_id.insert(
-                            format!("{base_key}:adv:{idx_it}"),
-                            TurnRecord {
-                                model: adv_m,
-                                in_tok: i_in,
-                                cc_tok: i_cc,
-                                cc_1h_tok: i_1h,
-                                cr_tok: i_cr,
-                                out_tok: i_out,
-                                first_ms: 0,
-                                dur_ms: 0,
-                                first_bytes: 0,
-                                total_bytes: 0,
-                                fast_mode: false,
-                                us_geo,
-                                web_search_reqs: 0,
-                            },
-                        );
+                        let adv = TurnRecord {
+                            model: adv_m,
+                            in_tok: i_in,
+                            cc_tok: i_cc,
+                            cc_1h_tok: i_1h,
+                            cr_tok: i_cr,
+                            out_tok: i_out,
+                            us_geo,
+                            ..TurnRecord::default()
+                        };
+                        tr.turns_by_id
+                            .insert(format!("{base_key}:adv:{idx_it}"), adv);
                     } else if matches!(it_type.as_str(), "message" | "fallback_message") {
                         has_msg_iters = true;
-                        ctx_in = i_in;
-                        ctx_cc = i_cc;
-                        ctx_cr = i_cr;
-                        sum_msg.0 = sum_msg.0.saturating_add(i_in);
-                        sum_msg.1 = sum_msg.1.saturating_add(i_cc);
-                        sum_msg.2 = sum_msg.2.saturating_add(i_1h);
-                        sum_msg.3 = sum_msg.3.saturating_add(i_cr);
-                        sum_msg.4 = sum_msg.4.saturating_add(i_out);
+                        (ctx_in, ctx_cc, ctx_cr) = (i_in, i_cc, i_cr);
+                        sum_msg = (
+                            sum_msg.0.saturating_add(i_in),
+                            sum_msg.1.saturating_add(i_cc),
+                            sum_msg.2.saturating_add(i_1h),
+                            sum_msg.3.saturating_add(i_cr),
+                            sum_msg.4.saturating_add(i_out),
+                        );
                     }
                 }
                 if has_msg_iters {
@@ -234,46 +232,46 @@ pub fn update_transcript_ctx_tracker(jpath: &Path, is_sub: bool, tr: &mut Transc
                     }
                     tr.last_ts_s = Some(ts_s);
                 }
-                let dur_ms = match (
-                    tr.last_req_ts_ms,
-                    ts_raw.as_deref().and_then(parse_iso8601_ms),
-                ) {
+                let ts_ms = ts_raw.as_deref().and_then(parse_iso8601_ms);
+                let dur_ms = match (tr.last_req_ts_ms, ts_ms) {
                     (Some(t0), Some(t1)) if t1 > t0 => t1 - t0,
                     _ => 0,
                 };
-                let blk_b = extract_json_array_slice(msg_obj, "content")
-                    .map(|s| s.len() as u64)
-                    .unwrap_or(0);
-                let prev = tr.turns_by_id.get(&base_key);
-                let first_ms = prev
-                    .map(|p| p.first_ms)
-                    .filter(|&m| m > 0)
-                    .unwrap_or(dur_ms);
-                let first_bytes = prev
-                    .map(|p| p.first_bytes)
-                    .filter(|&b| b > 0)
-                    .unwrap_or(blk_b);
-                let total_bytes = prev
-                    .map(|p| p.total_bytes.saturating_add(blk_b))
-                    .unwrap_or(blk_b);
-                tr.turns_by_id.insert(
-                    base_key,
-                    TurnRecord {
-                        model: msg_model,
-                        in_tok: in_t,
-                        cc_tok: cc_t,
-                        cc_1h_tok: cc_1h,
-                        cr_tok: cr_t,
-                        out_tok: out_t,
-                        first_ms,
-                        dur_ms,
-                        first_bytes,
-                        total_bytes,
-                        fast_mode,
-                        us_geo,
-                        web_search_reqs: web_reqs,
-                    },
-                );
+                let (mut blk_b, mut vis_b) = (0u64, 0u64);
+                if let Some(cs) = extract_json_array_slice(msg_obj, "content") {
+                    for b in iter_array_objects(cs) {
+                        let bl = b.len() as u64;
+                        blk_b = blk_b.saturating_add(bl);
+                        if extract_json_str(b, "type").as_deref() != Some("thinking") {
+                            vis_b = vis_b.saturating_add(bl);
+                        }
+                    }
+                }
+                let cur_ms = ts_ms.unwrap_or(0);
+                let mut rec = tr.turns_by_id.remove(&base_key).unwrap_or_default();
+                if rec.first_ms == 0 {
+                    rec.first_ms = dur_ms;
+                }
+                if rec.first_blk_ms == 0 {
+                    rec.first_blk_ms = cur_ms;
+                    rec.first_bytes = blk_b;
+                    rec.first_vis_bytes = vis_b;
+                } else if cur_ms > rec.first_blk_ms {
+                    rec.stream_ms = cur_ms - rec.first_blk_ms;
+                }
+                rec.model = msg_model;
+                (
+                    rec.in_tok,
+                    rec.cc_tok,
+                    rec.cc_1h_tok,
+                    rec.cr_tok,
+                    rec.out_tok,
+                ) = (in_t, cc_t, cc_1h, cr_t, out_t);
+                rec.dur_ms = dur_ms;
+                rec.total_bytes = rec.total_bytes.saturating_add(blk_b);
+                rec.total_vis_bytes = rec.total_vis_bytes.saturating_add(vis_b);
+                (rec.fast_mode, rec.us_geo, rec.web_search_reqs) = (fast_mode, us_geo, web_reqs);
+                tr.turns_by_id.insert(base_key, rec);
             }
         }
     }

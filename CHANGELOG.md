@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-11-14
+
+### Added
+- **In-Process Claude Code `mod` Extension (`hooks/register.ts`, `hooks/hooks.json`, `scripts/cc_patch_rules.py`)**:
+  - Registered collision-safe `immediate: true` slash commands (`/palette`, `/rebalance-panes`, `/clear-agents`, `/orch`, `/ccide-doctor`) via `hooks.json` `modules` (`$.command.register` + `command.run` + `$.ui.toast`), executing locally in `< 15 ms` with zero LLM token consumption.
+  - Migrated Binary Patch #7 (`export_api_perf_metrics`) to the official `on('turn.step')` streaming hook (`pf_sid_<sessionId>.jsonl` via `$.clock.now()` + `$.fs.write`), reducing binary patches from 12 to 11 and leaving an entire Bun module untouched, plus added `< 0.2 ms` in-process `session.start` / `classic.PostModelSwitch` model state sync (`mod_model_<sessionId>.txt`).
+- **Palette-Unified Companion UI & `syntect` Syntax Highlighting (`src/tui/palette/`, `scripts/ccide_syntax_pal.py`, `assets/yazi-hscroll.lua`, `scripts/lazygit-pager.sh`, `scripts/md-render.py`)**:
+  - Split `src/tui/palette/` into `<= 300`-line modules (`mod`, `presets`, `syntax`, `artifacts`, `companions`, `template`) with harmonized 8-channel syntax & diff defaults across all 6 presets plus granular `"syntax"` overrides in `~/.config/cc-ide/palette.json`.
+  - Atomically generates `ccide.tmTheme` (15 TextMate scopes + `bat cache --build` so Yazi `syntect_theme`, `bat --theme=ccide`, and `delta --syntax-theme=ccide` share identical highlighting), full Yazi UI `theme.toml`, Lazygit `gui.theme` (`lazygit.yml`), `glow-style.json`, and `ghostty-theme.conf`, with `< 120 ms` companion pane hot-reload on theme switch.
+- **First-Class Ghostty Workspace Backend (`src/commands/workspace/{ghostty,ghostty_script}.rs`, `scripts/ccide`, `src/commands/setup/doctor.rs`)**:
+  - Added native macOS Ghostty `>= 1.3` workspace controller (`Ghostty.sdef` AppleScript `surface configuration`, `split`, pixel-accurate `30% | 54% | 16%` `resize_split`, `focus`, and `close`) preserving native Kitty Graphics Protocol (`APC _G`) Retina sprites, with automatic capability probing (`ccide-core workspace probe-ghostty`) and seamless fallback to `tmux -L ccide`.
+
+### Fixed
+- **Pure Streaming Decode `TPS` Calibration (`src/tui/context/perf.rs`, `src/tui/context/parser.rs`)**:
+  - Removed the `gen_ms < 250 ms -> dur_ms` fallback that mixed TTFT/thinking wait into short-turn decode durations, exported `firstContentMs` (`f`) alongside `ttftMs` (`t`), and upgraded `.jsonl` fallback `TPS` to self-calibrating inter-block pure streaming windows (`last_blk_ms - first_blk_ms`).
+- **FleetView (`/subtask`) Multi-Conversation Model Isolation, New-Session Refresh & iTerm2 Retina Sprites (`src/session/{mod,model,transcript}.rs`, `scripts/ccide_daemon.py`, `src/tui/logo/image.rs`)**:
+  - Added live Center-pane title monitoring (`tab_title_<yazi_id>.txt` + `parkedJobId` awareness) so tabs attached to FleetView `bg` sessions resolve the active attached conversation instead of the outer idle viewer shell, prevented `PostModelSwitch` `.jsonl` writes from reviving stale assistant turn models, and restored `OSC 1337` Retina sprite scaling on iTerm2.
+
+---
+
 ## [0.8.0] - 2026-11-14
 
 ### Added

@@ -12,8 +12,7 @@
     "hide_mode_pill": "key:\"mode\"",
     "hide_bypass_permissions_row": "PromptHintPart",
     "safe_escape_from_subagent_view": "viewing-agent",
-    "keep_viewing_agent_on_turn_update": "parentAgentId",
-    "export_api_perf_metrics": "tengu_api_success"
+    "keep_viewing_agent_on_turn_update": "parentAgentId"
   },
   "statusline_keys": [
     "added_dirs",

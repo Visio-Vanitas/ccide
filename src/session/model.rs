@@ -4,6 +4,7 @@ use std::fs;
 use std::time::SystemTime;
 
 use crate::json::extract_json_str;
+use crate::platform::ipc_path;
 use crate::tui::width::{display_width, floor_char_boundary};
 
 #[derive(Clone)]
@@ -147,15 +148,15 @@ pub fn map_alias_with_settings(raw_model: &str, settings_content: &str) -> Strin
         extract_json_str(settings_content, "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME")
             .or_else(|| extract_json_str(settings_content, "ANTHROPIC_DEFAULT_FABLE_MODEL"))
             .unwrap_or_else(|| raw_model.to_string())
-    } else if m_low.starts_with("opus") || m_low == "claude-opus" {
+    } else if m_low.contains("opus") {
         extract_json_str(settings_content, "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME")
             .or_else(|| extract_json_str(settings_content, "ANTHROPIC_DEFAULT_OPUS_MODEL"))
             .unwrap_or_else(|| raw_model.to_string())
-    } else if m_low.starts_with("sonnet") || m_low == "claude-sonnet" {
+    } else if m_low.contains("sonnet") {
         extract_json_str(settings_content, "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME")
             .or_else(|| extract_json_str(settings_content, "ANTHROPIC_DEFAULT_SONNET_MODEL"))
             .unwrap_or_else(|| raw_model.to_string())
-    } else if m_low.starts_with("haiku") || m_low == "claude-haiku" {
+    } else if m_low.contains("haiku") {
         extract_json_str(settings_content, "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME")
             .or_else(|| extract_json_str(settings_content, "ANTHROPIC_DEFAULT_HAIKU_MODEL"))
             .unwrap_or_else(|| raw_model.to_string())
@@ -166,8 +167,8 @@ pub fn map_alias_with_settings(raw_model: &str, settings_content: &str) -> Strin
 
 /// Resolves:
 /// - **Main Model** for this specific session by comparing genuine `SystemTime` (`mtime`) across
-///   `live_sess_<session_id>.json`, `<session_id>.jsonl`, and `cur_pid_<pid>.txt` independently,
-///   filtering every candidate through `is_valid_model_name()`.
+///   live runtime state (`mod_model_<sid>.txt`, `status/model_<sid>.cache`, `live_sess_<sid>.json`,
+///   `cur_pid_<pid>.txt`) and explicit `.jsonl` model switches, filtering through `is_valid_model_name()`.
 /// - **Subagent Model** strictly from `~/.claude/settings.json` (`CLAUDE_CODE_SUBAGENT_MODEL`).
 pub fn load_config_models(
     home: &str,
@@ -180,12 +181,15 @@ pub fn load_config_models(
     let content = fs::read_to_string(&settings_path).unwrap_or_default();
     let cache_dir = format!("{}/.cache/cc-ide", home);
 
-    let mut candidates: Vec<(SystemTime, String)> = Vec::with_capacity(3);
+    let mut candidates: Vec<(SystemTime, String)> = Vec::with_capacity(5);
 
     if !session_id.is_empty() {
         let spath = format!("{}/live_sess_{}.json", cache_dir, session_id);
         if let (Ok(meta), Ok(stxt)) = (fs::metadata(&spath), fs::read_to_string(&spath)) {
-            if let Some(m) = extract_json_str(&stxt, "model").filter(|m| is_valid_model_name(m)) {
+            let chosen = extract_json_str(&stxt, "model_id")
+                .filter(|m| is_valid_model_name(m))
+                .or_else(|| extract_json_str(&stxt, "model").filter(|m| is_valid_model_name(m)));
+            if let Some(m) = chosen {
                 let mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 candidates.push((mt, m));
             }
@@ -198,16 +202,23 @@ pub fn load_config_models(
                 candidates.push((mt, trimmed.to_string()));
             }
         }
+        let mod_file = ipc_path(&format!("mod_model_{session_id}.txt"));
+        if let (Ok(meta), Ok(mtxt)) = (fs::metadata(&mod_file), fs::read_to_string(&mod_file)) {
+            let trimmed = mtxt.trim();
+            if is_valid_model_name(trimmed) {
+                let mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                candidates.push((mt, trimmed.to_string()));
+            }
+        }
     }
 
     if let Some((j_mt, tm)) = transcript_cand {
         if is_valid_model_name(tm) {
-            let eff_mt = if j_mt > SystemTime::UNIX_EPOCH {
-                j_mt
-            } else {
-                lookup_jsonl_mtime(home, session_id)
-            };
-            candidates.push((eff_mt, tm.trim().to_string()));
+            // Only let `.jsonl` compete by timestamp when `j_mt` was explicitly stamped (e.g.
+            // `"Set model to ..."`), or as a baseline fallback (`UNIX_EPOCH`) when no live state
+            // file exists yet — preventing `PostModelSwitch` `hook_success` `.jsonl` writes from
+            // reviving a previous turn's assistant model.
+            candidates.push((j_mt, tm.trim().to_string()));
         }
     }
 
@@ -250,21 +261,6 @@ pub fn load_config_models(
         sub_family: classify_model_family(&resolved_sub),
         sub_model_short: short_model_label(&resolved_sub),
     }
-}
-
-fn lookup_jsonl_mtime(home: &str, session_id: &str) -> SystemTime {
-    if session_id.is_empty() {
-        return SystemTime::UNIX_EPOCH;
-    }
-    if let Ok(rd) = fs::read_dir(format!("{}/.claude/projects", home)) {
-        for entry in rd.flatten() {
-            let jp = entry.path().join(format!("{}.jsonl", session_id));
-            if let Ok(mt) = fs::metadata(&jp).and_then(|m| m.modified()) {
-                return mt;
-            }
-        }
-    }
-    SystemTime::UNIX_EPOCH
 }
 
 #[cfg(test)]
@@ -324,6 +320,21 @@ mod tests {
         );
         assert_eq!(cfg2.main_family, "grok");
         assert_eq!(cfg2.main_model_short, "grok-4");
+
+        // Full `claude-opus-5-5` / `claude-sonnet-5-5` IDs map through `ANTHROPIC_DEFAULT_*`
+        let st_aliases = r#"{"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME":"gemini-4-hydrogen","ANTHROPIC_DEFAULT_SONNET_MODEL_NAME":"deepseek-v4.1-flash","ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME":"gemini-4-hydrogen"}"#;
+        assert_eq!(
+            map_alias_with_settings("claude-opus-5-5", st_aliases),
+            "gemini-4-hydrogen"
+        );
+        assert_eq!(
+            map_alias_with_settings("claude-sonnet-5-5", st_aliases),
+            "deepseek-v4.1-flash"
+        );
+        assert_eq!(
+            map_alias_with_settings("Claude Haiku 5.5", st_aliases),
+            "gemini-4-hydrogen"
+        );
 
         let _ = fs::remove_dir_all(&tmp_home);
     }

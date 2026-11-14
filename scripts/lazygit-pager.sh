@@ -21,6 +21,9 @@ import sys
 import tempfile
 import unicodedata
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import ccide_syntax_pal  # type: ignore[import-not-found]
+
 if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
@@ -413,8 +416,11 @@ def clean_glow_line(line: str) -> str:
 
 
 def resolve_glow_style() -> str:
-    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
     candidates = []
+    pal_file = os.environ.get("CCIDE_PALETTE_FILE", "").strip()
+    if pal_file:
+        candidates.append(os.path.join(os.path.dirname(pal_file), "glow-style.json"))
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
     if xdg:
         candidates.append(os.path.join(xdg, "cc-ide", "glow-style.json"))
     candidates.append(os.path.expanduser("~/.config/cc-ide/glow-style.json"))
@@ -465,6 +471,7 @@ def run_glow(md_text: str, width: int, wrap_enabled: bool = False) -> str:
     if glow_bin:
         env = os.environ.copy()
         env["CLICOLOR_FORCE"] = "1"
+        env["COLORTERM"] = "truecolor"
         try:
             res = subprocess.run(
                 [glow_bin, "-s", resolve_glow_style(), "-w", "2000", "-"],
@@ -474,7 +481,9 @@ def run_glow(md_text: str, width: int, wrap_enabled: bool = False) -> str:
                 env=env,
             )
             if res.returncode == 0 and res.stdout.strip():
-                cleaned = [clean_glow_line(ln) for ln in res.stdout.splitlines()]
+                pal = ccide_syntax_pal.load_syntax_palette()
+                upgraded = ccide_syntax_pal.upgrade_chroma_256_sgr(res.stdout, pal)
+                cleaned = [clean_glow_line(ln) for ln in upgraded.splitlines()]
                 while cleaned and not strip_ansi(cleaned[0]).strip():
                     cleaned.pop(0)
                 while cleaned and not strip_ansi(cleaned[-1]).strip():
@@ -499,7 +508,20 @@ def run_glow(md_text: str, width: int, wrap_enabled: bool = False) -> str:
     return "\n".join(wrapped_fb) + "\n"
 
 
-def format_delta_compact_single_column(delta_out: str, width: int, wrap_enabled: bool = False) -> str:
+def format_delta_compact_single_column(
+    delta_out: str, width: int, wrap_enabled: bool = False, pal: dict | None = None
+) -> str:
+    pal = pal or ccide_syntax_pal.load_syntax_palette()
+    hx = pal["hex"]
+    border_fg = ccide_syntax_pal.hex_to_fg(hx["border"]) or "\x1b[34m"
+    gutter_bar = f"{border_fg}│\x1b[0m"
+    col_num_ctx = ccide_syntax_pal.hex_to_fg(hx["dim"]) or COL_NUM_CTX
+    col_num_del = ccide_syntax_pal.hex_to_fg(hx["diff_del_fg"]) or COL_NUM_DEL
+    col_num_add = ccide_syntax_pal.hex_to_fg(hx["diff_add_fg"]) or COL_NUM_ADD
+    bg_del = ccide_syntax_pal.hex_to_bg(hx["diff_del_bg"]) or BG_DEL_LINE
+    bg_add = ccide_syntax_pal.hex_to_bg(hx["diff_add_bg"]) or BG_ADD_LINE
+    showbreak = f"{col_num_ctx}↪\x1b[0m"
+
     raw_lines = delta_out.splitlines()
     parsed_rows: list[tuple[str, str, str] | str] = []
     max_num = 1
@@ -521,7 +543,7 @@ def format_delta_compact_single_column(delta_out: str, width: int, wrap_enabled:
     num_w = max(3, len(str(max_num)))
     gutter_w = num_w + 1  # `<num>│`
     code_w = max(12, width - gutter_w)
-    cont_gutter = (" " * (num_w - 1)) + SHOWBREAK_GLYPH + GUTTER_BAR
+    cont_gutter = (" " * (num_w - 1)) + showbreak + gutter_bar
     rule_w = max(16, width if wrap_enabled else (width - 3))
 
     out_lines: list[str] = []
@@ -529,9 +551,9 @@ def format_delta_compact_single_column(delta_out: str, width: int, wrap_enabled:
         if isinstance(item, str):
             clean_hdr = strip_ansi(item)
             if clean_hdr and all(ch == "─" for ch in clean_hdr):
-                out_lines.append(f"\x1b[34m{'─' * rule_w}\x1b[0m")
+                out_lines.append(f"{border_fg}{'─' * rule_w}\x1b[0m")
             elif wrap_enabled and visible_width(item) > width:
-                out_lines.extend(wrap_vi_ansi(item, width))
+                out_lines.extend(wrap_vi_ansi(item, width, cont_prefix=showbreak))
             else:
                 out_lines.append(re.sub(r"\x1b\[0?K", "", item))
             continue
@@ -539,20 +561,20 @@ def format_delta_compact_single_column(delta_out: str, width: int, wrap_enabled:
         nm, np, code = item
         if np and not nm:
             num_str = np
-            num_col = COL_NUM_ADD
-            line_bg = BG_ADD_LINE
+            num_col = col_num_add
+            line_bg = bg_add
         elif nm and not np:
             num_str = nm
-            num_col = COL_NUM_DEL
-            line_bg = BG_DEL_LINE
+            num_col = col_num_del
+            line_bg = bg_del
         else:
             num_str = np or nm
-            num_col = COL_NUM_CTX
+            num_col = col_num_ctx
             line_bg = ""
 
-        first_gutter = f"{num_col}{num_str:>{num_w}}\x1b[0m{GUTTER_BAR}"
+        first_gutter = f"{num_col}{num_str:>{num_w}}\x1b[0m{gutter_bar}"
         if not wrap_enabled:
-            # `delta --dark` already emits cohesive added/deleted line & word-diff backgrounds
+            # `delta` already emits cohesive added/deleted line & word-diff backgrounds
             out_lines.append(first_gutter + format_unwrapped_code_line(code, ""))
         else:
             wrapped = wrap_vi_ansi(code, code_w, cont_prefix="", cont_prefix_cols=0, line_bg=line_bg)
@@ -562,8 +584,22 @@ def format_delta_compact_single_column(delta_out: str, width: int, wrap_enabled:
     return "\n".join(out_lines) + ("\n" if out_lines else "")
 
 
-def render_fallback_unified_diff(diff_text: str, width: int, wrap_enabled: bool = False) -> str:
+def render_fallback_unified_diff(
+    diff_text: str, width: int, wrap_enabled: bool = False, pal: dict | None = None
+) -> str:
     """Zero-dependency single-column diff renderer when `delta` is unavailable."""
+    pal = pal or ccide_syntax_pal.load_syntax_palette()
+    hx = pal["hex"]
+    border_fg = ccide_syntax_pal.hex_to_fg(hx["border"]) or "\x1b[34m"
+    blue_fg = ccide_syntax_pal.hex_to_fg(hx["blue"]) or "\x1b[34m"
+    gutter_bar = f"{border_fg}│\x1b[0m"
+    col_num_ctx = ccide_syntax_pal.hex_to_fg(hx["dim"]) or COL_NUM_CTX
+    col_num_del = ccide_syntax_pal.hex_to_fg(hx["diff_del_fg"]) or COL_NUM_DEL
+    col_num_add = ccide_syntax_pal.hex_to_fg(hx["diff_add_fg"]) or COL_NUM_ADD
+    bg_del = ccide_syntax_pal.hex_to_bg(hx["diff_del_bg"]) or BG_DEL_LINE
+    bg_add = ccide_syntax_pal.hex_to_bg(hx["diff_add_bg"]) or BG_ADD_LINE
+    showbreak = f"{col_num_ctx}↪\x1b[0m"
+
     lines = diff_text.splitlines()
     old_ln = 0
     new_ln = 0
@@ -578,23 +614,23 @@ def render_fallback_unified_diff(diff_text: str, width: int, wrap_enabled: bool 
             old_ln = int(mh.group(1))
             new_ln = int(mh.group(2))
             max_num = max(max_num, old_ln, new_ln)
-            structured.append(f"\x1b[34m── hunk -{old_ln} +{new_ln}{mh.group(3)} ──\x1b[0m")
+            structured.append(f"{blue_fg}── hunk -{old_ln} +{new_ln}{mh.group(3)} ──\x1b[0m")
             continue
         if plain.startswith(("diff --git ", "index ", "--- ", "+++ ")):
             if plain.startswith("+++ b/"):
-                structured.append(f"\x1b[1;34mΔ {plain[6:]}\x1b[0m")
-                structured.append(f"\x1b[34m{'─' * rule_w}\x1b[0m")
+                structured.append(f"\x1b[1m{blue_fg}Δ {plain[6:]}\x1b[0m")
+                structured.append(f"{border_fg}{'─' * rule_w}\x1b[0m")
             continue
         if old_ln == 0 and new_ln == 0:
             structured.append(ln)
             continue
 
         if plain.startswith("+"):
-            structured.append(("", str(new_ln), f"\x1b[38;5;114m{plain[1:]}\x1b[0m"))
+            structured.append(("", str(new_ln), ccide_syntax_pal.highlight_code_fallback(plain[1:], pal)))
             max_num = max(max_num, new_ln)
             new_ln += 1
         elif plain.startswith("-"):
-            structured.append((str(old_ln), "", f"\x1b[38;5;167m{plain[1:]}\x1b[0m"))
+            structured.append((str(old_ln), "", ccide_syntax_pal.highlight_code_fallback(plain[1:], pal)))
             max_num = max(max_num, old_ln)
             old_ln += 1
         elif plain.startswith(" "):
@@ -607,26 +643,25 @@ def render_fallback_unified_diff(diff_text: str, width: int, wrap_enabled: bool 
 
     num_w = max(3, len(str(max_num)))
     code_w = max(12, width - (num_w + 1))
-    cont_gutter = (" " * (num_w - 1)) + SHOWBREAK_GLYPH + GUTTER_BAR
+    cont_gutter = (" " * (num_w - 1)) + showbreak + gutter_bar
     out: list[str] = []
 
     for item in structured:
         if isinstance(item, str):
             if wrap_enabled:
-                out.extend(wrap_vi_ansi(item, width))
+                out.extend(wrap_vi_ansi(item, width, cont_prefix=showbreak))
             else:
                 out.append(item.expandtabs(4))
             continue
         nm, np, code = item
         if np and not nm:
-            gutter = f"{COL_NUM_ADD}{np:>{num_w}}\x1b[0m{GUTTER_BAR}"
-            bg = BG_ADD_LINE
+            gutter = f"{col_num_add}{np:>{num_w}}\x1b[0m{gutter_bar}"
+            bg = bg_add
         elif nm and not np:
-            gutter = f"{COL_NUM_DEL}{nm:>{num_w}}\x1b[0m{GUTTER_BAR}"
-            bg = ""
-            bg = BG_DEL_LINE
+            gutter = f"{col_num_del}{nm:>{num_w}}\x1b[0m{gutter_bar}"
+            bg = bg_del
         else:
-            gutter = f"{COL_NUM_CTX}{(np or nm):>{num_w}}\x1b[0m{GUTTER_BAR}"
+            gutter = f"{col_num_ctx}{(np or nm):>{num_w}}\x1b[0m{gutter_bar}"
             bg = ""
         if not wrap_enabled:
             out.append(gutter + format_unwrapped_code_line(code, bg))
@@ -638,6 +673,9 @@ def render_fallback_unified_diff(diff_text: str, width: int, wrap_enabled: bool 
 
 
 def render_diff(diff_text: str, width: int, wrap_enabled: bool = False) -> str:
+    pal = ccide_syntax_pal.load_syntax_palette()
+    hex_map = pal["hex"]
+    bat_theme = pal.get("bat_theme", "base16-256")
     delta_bin = find_bin("delta")
     if delta_bin:
         try:
@@ -645,6 +683,11 @@ def render_diff(diff_text: str, width: int, wrap_enabled: bool = False) -> str:
                 [
                     delta_bin,
                     "--dark",
+                    f"--syntax-theme={bat_theme}",
+                    f"--plus-style=syntax {hex_map['diff_add_bg']}",
+                    f"--plus-emph-style=syntax {hex_map['diff_add_emph_bg']}",
+                    f"--minus-style=syntax {hex_map['diff_del_bg']}",
+                    f"--minus-emph-style=syntax {hex_map['diff_del_emph_bg']}",
                     "--paging=never",
                     "--line-numbers",
                     "--line-numbers-left-format=\x01{nm}\x02",
@@ -658,10 +701,15 @@ def render_diff(diff_text: str, width: int, wrap_enabled: bool = False) -> str:
                 capture_output=True,
             )
             if res.returncode == 0 and res.stdout:
-                return format_delta_compact_single_column(res.stdout, width, wrap_enabled)
+                remapped = (
+                    res.stdout
+                    if bat_theme == "ccide"
+                    else ccide_syntax_pal.remap_base16_sgr(res.stdout, pal)
+                )
+                return format_delta_compact_single_column(remapped, width, wrap_enabled, pal)
         except Exception:
             pass
-    return render_fallback_unified_diff(diff_text, width, wrap_enabled)
+    return render_fallback_unified_diff(diff_text, width, wrap_enabled, pal)
 
 
 def main(argv: list[str] | None = None) -> int:

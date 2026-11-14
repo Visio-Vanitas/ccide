@@ -8,43 +8,70 @@ use crate::tui::palette::Palette;
 use crate::tui::width::trunc_to_width;
 use crate::tui::{BOLD, RESET};
 
+fn trow(s: &str, w: usize, bg: &str, tag: Option<(u8, usize)>) -> BoxRow {
+    BoxRow {
+        text: trunc_to_width(s, w),
+        bg: bg.to_string(),
+        tag,
+    }
+}
+
+fn panel(
+    title: &str,
+    badge: String,
+    accent: String,
+    rows: Vec<BoxRow>,
+    fixed_height: Option<usize>,
+    weight: f64,
+    focused: bool,
+) -> PanelSpec {
+    PanelSpec {
+        title: title.to_string(),
+        badge,
+        accent,
+        rows,
+        fixed_height,
+        weight,
+        raw_interior: false,
+        focused,
+    }
+}
+
 fn render_statusline_preview(pal: &Palette, max_w: usize) -> String {
     let sl = &pal.statusline;
-    let (s0_bg, s0_fg, s0_sep) = (
-        sl.bypass_bg.bg_ansi(),
-        sl.bypass_fg.fg_ansi(),
-        sl.bypass_bg.fg_ansi(),
-    );
-    let (s1_bg, s1_fg, s1_sep) = (
-        sl.model_bg.bg_ansi(),
-        sl.model_fg.fg_ansi(),
-        sl.model_bg.fg_ansi(),
-    );
-    let (s2_bg, s2_fg, s2_sep) = (
-        sl.ctx_ok_bg.bg_ansi(),
-        sl.ctx_ok_fg.fg_ansi(),
-        sl.ctx_ok_bg.fg_ansi(),
-    );
-    let (s3_bg, s3_fg, s3_sep) = (
-        sl.git_bg.bg_ansi(),
-        sl.git_fg.fg_ansi(),
-        sl.git_bg.fg_ansi(),
-    );
-    let (s4_bg, s4_fg, s4_sep) = (
-        sl.sys_bg.bg_ansi(),
-        sl.sys_fg.fg_ansi(),
-        sl.sys_bg.fg_ansi(),
-    );
-
-    if max_w >= 64 {
-        format!(
-            "   {s0_bg}{s0_fg} {BOLD}bypass \x1b[22m{s1_bg}{s0_sep}\u{e0b0}{s1_bg}{s1_fg} {BOLD}claude-fable-5-1 \x1b[22m{s2_bg}{s1_sep}\u{e0b0}{s2_bg}{s2_fg} CTX 238k/837k (28%) {s3_bg}{s2_sep}\u{e0b0}{s3_bg}{s3_fg} \u{e0a0} dev {s4_bg}{s3_sep}\u{e0b0}{s4_bg}{s4_fg} CPU 15% {RESET}{s4_sep}\u{e0b0}{RESET}"
-        )
+    let seg = |bg: crate::tui::palette::ColorSpec, fg: crate::tui::palette::ColorSpec| {
+        (bg.bg_ansi(), fg.fg_ansi(), bg.fg_ansi())
+    };
+    let (s0b, s0f, s0s) = seg(sl.bypass_bg, sl.bypass_fg);
+    let (s1b, s1f, s1s) = seg(sl.model_bg, sl.model_fg);
+    let (s2b, s2f, s2s) = seg(sl.ctx_ok_bg, sl.ctx_ok_fg);
+    let (s3b, s3f, s3s) = seg(sl.git_bg, sl.git_fg);
+    let (s4b, s4f, s4s) = seg(sl.sys_bg, sl.sys_fg);
+    let line = if max_w >= 64 {
+        format!("   {s0b}{s0f} {BOLD}bypass \x1b[22m{s1b}{s0s}\u{e0b0}{s1b}{s1f} {BOLD}claude-fable-5-1 \x1b[22m{s2b}{s1s}\u{e0b0}{s2b}{s2f} CTX 238k/837k (28%) {s3b}{s2s}\u{e0b0}{s3b}{s3f} \u{e0a0} dev {s4b}{s3s}\u{e0b0}{s4b}{s4f} CPU 15% {RESET}{s4s}\u{e0b0}{RESET}")
     } else {
-        format!(
-            "   {s0_bg}{s0_fg} {BOLD}bypass \x1b[22m{s1_bg}{s0_sep}\u{e0b0}{s1_bg}{s1_fg} {BOLD}fable \x1b[22m{s2_bg}{s1_sep}\u{e0b0}{s2_bg}{s2_fg} CTX 28% {RESET}{s2_sep}\u{e0b0}{RESET}"
-        )
-    }
+        format!("   {s0b}{s0f} {BOLD}bypass \x1b[22m{s1b}{s0s}\u{e0b0}{s1b}{s1f} {BOLD}fable \x1b[22m{s2b}{s1s}\u{e0b0}{s2b}{s2f} CTX 28% {RESET}{s2s}\u{e0b0}{RESET}")
+    };
+    trunc_to_width(&line, max_w)
+}
+
+fn render_syntax_preview(pal: &Palette, max_w: usize) -> String {
+    let s = &pal.syntax;
+    let (kw, fn_c, ty, op) = (
+        s.keyword.fg_ansi(),
+        s.function.fg_ansi(),
+        s.type_name.fg_ansi(),
+        s.operator.fg_ansi(),
+    );
+    let (st, nm, cm, vr) = (
+        s.string.fg_ansi(),
+        s.number.fg_ansi(),
+        s.comment.fg_ansi(),
+        s.variable.fg_ansi(),
+    );
+    let bg = s.code_bg.bg_ansi();
+    let line = format!("   {bg}{kw}pub fn{RESET}{bg} {fn_c}route{RESET}{bg}({vr}cfg{RESET}{bg}{op}:{RESET}{bg} {op}&{RESET}{bg}{ty}Config{RESET}{bg}) {op}->{RESET}{bg} {ty}usize{RESET}{bg} {{ {st}\"ok\"{RESET}{bg}; {nm}42{RESET}{bg} }} {cm}// syntax{RESET}");
+    trunc_to_width(&line, max_w)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -58,7 +85,7 @@ pub fn build_setup_panels(
     finished_msg: Option<&str>,
     pal: &Palette,
 ) -> Vec<PanelSpec> {
-    let content_w = cols.saturating_sub(4).max(20);
+    let w = cols.saturating_sub(4).max(20);
     let (white, dim, cyan, green, amber, mint, lavender) = (
         &pal.text,
         &pal.dim,
@@ -68,39 +95,14 @@ pub fn build_setup_panels(
         &pal.mint,
         &pal.lavender,
     );
-
-    let top_spec = PanelSpec {
-        title: "CC-IDE v0.8.0 · SETUP & DOCTOR".to_string(),
-        badge: report.os_arch.clone(),
-        accent: cyan.clone(),
-        rows: vec![
-            BoxRow {
-                text: trunc_to_width(
-                    &format!(
-                        " {mint}◆{RESET} {BOLD}{white}3-Column Claude Code Tiling IDE{RESET} {dim}· {}{RESET}",
-                        report.backend_tier
-                    ),
-                    content_w,
-                ),
-                bg: String::new(),
-                tag: None,
-            },
-            BoxRow {
-                text: trunc_to_width(
-                    &format!(
-                        " {dim}[{amber}↑↓{dim}] Select  [{amber}Space/←→{dim}] Toggle  [{amber}1-6{dim}] Theme  [{amber}⏎/i{dim}] Install  [{amber}u{dim}] Uninstall  [{amber}q{dim}] Quit{RESET}"
-                    ),
-                    content_w,
-                ),
-                bg: String::new(),
-                tag: None,
-            },
+    let top_spec = panel(
+        "CC-IDE v0.9.0 · SETUP & DOCTOR", report.os_arch.clone(), cyan.clone(),
+        vec![
+            trow(&format!(" {mint}◆{RESET} {BOLD}{white}3-Column Claude Code Tiling IDE{RESET} {dim}· {}{RESET}", report.backend_tier), w, "", None),
+            trow(&format!(" {dim}[{amber}↑↓{dim}] Select  [{amber}Space/←→{dim}] Toggle  [{amber}1-6{dim}] Theme  [{amber}⏎/i{dim}] Install  [{amber}u{dim}] Uninstall  [{amber}q{dim}] Quit{RESET}"), w, "", None),
         ],
-        fixed_height: Some(4),
-        weight: 0.2,
-        raw_interior: false,
-        focused: false,
-    };
+        Some(4), 0.2, false,
+    );
 
     let mut doc_rows = Vec::with_capacity(report.items.len() + 1);
     for it in &report.items {
@@ -109,37 +111,32 @@ pub fn build_setup_panels(
             CheckStatus::Warn => ("!", amber),
             CheckStatus::Info => ("●", cyan),
         };
-        doc_rows.push(BoxRow {
-            text: trunc_to_width(
-                &format!(
-                    " {col}{ic}{RESET} {BOLD}{white}{:<13}{RESET} {dim}{}{RESET}",
-                    it.label, it.detail
-                ),
-                content_w,
+        doc_rows.push(trow(
+            &format!(
+                " {col}{ic}{RESET} {BOLD}{white}{:<13}{RESET} {dim}{}{RESET}",
+                it.label, it.detail
             ),
-            bg: String::new(),
-            tag: None,
-        });
+            w,
+            "",
+            None,
+        ));
     }
-    doc_rows.push(BoxRow {
-        text: trunc_to_width(
-            &format!(" {amber}↳ {}{RESET}", report.missing_hint),
-            content_w,
-        ),
-        bg: String::new(),
-        tag: None,
-    });
+    doc_rows.push(trow(
+        &format!(" {amber}↳ {}{RESET}", report.missing_hint),
+        w,
+        "",
+        None,
+    ));
     let doc_h = (doc_rows.len() + 2).min(rows_total.saturating_sub(15).max(6));
-    let doc_spec = PanelSpec {
-        title: "ENVIRONMENT DOCTOR".to_string(),
-        badge: "[r] re-scan".to_string(),
-        accent: mint.clone(),
-        rows: doc_rows,
-        fixed_height: Some(doc_h),
-        weight: 0.35,
-        raw_interior: false,
-        focused: false,
-    };
+    let doc_spec = panel(
+        "ENVIRONMENT DOCTOR",
+        "[r] re-scan".to_string(),
+        mint.clone(),
+        doc_rows,
+        Some(doc_h),
+        0.35,
+        false,
+    );
 
     if !logs.is_empty() {
         let avail_log_h = rows_total.saturating_sub(4 + doc_h + 2).max(4);
@@ -147,36 +144,34 @@ pub fn build_setup_panels(
         let mut lrows: Vec<BoxRow> = logs
             .iter()
             .skip(skip_n)
-            .map(|ln| BoxRow {
-                text: trunc_to_width(&format!(" {white}{ln}{RESET}"), content_w),
-                bg: String::new(),
-                tag: None,
-            })
+            .map(|ln| trow(&format!(" {white}{ln}{RESET}"), w, "", None))
             .collect();
         if let Some(done_txt) = finished_msg {
-            lrows.push(BoxRow {
-                text: trunc_to_width(&format!(" {green}{BOLD}{done_txt}{RESET}"), content_w),
-                bg: pal.active_view_bg.clone(),
-                tag: Some((TAG_APPLY_BTN, 0)),
-            });
+            lrows.push(trow(
+                &format!(" {green}{BOLD}{done_txt}{RESET}"),
+                w,
+                &pal.active_view_bg,
+                Some((TAG_APPLY_BTN, 0)),
+            ));
         }
+        let badge = if finished_msg.is_some() {
+            "done · press ⏎ or q"
+        } else {
+            "running..."
+        }
+        .to_string();
         return vec![
             top_spec,
             doc_spec,
-            PanelSpec {
-                title: "INSTALLATION PROGRESS".to_string(),
-                badge: if finished_msg.is_some() {
-                    "done · press ⏎ or q".to_string()
-                } else {
-                    "running...".to_string()
-                },
-                accent: green.clone(),
-                rows: lrows,
-                fixed_height: None,
-                weight: 1.0,
-                raw_interior: false,
-                focused: true,
-            },
+            panel(
+                "INSTALLATION PROGRESS",
+                badge,
+                green.clone(),
+                lrows,
+                None,
+                1.0,
+                true,
+            ),
         ];
     }
 
@@ -187,6 +182,11 @@ pub fn build_setup_panels(
     } else {
         "Unwrapped + 120Hz HScroll (Recommended)"
     };
+    let cost_desc = match opts.cost_lines {
+        1 => "1 Line · Compact (USD + % Only)",
+        2 => "2 Lines · Brief (USD + Tokens)",
+        _ => "3 Lines · Detailed (USD + Tokens + TPS/TTFT)",
+    };
     let mk_ptr = |idx: usize| -> (&str, String) {
         if cursor == idx {
             (&pal.cursor_bg, format!("{amber}❯{RESET}{}", pal.cursor_bg))
@@ -195,66 +195,33 @@ pub fn build_setup_panels(
         }
     };
 
-    let mut opt_rows = Vec::with_capacity(11);
+    let mut opt_rows = Vec::with_capacity(12);
     let (bg0, ptr0) = mk_ptr(0);
+    opt_rows.push(trow(&format!(" {ptr0} {lavender}Theme Preset:{RESET}{bg0}   {amber}◀{RESET}{bg0} {BOLD}{white}{preset_name}{RESET}{bg0} {dim}({}/{}){RESET}{bg0} {amber}▶{RESET}", opts.preset_idx + 1, PRESETS.len()), w, bg0, Some((TAG_SETUP_ROW, 0))));
     opt_rows.push(BoxRow {
-        text: trunc_to_width(
-            &format!(
-                " {ptr0} {lavender}Theme Preset:{RESET}{bg0}   {amber}◀{RESET}{bg0} {BOLD}{white}{preset_name}{RESET}{bg0} {dim}({}/{}){RESET}{bg0} {amber}▶{RESET}",
-                opts.preset_idx + 1,
-                PRESETS.len()
-            ),
-            content_w,
-        ),
-        bg: bg0.to_string(),
+        text: render_statusline_preview(pal, w),
+        bg: String::new(),
         tag: Some((TAG_SETUP_ROW, 0)),
     });
     opt_rows.push(BoxRow {
-        text: render_statusline_preview(pal, cols.saturating_sub(4)),
+        text: render_syntax_preview(pal, w),
         bg: String::new(),
         tag: Some((TAG_SETUP_ROW, 0)),
     });
 
-    let (bg1, ptr1) = mk_ptr(1);
-    opt_rows.push(BoxRow {
-        text: trunc_to_width(
-            &format!(
-                " {ptr1} {mint}Sprite Mode:{RESET}{bg1}    {amber}◀{RESET}{bg1} {BOLD}{white}{sprite_name}{RESET}{bg1} {dim}(PNG/JPG vs .ansi){RESET}{bg1} {amber}▶{RESET}"
-            ),
-            content_w,
+    for (idx, lbl, col, val) in [
+        (
+            1usize,
+            "Sprite Mode: ",
+            mint,
+            format!("{sprite_name} {dim}(PNG/JPG vs .ansi){RESET}"),
         ),
-        bg: bg1.to_string(),
-        tag: Some((TAG_SETUP_ROW, 1)),
-    });
-
-    let (bg2, ptr2) = mk_ptr(2);
-    opt_rows.push(BoxRow {
-        text: trunc_to_width(
-            &format!(
-                " {ptr2} {cyan}Viewer Wrap:{RESET}{bg2}    {amber}◀{RESET}{bg2} {BOLD}{white}{wrap_desc}{RESET}{bg2} {amber}▶{RESET}"
-            ),
-            content_w,
-        ),
-        bg: bg2.to_string(),
-        tag: Some((TAG_SETUP_ROW, 2)),
-    });
-
-    let cost_desc = match opts.cost_lines {
-        1 => "1 Line · Compact (USD + % Only)",
-        2 => "2 Lines · Brief (USD + Tokens)",
-        _ => "3 Lines · Detailed (USD + Tokens + TPS/TTFT)",
-    };
-    let (bg3, ptr3) = mk_ptr(3);
-    opt_rows.push(BoxRow {
-        text: trunc_to_width(
-            &format!(
-                " {ptr3} {amber}COST Density:{RESET}{bg3}   {amber}◀{RESET}{bg3} {BOLD}{white}{cost_desc}{RESET}{bg3} {amber}▶{RESET}"
-            ),
-            content_w,
-        ),
-        bg: bg3.to_string(),
-        tag: Some((TAG_SETUP_ROW, 3)),
-    });
+        (2usize, "Viewer Wrap: ", cyan, wrap_desc.to_string()),
+        (3usize, "COST Density:", amber, cost_desc.to_string()),
+    ] {
+        let (bg, ptr) = mk_ptr(idx);
+        opt_rows.push(trow(&format!(" {ptr} {col}{lbl}{RESET}{bg}   {amber}◀{RESET}{bg} {BOLD}{white}{val}{RESET}{bg} {amber}▶{RESET}"), w, bg, Some((TAG_SETUP_ROW, idx))));
+    }
 
     for (idx, enabled, title, sub) in [
         (
@@ -288,14 +255,12 @@ pub fn build_setup_panels(
         } else {
             format!("{dim}[ ]{RESET}{bg}")
         };
-        opt_rows.push(BoxRow {
-            text: trunc_to_width(
-                &format!(" {ptr} {box_ic} {BOLD}{white}{title}{RESET}{bg} {dim}— {sub}{RESET}"),
-                content_w,
-            ),
-            bg: bg.to_string(),
-            tag: Some((TAG_SETUP_ROW, idx)),
-        });
+        opt_rows.push(trow(
+            &format!(" {ptr} {box_ic} {BOLD}{white}{title}{RESET}{bg} {dim}— {sub}{RESET}"),
+            w,
+            bg,
+            Some((TAG_SETUP_ROW, idx)),
+        ));
     }
 
     let is_apply_cur = cursor == 8;
@@ -309,29 +274,19 @@ pub fn build_setup_panels(
     } else {
         " ".to_string()
     };
-    opt_rows.push(BoxRow {
-        text: trunc_to_width(
-            &format!(
-                " {btn_ptr} {green}{BOLD}[ ▶ Apply Configuration, Install & Hot-Reload Workspace (⏎ / i) ]{RESET}{btn_bg}"
-            ),
-            content_w,
-        ),
-        bg: btn_bg.to_string(),
-        tag: Some((TAG_APPLY_BTN, 8)),
-    });
+    opt_rows.push(trow(&format!(" {btn_ptr} {green}{BOLD}[ ▶ Apply Configuration, Install & Hot-Reload Workspace (⏎ / i) ]{RESET}{btn_bg}"), w, btn_bg, Some((TAG_APPLY_BTN, 8))));
 
     vec![
         top_spec,
         doc_spec,
-        PanelSpec {
-            title: "CONFIGURATION & LIVE THEME STUDIO".to_string(),
-            badge: format!("preset: {preset_name}"),
-            accent: lavender.clone(),
-            rows: opt_rows,
-            fixed_height: None,
-            weight: 1.0,
-            raw_interior: false,
-            focused: true,
-        },
+        panel(
+            "CONFIGURATION & LIVE THEME STUDIO",
+            format!("preset: {preset_name}"),
+            lavender.clone(),
+            opt_rows,
+            None,
+            1.0,
+            true,
+        ),
     ]
 }

@@ -1,7 +1,7 @@
 # `cc-ide` (`ccide-core`) — Architecture & Agent Maintenance Guide
 
 ## 1. Overview
-`cc-ide` (v0.8.0) is a high-performance, cross-platform native engine for the 3-column Claude Code tiling workspace across **macOS**, **Linux**, and **Windows (`pwsh` / `cmd.exe`)**. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses zero external Cargo crates and no nightly features, and builds out of the box on LTS Linux distributions, macOS, and Windows MSVC:
+`cc-ide` (v0.9.0) is a high-performance, cross-platform native engine for the 3-column Claude Code tiling workspace across **macOS**, **Linux**, and **Windows (`pwsh` / `cmd.exe`)**. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses zero external Cargo crates and no nightly features, and builds out of the box on LTS Linux distributions, macOS, and Windows MSVC:
 - **Left Column (30%)**: `Yazi` File Tree (top, synced live on Claude Code `Read`/`Edit`/`Write`/`MultiEdit`/`NotebookEdit`/`LSP`/`Grep` ops — automatically revealing the file AND scrolling/highlighting the exact modified or inspected line range in preview via `assets/yazi-hscroll.lua` + `src/session/focus.rs`) + `Lazygit` Diff (bottom, unwrapped by default via `~/.config/cc-ide/viewer.json` with compact single-column `109│` line numbers via `scripts/lazygit-pager.sh`, full-stream zero-telemetry hash-free commit logs via `scripts/lazygit-log.py`, optional `vi`-style `↪` wrapping when `"wrap": true`, and hover-targeted content-bounds-clamped Magic Mouse scrolling via `scripts/pty-hscroll-bridge.py`), locked to zero terminal scrollback (`scrollback_lines = 0`).
 - **Center Column (54%)**: `Claude Code` Main Workspace (with native `viewing-agent` switching, untouched native `/btw` overlay, and clean bottom chrome).
 - **Right Column (16%)**: `ccide-core sidebar` 3-Tier Interactive TUI:
@@ -9,7 +9,7 @@
   2. **Middle Panel (`SUBAGENTS`)**: Permanent top `● [main]` item + session-isolated subagents. Clicking any item drives Claude Code's native `viewing-agent` state machine and jumps `Yazi` to the selected session's file and line range.
   3. **Bottom Region (`M4 PRO` / host CPU `⇄` Split `CONTEXT` + Per-Model `COST`)**: Multi-row (`8 × height` sub-pixel) oscilloscope curves for `CPU`, `GPU`, `MEM`, and `NET`, toggling (`t`/`Tab`, right-click, or clicking `[CTX xx%]`/`[HW]`) into a dual-box view: upper **`CONTEXT`** (`SYS+MD`, `TOOLS`, `TOOL IO`, `THINK`, `CHAT`, `FREE` headroom up to the exact auto-compact threshold, and cumulative/turn `CACHE` hit ratio) + lower **`COST`** (`tokscale`-aligned per-model USD spend, prompt-cache savings, burn rate, and token breakdown across Main + Subagents).
 
-The workspace is **adaptive**: the same binary selects one of three split backends depending on the host terminal and transport — local iTerm2 daemon (Tier 1), SSH + client iTerm2 native split (Tier 2), or a universal `tmux` engine (Tier 3). See §4.
+The workspace is **adaptive**: the same binary selects the optimal split backend depending on the host terminal and transport — local iTerm2 daemon, native macOS Ghostty (`Ghostty.sdef` 1.3+), WezTerm (`wezterm cli`), Windows Terminal (`wt.exe`), SSH + client iTerm2 native split (`OSC 1337`), or a universal `tmux` engine (`tmux -L ccide`). See §4.
 
 ---
 
@@ -24,7 +24,7 @@ ccide/
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── ci.yml            # CI Gate: 1.70.0 MSRV, fmt/clippy, 6-target matrix, scripts & patcher tests
-│       ├── release.yml       # Release: gated preview RC (`v0.8.0-rc.<n>`) + immutable stable (`v0.8.0`)
+│       ├── release.yml       # Release: gated preview RC (`v0.9.0-rc.<n>`) + immutable stable (`v0.9.0`)
 │       ├── cc-compat-watch.yml # Daily 3-OS (`darwin`/`linux`/`win32`) npm Claude Code compatibility probe
 │       └── issue-pr-lifecycle.yml # Auto-triage labels, PR stage bridge & multi-hop `main` issue closer
 ├── Cargo.toml                # Rust Edition 2021, MSRV 1.70, fat LTO, stripped release profile
@@ -32,9 +32,10 @@ ccide/
 ├── install.ps1 / install.cmd # Native PowerShell & cmd.exe Windows Installer, Doctor & Uninstaller
 ├── .claude-plugin/
 │   ├── marketplace.json      # Official Claude Code Marketplace manifest ("cc-ide")
-│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.8.0)
+│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.9.0)
 ├── hooks/
-│   └── hooks.json            # Official Plugin Hooks (PreToolUse, PostToolUse, SubagentStart/Stop, PostModelSwitch, SessionStart)
+│   ├── hooks.json            # Official Plugin Hooks (modules: ./register.ts + Pre/PostToolUse, Subagent*, PostModelSwitch, SessionStart)
+│   └── register.ts           # In-process mod: immediate slash commands (/palette, /rebalance-panes, /clear-agents, /orch, /ccide-doctor), turn.step TPS/TTFT & model sync
 ├── docs/
 │   └── CLAUDE_CODE_INTERFACES.md # Verified Claude Code plugin, hook, subagent & Workflow SDK reference
 ├── skills/
@@ -48,6 +49,7 @@ ccide/
 │   ├── ccide.ps1 / ccide.cmd # Native Windows PowerShell & cmd.exe workspace launchers
 │   ├── ccide_workflow_runner.py # Native Workflow CLI runner (`ccide workflow list|run`)
 │   ├── ccide_workflow_server.py # Local HTTP/SSE Workflow API server (`ccide workflow serve`)
+│   ├── ccide_syntax_pal.py   # Shared palette-unified syntax color & base16-256 SGR remapper
 │   ├── ensure-ccide-core.mjs # Cross-OS Node hook & prebuilt release binary resolver (macOS/Linux/Windows)
 │   ├── ensure-ccide-core.sh  # POSIX standalone prebuilt GitHub Release binary resolver
 │   ├── cc-maint.py           # 3-OS Claude Code symbol & schema maintenance workbench (`ccide --check-cc`)
@@ -91,7 +93,7 @@ ccide/
     │   ├── context/          # Compact `CONTEXT` + scrollable `3/2/1`-line `COST` (`mod`, `analyzer`, `bar`, `cost_panel`, `json_scan`, `parser`, `perf`, `render`)
     │   ├── pricing/          # `tokscale`-aligned progressive multi-vendor pricing (`mod`, `lookup`)
     │   ├── logo/             # Inline Kitty `APC _G` / `OSC 1337` PNG & `.ansi` sprite renderer (`mod`, `image`)
-    │   ├── palette.rs        # Customizable JSONC color palette & 6 built-in theme presets
+    │   ├── palette/          # Customizable JSONC palette, 6 presets & companion syntax sync (`mod`, `presets`, `syntax`, `template`)
     │   ├── width.rs          # ANSI- & BMP-wide-symbol-aware CJK display column width & safe truncation
     │   └── grid.rs           # TermGeom, BoxRow, PanelSpec, border focus, full-bleed row bg & row-level diffing
     ├── telemetry/            # Cross-OS 500ms shared snapshot (`mod`, `macos`, `linux`, `windows`, `chart`)
@@ -109,7 +111,7 @@ ccide/
         ├── setup/            # Interactive TUI installer, theme studio & `doctor [--json]` (`mod`, `doctor`, `doctor_render`, `input`, `runner`, `ui`)
         ├── sidebar/          # Event-driven right sidebar (`mod`, `bottom_panel`, `dispatch`, `hit_mask`, `input`, `ipc`, `mouse_actions`, `orch_panel`, `subagents_panel`)
         ├── statusline/       # Powerline statusline & exact auto-compact budget (`mod`, `compact`)
-        ├── workspace/        # Adaptive workspace backends (`mod`, `actions`, `open`, `iterm`, `tmux`, `wezterm`, `wt`)
+        ├── workspace/        # Adaptive workspace backends (`mod`, `actions`, `open`, `iterm`, `ghostty`, `tmux`, `wezterm`, `wt`)
         └── yazi_hook.rs      # Official Plugin Hook handler (`PostToolUse`, `Subagent*`, `PostModelSwitch`, `SessionStart`)
 ```
 
@@ -261,7 +263,7 @@ ccide doctor [--json]
 Installer side effects worth knowing:
 - **Stage 3a (`scripts/iterm-pyenv.py`)**: locates `iTerm.app` across `/Applications`, `~/Applications`, and `mdfind`; respects `PIP_INDEX_URL` / `pip config list` or concurrently probes `pypi.org`, TUNA, Aliyun, and USTC (cached 24h in `~/.cache/cc-ide/pypi_mirror.json`); provisions an isolated PEP 668-safe venv at `~/.local/share/cc-ide/pyenv` with `iterm2` installed and records `~/.cache/cc-ide/python_bin` (falling back cleanly to Tier 3 `tmux` with copy-pasteable commands when offline).
 - **Stage 3b (`scripts/iterm-preferences.py`)**: backs up `com.googlecode.iterm2.plist` + original key snapshot under `~/.config/cc-ide/backups/iterm2/`, idempotently applies `ShowPaneTitles=false`, `ShowPaneTitlesEvenIfOnlyOnePane=false`, `PerPaneBackgroundImage=false`, `DimInactiveSplitPanes=false`, and `EnableAPIServer=true` (leaving `SplitPaneDimmingAmount` untouched and clearing per-pane wallpapers via `LocalWriteOnlyProfile`), and supports exact rollback via `./install.sh --restore-iterm-preferences`.
-- **Scripts, SSH & Plugin Cache**: symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/` (and `ccide.cmd` + `ccide.ps1` on Windows via `install.ps1` / `install.cmd`), (re)writes `~/.ssh/ccide_config` + `Include` in `~/.ssh/config`, (re)starts `ccide_daemon.py`, and packages `cc-ide` into `~/.claude/plugins/cache/cc-ide/cc-ide/0.8.0/` (fetching prebuilt release binaries via `scripts/ensure-ccide-core.mjs` / `ensure-ccide-core.sh` when `cargo` is absent).
+- **Scripts, SSH & Plugin Cache**: symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/` (and `ccide.cmd` + `ccide.ps1` on Windows via `install.ps1` / `install.cmd`), (re)writes `~/.ssh/ccide_config` + `Include` in `~/.ssh/config`, (re)starts `ccide_daemon.py`, and packages `cc-ide` into `~/.claude/plugins/cache/cc-ide/cc-ide/0.9.0/` (fetching prebuilt release binaries via `scripts/ensure-ccide-core.mjs` / `ensure-ccide-core.sh` when `cargo` is absent).
 
 ---
 
@@ -273,8 +275,8 @@ Installer side effects worth knowing:
 
 ### 7.2 Promotion Flow (enforced by `.github/workflows/ci.yml`)
 1. **`dev`** — feature work; pushes and PRs run the full gate (no release).
-2. **`preview`** — a PR from `dev`; on merge, `ci.yml` runs a live 3-OS `cc-maint.py --fetch-npm latest` probe, and `release.yml` publishes a pre-release tag `v0.8.0-rc.<run_number>` (`prerelease: true`, `make_latest: false`).
-3. **`main`** — a PR from `preview` only; the `branch-flow-guard` job fails any PR whose `head_ref` is not `preview`. On merge, `release.yml` publishes the immutable stable tag `v0.8.0` (`make_latest: true`).
+2. **`preview`** — a PR from `dev`; on merge, `ci.yml` runs a live 3-OS `cc-maint.py --fetch-npm latest` probe, and `release.yml` publishes a pre-release tag `v0.9.0-rc.<run_number>` (`prerelease: true`, `make_latest: false`).
+3. **`main`** — a PR from `preview` only; the `branch-flow-guard` job fails any PR whose `head_ref` is not `preview`. On merge, `release.yml` publishes the immutable stable tag `v0.9.0` (`make_latest: true`).
 
 `release.yml` builds six archives (`ccide-core-<triple>.tar.gz` for `aarch64`/`x86_64` × macOS/Linux/Windows MSVC), computes `SHA256SUMS.txt`, and attaches both to the release — the same assets `scripts/ensure-ccide-core.mjs` resolves and verifies at install/hook time.
 
@@ -284,7 +286,7 @@ Runs daily at `03:17 UTC` (and on `workflow_dispatch`). It resolves the newest `
 ---
 
 ## 8. Roadmap
-- **v0.6 (Next Release)**:
-  1. **Palette-Unified Custom Syntax Highlighting**: blend syntax highlighting directly with `~/.config/cc-ide/palette.json` so Yazi code previews, Lazygit diffs (`delta` & fallback), and Markdown fenced code blocks share the active theme preset and per-slot color overrides seamlessly.
-  2. **First-Class Ghostty Workspace Support**: native Ghostty split/IPC workspace backend alongside Local iTerm2 Metal Daemon, SSH OSC 1337, and `tmux` (complementing Kitty Graphics Protocol `APC _G` PNG sprite rendering already supported in Ghostty).
-- **v1.0**: first-class **PowerShell (`pwsh`) support** for Windows Terminal and WezTerm, including a native PowerShell pane runner and Windows packaging, while preserving the `30% | 54% | 16%` layout contract.
+- **v0.10 (Next Even Stabilization Release)**:
+  1. **Full-Repo Audit & Regression Hardening**: systematic review across palette syntax sync, Ghostty/WezTerm/WT/iTerm2/tmux workspace backends, and native Workflow/Subagent orchestration.
+  2. **Linux Ghostty Native Split IPC**: adopt upstream Ghostty `+split` CLI/D-Bus actions automatically via `probe_ghostty_native_capable()` once shipped on Linux.
+- **v1.0**: first-class **PowerShell (`pwsh`) support** for Windows Terminal and WezTerm packaging & marketplace distribution while preserving the `30% | 54% | 16%` layout contract.

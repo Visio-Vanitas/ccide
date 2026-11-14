@@ -64,7 +64,7 @@ case "$ROLE" in
     while true; do
       clear_terminal_buffers
       "$YAZI_BIN" --client-id "$CLIENT_ID" "$TARGET_DIR" || true
-      sleep 0.2
+      sleep 0.05
     done
     ;;
   lazygit)
@@ -94,7 +94,7 @@ case "$ROLE" in
       else
         "$LAZYGIT_BIN" "${LG_ARGS[@]}" || true
       fi
-      sleep 0.2
+      sleep 0.05
     done
     ;;
   macmon)

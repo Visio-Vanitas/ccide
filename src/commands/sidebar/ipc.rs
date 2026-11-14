@@ -201,8 +201,8 @@ pub fn update_isolated_session_binding(
     if sid.is_empty() {
         return false;
     }
-    let changed = sid != *c_sid;
-    if changed {
+    let changed = sid != *c_sid || cpid != *c_pid;
+    if sid != *c_sid {
         let _ = fs::write(ipc_path(&format!("sb_{sid}.pid")), my_pid_str);
     }
     if cpid > 1 && cpid != *c_pid {

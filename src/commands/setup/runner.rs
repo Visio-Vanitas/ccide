@@ -6,7 +6,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::json::{extract_json_bool, extract_json_str, extract_json_u64};
-use crate::tui::palette::{render_palette_template, resolve_palette_path, Palette};
+use crate::tui::palette::{
+    render_palette_template, resolve_palette_path, sync_syntax_artifacts, Palette,
+};
 
 pub const PRESETS: [&str; 6] = [
     "default",
@@ -92,6 +94,7 @@ pub fn write_user_preferences(home: &str, opts: &SetupOptions) {
         opts.cost_lines.clamp(1, 3)
     );
     let _ = fs::write(cfg_dir.join("viewer.json"), viewer_json);
+    sync_syntax_artifacts(home, &Palette::load(home));
 }
 
 fn strip_ansi_simple(s: &str) -> String {
