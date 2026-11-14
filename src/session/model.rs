@@ -10,6 +10,7 @@ use crate::tui::width::{display_width, floor_char_boundary};
 #[derive(Clone)]
 pub struct ConfigModels {
     pub main_family: &'static str,
+    pub main_model_raw: String,
     pub main_model_short: String,
     pub sub_family: &'static str,
     pub sub_model_short: String,
@@ -28,21 +29,25 @@ pub fn is_valid_model_name(raw: &str) -> bool {
     )
 }
 
+fn has_openai_o_token(low: &str) -> bool {
+    for tok in low.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if matches!(tok, "o1" | "o3" | "o4") {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn classify_model_family(model_str: &str) -> &'static str {
     let low = model_str.to_ascii_lowercase();
     if low.contains("gemini") || low.contains("argon") {
         "gemini"
     } else if low.contains("deepseek") {
         "deepseek"
-    } else if low.contains("gpt")
-        || low.contains("o1")
-        || low.contains("o3")
-        || low.contains("o4")
-        || low.contains("openai")
-    {
-        "openai"
     } else if low.contains("grok") {
         "grok"
+    } else if low.contains("gpt") || low.contains("openai") || has_openai_o_token(&low) {
+        "openai"
     } else {
         "claude"
     }
@@ -142,27 +147,49 @@ pub fn compact_model_for_width(name: &str, max_cols: usize) -> String {
     )
 }
 
+fn lookup_setting_or_env(settings_content: &str, k1: &str, k2: &str) -> Option<String> {
+    extract_json_str(settings_content, k1)
+        .filter(|m| is_valid_model_name(m))
+        .or_else(|| extract_json_str(settings_content, k2).filter(|m| is_valid_model_name(m)))
+        .or_else(|| std::env::var(k1).ok().filter(|m| is_valid_model_name(m)))
+        .or_else(|| std::env::var(k2).ok().filter(|m| is_valid_model_name(m)))
+}
+
 pub fn map_alias_with_settings(raw_model: &str, settings_content: &str) -> String {
     let m_low = raw_model.trim().to_ascii_lowercase();
-    if m_low.contains("fable") {
-        extract_json_str(settings_content, "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME")
-            .or_else(|| extract_json_str(settings_content, "ANTHROPIC_DEFAULT_FABLE_MODEL"))
-            .unwrap_or_else(|| raw_model.to_string())
+    let suffix_1m = m_low.contains("[1m]");
+    let base = if m_low.contains("fable") {
+        lookup_setting_or_env(
+            settings_content,
+            "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        )
     } else if m_low.contains("opus") {
-        extract_json_str(settings_content, "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME")
-            .or_else(|| extract_json_str(settings_content, "ANTHROPIC_DEFAULT_OPUS_MODEL"))
-            .unwrap_or_else(|| raw_model.to_string())
+        lookup_setting_or_env(
+            settings_content,
+            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        )
     } else if m_low.contains("sonnet") {
-        extract_json_str(settings_content, "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME")
-            .or_else(|| extract_json_str(settings_content, "ANTHROPIC_DEFAULT_SONNET_MODEL"))
-            .unwrap_or_else(|| raw_model.to_string())
+        lookup_setting_or_env(
+            settings_content,
+            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        )
     } else if m_low.contains("haiku") {
-        extract_json_str(settings_content, "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME")
-            .or_else(|| extract_json_str(settings_content, "ANTHROPIC_DEFAULT_HAIKU_MODEL"))
-            .unwrap_or_else(|| raw_model.to_string())
+        lookup_setting_or_env(
+            settings_content,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        )
     } else {
-        raw_model.to_string()
+        None
+    };
+    let mut resolved = base.unwrap_or_else(|| raw_model.to_string());
+    if suffix_1m && !resolved.contains('[') {
+        resolved.push_str("[1M]");
     }
+    resolved
 }
 
 /// Resolves:
@@ -186,9 +213,28 @@ pub fn load_config_models(
     if !session_id.is_empty() {
         let spath = format!("{}/live_sess_{}.json", cache_dir, session_id);
         if let (Ok(meta), Ok(stxt)) = (fs::metadata(&spath), fs::read_to_string(&spath)) {
-            let chosen = extract_json_str(&stxt, "model_id")
-                .filter(|m| is_valid_model_name(m))
-                .or_else(|| extract_json_str(&stxt, "model").filter(|m| is_valid_model_name(m)));
+            let mid = extract_json_str(&stxt, "model_id").filter(|m| is_valid_model_name(m));
+            let mdisp = extract_json_str(&stxt, "model").filter(|m| is_valid_model_name(m));
+            let chosen = match (mid, mdisp) {
+                (Some(id), Some(disp)) => {
+                    let mapped_id = map_alias_with_settings(&id, &content);
+                    let id_still_claude_alias =
+                        classify_model_family(&mapped_id) == "claude" && mapped_id == id;
+                    let mut picked =
+                        if id_still_claude_alias && classify_model_family(&disp) != "claude" {
+                            disp.clone()
+                        } else {
+                            id
+                        };
+                    if disp.to_ascii_lowercase().contains("[1m]") && !picked.contains('[') {
+                        picked.push_str("[1M]");
+                    }
+                    Some(picked)
+                }
+                (Some(id), None) => Some(id),
+                (None, Some(disp)) => Some(disp),
+                (None, None) => None,
+            };
             if let Some(m) = chosen {
                 let mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 candidates.push((mt, m));
@@ -255,9 +301,12 @@ pub fn load_config_models(
         .unwrap_or_else(|| resolved_main.clone());
     let resolved_sub = map_alias_with_settings(&raw_sub, &content);
 
+    let main_family = classify_model_family(&resolved_main);
+    let main_model_short = short_model_label(&resolved_main);
     ConfigModels {
-        main_family: classify_model_family(&resolved_main),
-        main_model_short: short_model_label(&resolved_main),
+        main_family,
+        main_model_raw: resolved_main,
+        main_model_short,
         sub_family: classify_model_family(&resolved_sub),
         sub_model_short: short_model_label(&resolved_sub),
     }
@@ -335,6 +384,8 @@ mod tests {
             map_alias_with_settings("Claude Haiku 5.5", st_aliases),
             "gemini-4-hydrogen"
         );
+        assert_eq!(classify_model_family("o3-mini"), "openai");
+        assert_eq!(classify_model_family("nemo1-turbo3"), "claude");
 
         let _ = fs::remove_dir_all(&tmp_home);
     }

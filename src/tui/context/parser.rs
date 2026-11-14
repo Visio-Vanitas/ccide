@@ -23,6 +23,7 @@ pub struct TurnRecord {
     pub first_ms: u64,
     pub dur_ms: u64,
     pub first_blk_ms: u64,
+    pub has_first_blk: bool,
     pub stream_ms: u64,
     pub first_bytes: u64,
     pub total_bytes: u64,
@@ -252,11 +253,14 @@ pub fn update_transcript_ctx_tracker(jpath: &Path, is_sub: bool, tr: &mut Transc
                 if rec.first_ms == 0 {
                     rec.first_ms = dur_ms;
                 }
-                if rec.first_blk_ms == 0 {
-                    rec.first_blk_ms = cur_ms;
+                if !rec.has_first_blk {
+                    rec.has_first_blk = true;
                     rec.first_bytes = blk_b;
                     rec.first_vis_bytes = vis_b;
-                } else if cur_ms > rec.first_blk_ms {
+                    if cur_ms > 0 {
+                        rec.first_blk_ms = cur_ms;
+                    }
+                } else if rec.first_blk_ms > 0 && cur_ms > rec.first_blk_ms {
                     rec.stream_ms = cur_ms - rec.first_blk_ms;
                 }
                 rec.model = msg_model;
