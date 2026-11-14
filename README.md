@@ -37,16 +37,16 @@
 
 ### 3. 3-Tier Adaptive Workspace Engine (Native Metal Splits + Full SSH & Cross-Terminal Support)
 `ccide-core workspace` automatically selects the fastest available layout backend:
-- **Tier 1 — Local iTerm2 Warm Daemon (`/tmp/.cc-ide/iterm_daemon.sock`, `~0.07 ms` IPC)**:
-  Persistent `AutoLaunch` daemon keeps a warm `iterm2.App` connection for instant native Metal splits (`30% | 54% | 16%`), zero-scrollback TUI pane locking, and `< 2 ms` focus restoration without Python startup overhead.
+- **Tier 1 — Native GPU Split Backends (`iTerm2` Warm Daemon, `Ghostty 1.3+`, `WezTerm`, `Windows Terminal`)**:
+  Persistent iTerm2 `AutoLaunch` daemon (`~0.07 ms` IPC), native macOS Ghostty `Ghostty.sdef` (`surface configuration` + pixel-accurate `resize_split`), WezTerm (`wezterm cli`), and Windows Terminal (`wt.exe`) deliver native `30% | 54% | 16%` splits with Retina inline model sprites (`OSC 1337` / Kitty `APC _G`).
 - **Tier 2 — SSH `OSC 1337` Passthrough + Client iTerm2 Native Split**:
   When running `ccide` inside a remote SSH session viewed from local iTerm2, `ccide-core` emits an invisible `\033]1337;Custom=id=ccide:...\007` sequence over the SSH stream. Your local Mac's `ccide_daemon.py` intercepts it, reuses the existing SSH `ControlMaster` socket (`~/.ssh/ccide-cm-%C`), and splits your **local iTerm2 window natively** into `30% | 54% | 16%` running the remote `yazi`, `lazygit`, and `ccide-core sidebar`.
 - **Tier 3 — Universal `tmux` Engine (`tmux -L ccide`)**:
-  Works in any terminal emulator (**Ghostty, WezTerm, Kitty, Alacritty, VS Code terminal**) or over multi-hop SSH jump hosts, automatically falling back if Tier 2 does not ACK within `450 ms`.
+  Works in any terminal emulator (**Ghostty `< 1.3` / Linux, Kitty, Alacritty, VS Code terminal**) or over multi-hop SSH jump hosts, automatically falling back if Tier 2 does not ACK within `450 ms`.
 
-### 4. Zero-Subprocess Hardware Oscilloscope, Dynamic Model Sprites & Custom Palettes
-- **Resolution-Adaptive 2×2 Quadrant Model Logos**: Dynamically renders vector logos (`GEMINI`, `DEEPSEEK`, `CLAUDE`, `OPENAI`, `GROK`), switching between your session's active Main Model (`/model`) and your configured Subagent Model (`CLAUDE_CODE_SUBAGENT_MODEL`) when inspecting a subagent.
-- **Independent Color Palette (`~/.config/cc-ide/palette.json`)**: Customize every TUI border, row/cursor highlight, oscilloscope curve, model accent, optional monochrome logo tint (`"tint_logo": true`), and Powerline `statusline` segment via JSONC (`#RRGGBB`, `#RGB`, `rgb(r,g,b)`, or ANSI 256-color) with live hot-reload and 6 built-in presets (`ccide --theme <default|catppuccin-mocha|tokyo-night|nord|gruvbox-dark|dracula>`).
+### 4. Zero-Subprocess Hardware Oscilloscope, Dynamic Model Sprites & Palette-Unified Syntax Highlighting
+- **Resolution-Adaptive Retina RGBA & 2×2 Quadrant Model Logos**: Dynamically renders model family sprites (`GEMINI`, `DEEPSEEK`, `CLAUDE`, `OPENAI`, `GROK`), switching between your session's active Main Model (`/model`, including FleetView `/subtask` attached sessions) and your configured Subagent Model (`CLAUDE_CODE_SUBAGENT_MODEL`) when inspecting a subagent.
+- **Palette-Unified Companion UI & Syntax Highlighting (`~/.config/cc-ide/palette.json`)**: Customize TUI borders, row/cursor highlights, oscilloscope curves, Powerline `statusline` segments, and `"syntax"` token overrides via JSONC (`#RRGGBB`, `#RGB`, `rgb(r,g,b)`, or ANSI 256-color) across 6 built-in presets (`ccide --theme <default|catppuccin-mocha|tokyo-night|nord|gruvbox-dark|dracula>` or `/palette <preset>`), atomically syncing `ccide.tmTheme` (`bat` / `delta` / `Yazi` `syntect_theme`), Yazi `theme.toml`, Lazygit `gui.theme`, `glow-style.json`, and `ghostty-theme.conf` with `< 120 ms` live reload.
 - **Shared 500ms Hardware Telemetry & Auto-Swapping `TASKS` Progress Board**:
   - **macOS (`arm64` / `x86_64`)**: Direct C FFI against `Mach host_statistics64`, `IOKit IOAccelerator` (`AGX` GPU utilization & VRAM), and BSD `sysctl(NET_RT_IFLIST2)`.
   - **Linux (`x86_64` / `aarch64`)**: Zero-dependency `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, and `sysfs` / non-blocking `nvidia-smi`.

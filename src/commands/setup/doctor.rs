@@ -98,6 +98,16 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     let is_iterm = env::var("TERM_PROGRAM").as_deref() == Ok("iTerm.app")
         || env::var("LC_TERMINAL").as_deref() == Ok("iTerm2")
         || env::var("ITERM_SESSION_ID").is_ok();
+    let is_ghostty = env::var("TERM_PROGRAM")
+        .map(|v| v.trim().eq_ignore_ascii_case("ghostty"))
+        .unwrap_or(false)
+        || env::var("GHOSTTY_RESOURCES_DIR")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+    let ghostty_native = is_ghostty
+        && !is_tmux
+        && !is_ssh
+        && crate::commands::workspace::ghostty::probe_ghostty_native_capable(home);
 
     let backend_tier = if cfg!(windows) {
         if is_wezterm {
@@ -113,6 +123,13 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         "Tier 2 · SSH + Client iTerm2 OSC 1337 Bridge".to_string()
     } else if is_wezterm && !is_tmux {
         "WezTerm · Native CLI Split Engine".to_string()
+    } else if is_ghostty && !is_tmux && !is_ssh {
+        if ghostty_native {
+            "Ghostty · Native Metal Split Engine + Kitty APC Sprites".to_string()
+        } else {
+            "Ghostty · Tier 3 tmux Engine + Kitty Sprites (Ghostty 1.3+ enables native splits)"
+                .to_string()
+        }
     } else {
         "Tier 3 · Universal tmux 3-Column Engine".to_string()
     };
@@ -213,6 +230,22 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         };
         items.push(DoctorItem {
             status: st,
+            label: "Split Engine".to_string(),
+            detail: det.to_string(),
+        });
+    } else if is_ghostty && !is_tmux && !is_ssh {
+        let det = if ghostty_native {
+            "Ghostty · Native Metal Split Engine + Kitty APC Sprites"
+        } else {
+            "Ghostty · Tier 3 tmux Engine + Kitty Sprites (Ghostty 1.3+ enables native splits)"
+        };
+        items.push(DoctorItem {
+            status: if ghostty_native || find_executable("tmux", home).is_some() {
+                CheckStatus::Ok
+            } else {
+                missing_pkgs.push("tmux");
+                CheckStatus::Warn
+            },
             label: "Split Engine".to_string(),
             detail: det.to_string(),
         });

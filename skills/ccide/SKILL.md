@@ -1,19 +1,21 @@
 ---
 name: ccide
-description: Open, rebalance, or reinstall the 3-column Claude Code tiling workspace (Left 30% Yazi/Lazygit, Center 54% Claude Code, Right 16% AI Companion & Hardware Telemetry) across its 3 adaptive backends (local iTerm2 daemon, SSH OSC 1337 native split, universal tmux).
+description: Open, rebalance, or reinstall the 3-column Claude Code tiling workspace (Left 30% Yazi/Lazygit, Center 54% Claude Code, Right 16% AI Companion & Hardware Telemetry) across its adaptive backends (iTerm2 daemon, Ghostty native split, WezTerm, Windows Terminal, SSH OSC 1337, universal tmux).
 ---
 
 # `/cc-ide:ccide` — 3-Column Adaptive Tiling Workspace Controller
 
-`cc-ide` **v0.5.0** runs a zero-dependency Rust engine (`ccide-core`, **Rust Edition 2021, MSRV `1.70`**) and is installed through a `dev -> preview -> main` release pipeline. No `cargo` is required on the host: `scripts/ensure-ccide-core.sh` downloads and SHA256-verifies the matching GitHub Release binary on demand.
+`cc-ide` runs a zero-dependency Rust engine (`ccide-core`, **Rust Edition 2021, MSRV `1.70`**) and is installed through a `dev -> preview -> main` release pipeline. No `cargo` is required on the host: `scripts/ensure-ccide-core.mjs` / `ensure-ccide-core.sh` downloads and SHA256-verifies the matching GitHub Release binary on demand.
 
 Manage the `cc-ide` workspace in the current tab or across all open windows/tabs. The launcher picks a backend automatically:
 
-| Tier | When | Mechanism |
-|------|------|-----------|
-| **1** Local iTerm2 | macOS iTerm2, no SSH/tmux | Warm daemon over `/tmp/.cc-ide/iterm_daemon.sock` (`< 5ms` native Metal split, `< 2ms` subagent focus) |
-| **2** SSH + client iTerm2 | Remote session inside iTerm2 | `OSC 1337;Custom=id=ccide:...` passthrough + SSH `ControlMaster` (`~/.ssh/ccide_config`) + `/tmp/.cc-ide/osc_ack_<yazi_id>` handshake (`< 450ms`) |
-| **3** Universal `tmux` | `$TMUX`, Ghostty/Kitty/WezTerm/VS Code, or Tier 2 timeout | `tmux -L ccide` 3-column tiling engine |
+| Backend | When | Mechanism |
+|---------|------|-----------|
+| **Local iTerm2** | macOS iTerm2, no SSH/tmux | Warm daemon over `/tmp/.cc-ide/iterm_daemon.sock` (`< 5ms` native Metal split, `< 2ms` subagent focus) |
+| **Native Ghostty** | macOS Ghostty `>= 1.3`, no SSH/tmux | Official `Ghostty.sdef` AppleScript (`30% | 54% | 16%` native Metal split + Kitty `APC _G` sprites), falling back to `tmux -L ccide` on older builds or Linux |
+| **WezTerm / WT** | `WEZTERM_PANE` or Windows `WT_SESSION` | Native `wezterm cli split-pane` or `wt.exe -w 0` 3-column splits |
+| **SSH + client iTerm2** | Remote session inside iTerm2 | `OSC 1337;Custom=id=ccide:...` passthrough + SSH `ControlMaster` (`~/.ssh/ccide_config`) + `/tmp/.cc-ide/osc_ack_<yazi_id>` handshake (`< 450ms`) |
+| **Universal `tmux`** | `$TMUX`, Kitty/Alacritty/Linux Ghostty, or fallback | `tmux -L ccide` 3-column tiling engine |
 
 ## Commands
 
@@ -21,7 +23,7 @@ Manage the `cc-ide` workspace in the current tab or across all open windows/tabs
    ```bash
    ccide
    ```
-   Useful flags: `--iterm` (force Tier 1), `--osc` (force Tier 2), `--tmux` (force Tier 3), `--ssh <host>` (ControlMaster SSH), `--no-git`, `--mon`, `--no-right`, `--width <pct>` (left column, default 30).
+   Useful flags: `--iterm`, `--ghostty`, `--wezterm`, `--osc`, `--tmux`, `--ssh <host>` (ControlMaster SSH), `--no-git`, `--mon`, `--no-right`, `--width <pct>` (left column, default 30).
 
 2. **Rebalance all open tabs to `30% | 54% | 16%` and lock TUI panes to zero scrollback**:
    ```bash

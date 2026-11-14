@@ -8,6 +8,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::commands::workspace::escape_json;
+use crate::commands::workspace::ghostty::{
+    is_ghostty_env, probe_ghostty_native_capable, run_ghostty_open,
+};
 use crate::commands::workspace::iterm::{
     emit_osc1337, ensure_daemon_started, find_python_bin, send_daemon_ipc,
 };
@@ -156,6 +159,21 @@ pub fn handle_open(home: &str, cdir: &Path, args: &[String]) {
             return;
         }
     }
+    if requested == "ghostty"
+        || (requested == "auto"
+            && !in_ssh
+            && !in_tmux
+            && is_ghostty_env()
+            && probe_ghostty_native_capable(home))
+    {
+        if let Some(spec) = run_ghostty_open(
+            home, target_dir, yazi_id, show_git, show_mon, left_pct, git_root, show_right,
+            shell_pid,
+        ) {
+            println!("{}", spec);
+            return;
+        }
+    }
     if in_tmux || requested == "tmux" {
         if let Some(spec) = run_tmux_open(
             home, target_dir, yazi_id, show_git, show_mon, left_pct, git_root, show_right,
@@ -174,7 +192,7 @@ pub fn handle_open(home: &str, cdir: &Path, args: &[String]) {
             }
         }
         eprintln!(
-            "ccide-core: no supported terminal (iTerm2/WezTerm/WT) or tmux session active; \
+            "ccide-core: no supported terminal (iTerm2/Ghostty/WezTerm/WT) or tmux session active; \
              run inside tmux or install tmux for 3-column tiling."
         );
     } else {

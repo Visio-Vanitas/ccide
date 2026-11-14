@@ -129,7 +129,7 @@ local function reset_sgr_state(st)
 	st.rev = false
 end
 
-local function apply_sgr_seq(st, seq)
+local function apply_sgr_seq(st, seq, syn_sgr)
 	local body = seq:sub(3, -2)
 	if body == "" then
 		reset_sgr_state(st)
@@ -163,7 +163,10 @@ local function apply_sgr_seq(st, seq)
 			st.u = false
 		elseif c == 27 then
 			st.rev = false
-		elseif (c >= 30 and c <= 37) or (c >= 90 and c <= 97) then
+		elseif c >= 31 and c <= 37 then
+			local k = tostring(c)
+			st.fg = (syn_sgr and syn_sgr[k]) or k
+		elseif c == 30 or (c >= 90 and c <= 97) then
 			st.fg = tostring(c)
 		elseif c == 39 then
 			st.fg = nil
@@ -175,7 +178,8 @@ local function apply_sgr_seq(st, seq)
 			local mode = nums[i + 1]
 			local key = (c == 38) and "fg" or "bg"
 			if mode == 5 and (i + 2) <= n and nums[i + 2] >= 0 then
-				st[key] = string.format("%d;5;%d", c, nums[i + 2])
+				local raw = string.format("%d;5;%d", c, nums[i + 2])
+				st[key] = (c == 38 and syn_sgr and syn_sgr[raw]) or raw
 				i = i + 2
 			elseif mode == 2 and (i + 4) <= n and nums[i + 2] >= 0 and nums[i + 3] >= 0 and nums[i + 4] >= 0 then
 				st[key] = string.format("%d;2;%d;%d;%d", c, nums[i + 2], nums[i + 3], nums[i + 4])
@@ -184,6 +188,45 @@ local function apply_sgr_seq(st, seq)
 		end
 		i = i + 1
 	end
+end
+
+local function remap_sgr_seq(seq, syn_sgr)
+	if not syn_sgr then
+		return seq
+	end
+	local body = seq:sub(3, -2)
+	if body == "" then
+		return seq
+	end
+	local nums = {}
+	for part in (body .. ";"):gmatch("([^;]*);") do
+		nums[#nums + 1] = (part == "" and 0) or tonumber(part) or -1
+	end
+	local out = {}
+	local i, n = 1, #nums
+	while i <= n do
+		local c = nums[i]
+		if (c == 38 or c == 48) and (i + 1) <= n then
+			local mode = nums[i + 1]
+			if mode == 5 and (i + 2) <= n and nums[i + 2] >= 0 then
+				local raw = string.format("%d;5;%d", c, nums[i + 2])
+				out[#out + 1] = (c == 38 and syn_sgr[raw]) or raw
+				i = i + 2
+			elseif mode == 2 and (i + 4) <= n and nums[i + 2] >= 0 and nums[i + 3] >= 0 and nums[i + 4] >= 0 then
+				out[#out + 1] = string.format("%d;2;%d;%d;%d", c, nums[i + 2], nums[i + 3], nums[i + 4])
+				i = i + 4
+			else
+				out[#out + 1] = tostring(c)
+			end
+		elseif c >= 31 and c <= 37 then
+			local k = tostring(c)
+			out[#out + 1] = syn_sgr[k] or k
+		else
+			out[#out + 1] = tostring(c)
+		end
+		i = i + 1
+	end
+	return "\27[" .. table.concat(out, ";") .. "m"
 end
 
 local function serialize_sgr_state(st)
@@ -215,7 +258,7 @@ local function serialize_sgr_state(st)
 	return "\27[" .. table.concat(parts, ";") .. "m"
 end
 
-local function slice_ansi_preserve_sgr(s, offset_cols, width_cols, initial_sgr)
+local function slice_ansi_preserve_sgr(s, offset_cols, width_cols, initial_sgr, syn_sgr)
 	local st = clone_sgr_state(initial_sgr)
 	if not s or s == "" or width_cols <= 0 then
 		return "", st
@@ -245,9 +288,9 @@ local function slice_ansi_preserve_sgr(s, offset_cols, width_cols, initial_sgr)
 					local final_b = s:byte(j)
 					local seq = s:sub(idx, j)
 					if final_b == 0x6D then
-						apply_sgr_seq(st, seq)
+						apply_sgr_seq(st, seq, syn_sgr)
 						if started and not ended then
-							out[#out + 1] = seq
+							out[#out + 1] = remap_sgr_seq(seq, syn_sgr)
 						end
 					end
 					idx = j + 1
@@ -327,6 +370,61 @@ local function slice_ansi_preserve_sgr(s, offset_cols, width_cols, initial_sgr)
 end
 
 local IS_WIN = (package.config:sub(1, 1) == "\\") or (ya and ya.target_family and ya.target_family() == "windows")
+
+local function load_ccide_syntax()
+	local sep = IS_WIN and "\\" or "/"
+	local cands = {}
+	local pal_file = os.getenv("CCIDE_PALETTE_FILE")
+	if pal_file and pal_file ~= "" then
+		local dir = pal_file:match("^(.*)[/\\][^/\\]+$")
+		if dir and dir ~= "" then
+			cands[#cands + 1] = dir .. sep .. "syntax_resolved.json"
+		end
+	end
+	local xdg = os.getenv("XDG_CONFIG_HOME")
+	if xdg and xdg ~= "" then
+		cands[#cands + 1] = xdg:gsub("[/\\]+$", "") .. sep .. "cc-ide" .. sep .. "syntax_resolved.json"
+	end
+	local home = os.getenv("HOME") or os.getenv("USERPROFILE") or ""
+	if home ~= "" then
+		cands[#cands + 1] = home:gsub("[/\\]+$", "") .. sep .. ".config" .. sep .. "cc-ide" .. sep .. "syntax_resolved.json"
+	end
+
+	local res = { digest = "default_builtin", bat_theme = "base16-256", loaded = false, sgr = {}, code_bg = "48;5;237" }
+	for _, p in ipairs(cands) do
+		local f = io.open(p, "r")
+		if f then
+			local raw = f:read("*a") or ""
+			f:close()
+			if raw ~= "" then
+				local dig = raw:match('"digest"%s*:%s*"([^"]+)"')
+				if dig and dig ~= "" then
+					res.digest = dig
+				end
+				local bt = raw:match('"bat_theme"%s*:%s*"([^"]+)"')
+				if bt and bt ~= "" then
+					res.bat_theme = bt
+				end
+				local sgr_blk = raw:match('"sgr"%s*:%s*(%b{})')
+				if sgr_blk then
+					for _, k in ipairs({ "31", "32", "33", "34", "35", "36", "37", "38;5;8", "38;5;9", "38;5;16", "38;5;17", "code_bg" }) do
+						local pat = '"' .. k:gsub(";", "%%;") .. '"%s*:%s*"([^"]+)"'
+						local val = sgr_blk:match(pat)
+						if val and val ~= "" then
+							res.sgr[k] = val
+						end
+					end
+				end
+				if res.sgr["code_bg"] then
+					res.code_bg = res.sgr["code_bg"]
+				end
+				res.loaded = true
+				break
+			end
+		end
+	end
+	return res
+end
 
 local function ipc_dir()
 	local custom = os.getenv("CCIDE_IPC_DIR")
@@ -633,6 +731,12 @@ local dispatch_sync = ya.sync(function(_, action, arg1, arg2, arg3)
 			_G.CCIDE_INPUT_MODE = "mouse"
 			ui.render()
 		end
+		return
+	end
+
+	if action == "refresh" then
+		trigger_preview_refresh(true)
+		ui.render()
 		return
 	end
 
@@ -1173,7 +1277,8 @@ local function peek_markdown(job, url_str)
 	local area_w = job.area.w
 	local area_h = job.area.h
 	local skip = job.skip or 0
-	local key = file_stamp(job.file)
+	local syn = load_ccide_syntax()
+	local key = file_stamp(job.file) .. "\t" .. syn.digest
 	local cache_path = ipc_file("ym_" .. url_hash(url_str) .. ".txt")
 	local raw_all = read_cached_block(cache_path, key)
 
@@ -1259,6 +1364,10 @@ local function peek_markdown(job, url_str)
 end
 
 local function resolve_yazi_bat_theme()
+	local syn = load_ccide_syntax()
+	if syn.digest ~= "default_builtin" then
+		return syn.bat_theme or "base16-256"
+	end
 	-- Match Yazi's `Highlighter::load_theme()` (`yazi-core/src/highlighter.rs:120-137`) 100%:
 	-- use `th.mgr.syntect_theme` when configured and readable, else Yazi's built-in `ansi` theme!
 	local ok, custom = pcall(function()
@@ -1275,10 +1384,11 @@ local function resolve_yazi_bat_theme()
 end
 
 local function fetch_or_warm_bat_cache(file, url_str, path_str, skip, area_h, tab_sz, hl_start, hl_end)
+	local syn = load_ccide_syntax()
 	local theme_name = resolve_yazi_bat_theme()
 	local hl_tag = (hl_start and hl_start > 0) and string.format("%d:%d", hl_start, hl_end or hl_start) or ""
 	local cache_path = ipc_file("yc2_" .. url_hash(url_str) .. ".txt")
-	local key = file_stamp(file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name .. "\t" .. hl_tag
+	local key = file_stamp(file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name .. "\t" .. hl_tag .. "\t" .. syn.digest
 	local cached = read_cached_block(cache_path, key)
 	if cached then
 		return cached
@@ -1373,8 +1483,10 @@ local function peek_code(job, url_str)
 	local at_bot = (f ~= nil) and (not has_more)
 	local px = sync_bounds_and_get_px(url_str, max_x, at_bot)
 	local has_vis_hl = (hl_ln > 0) and (hl_ln <= e_ln) and (hl_end >= s_ln)
+	local syn = load_ccide_syntax()
+	local bat_available = find_bat_bin() ~= nil
 
-	if px <= 0 and not has_vis_hl then
+	if px <= 0 and not has_vis_hl and not (syn.loaded and bat_available) then
 		require("code"):peek(job)
 		if max_x > 0 then
 			fetch_or_warm_bat_cache(job.file, url_str, path_str, skip, area_h, tab_sz, hl_ln, hl_end)
@@ -1390,8 +1502,9 @@ local function peek_code(job, url_str)
 	local theme_name = resolve_yazi_bat_theme()
 	local hl_tag = (hl_ln > 0) and string.format("%d:%d", hl_ln, hl_end) or ""
 	local cache_path = ipc_file("yc2_" .. url_hash(url_str) .. ".txt")
-	local key = file_stamp(job.file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name .. "\t" .. hl_tag
+	local key = file_stamp(job.file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name .. "\t" .. hl_tag .. "\t" .. syn.digest
 	local ansi_slice = read_cached_block(cache_path, key)
+	local hl_bg_esc = "\27[" .. syn.code_bg .. "m"
 
 	if not ansi_slice then
 		local plain_rows = {}
@@ -1399,7 +1512,7 @@ local function peek_code(job, url_str)
 			local abs_ln = skip + i
 			local sliced = slice_ansi_preserve_sgr(vis_lines[i], px, area_w, nil)
 			if hl_ln > 0 and abs_ln >= hl_ln and abs_ln <= hl_end then
-				plain_rows[i] = "\27[48;5;237m" .. sliced
+				plain_rows[i] = hl_bg_esc .. sliced
 			else
 				plain_rows[i] = sliced
 			end
@@ -1409,13 +1522,14 @@ local function peek_code(job, url_str)
 		px = math.min(read_url_px(url_str), max_x)
 	end
 
+	local syn_sgr = (syn.loaded and syn.bat_theme ~= "ccide") and syn.sgr or nil
 	local function emit_code_at(pan_x)
 		local text
 		if ansi_slice and ansi_slice ~= "" then
 			local ansi_rows = {}
 			local carry = nil
 			for ln in (ansi_slice .. "\n"):gmatch("(.-)\r?\n") do
-				ansi_rows[#ansi_rows + 1], carry = slice_ansi_preserve_sgr(ln:gsub("\t", tab_spaces), pan_x, area_w, carry)
+				ansi_rows[#ansi_rows + 1], carry = slice_ansi_preserve_sgr(ln:gsub("\t", tab_spaces), pan_x, area_w, carry, syn_sgr)
 			end
 			if #ansi_rows > area_h and ansi_rows[#ansi_rows] == "" then
 				ansi_rows[#ansi_rows] = nil
@@ -1427,7 +1541,7 @@ local function peek_code(job, url_str)
 				local abs_ln = skip + i
 				local sliced = slice_ansi_preserve_sgr(vis_lines[i], pan_x, area_w, nil)
 				if hl_ln > 0 and abs_ln >= hl_ln and abs_ln <= hl_end then
-					plain_rows[i] = "\27[48;5;237m" .. sliced
+					plain_rows[i] = hl_bg_esc .. sliced
 				else
 					plain_rows[i] = sliced
 				end
@@ -1474,6 +1588,8 @@ function M:entry(job)
 		dispatch_sync("reveal", a2, a3, a4)
 	elseif a1 == "blur" then
 		dispatch_sync("blur")
+	elseif a1 == "refresh" then
+		dispatch_sync("refresh")
 	elseif a1 == "reset" then
 		dispatch_sync("reset")
 	else

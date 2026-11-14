@@ -22,6 +22,10 @@ import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from git_smooth_graph import render_smooth_dag_rows  # type: ignore[import-not-found]
+try:
+    import ccide_syntax_pal  # type: ignore[import-not-found]
+except Exception:
+    ccide_syntax_pal = None  # type: ignore[assignment]
 
 if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -384,6 +388,26 @@ def format_full_width_log(
         parsed.append((sha, parents, parts[2], parts[3].strip(), parts[4].strip()))
 
     dag_rows = render_smooth_dag_rows([(sha, parents) for sha, parents, _, _, _ in parsed])
+    pal = ccide_syntax_pal.load_syntax_palette() if ccide_syntax_pal is not None else None
+    if ccide_syntax_pal is not None and pal is not None:
+        hx = pal["hex"]
+        fg = ccide_syntax_pal.hex_to_fg
+        au_pal = [
+            fg(hx["cyan"]),
+            fg(hx["green"]),
+            fg(hx["amber"]),
+            fg(hx["lavender"]),
+            fg(hx["coral"]),
+            fg(hx["mint"]),
+        ]
+        badge_col = fg(hx["amber"])
+        subj_col = fg(hx["text"])
+        showbreak = f"{fg(hx['dim'])}↪{RESET}"
+    else:
+        au_pal = AUTHOR_PALETTE
+        badge_col = "\x1b[38;5;221m"
+        subj_col = "\x1b[38;5;252m"
+        showbreak = SHOWBREAK_GLYPH
     out_lines: list[str] = []
 
     for (_, _, author_raw, deco_raw, subject_raw), (graph_pfx, graph_cont, graph_w) in zip(
@@ -392,7 +416,8 @@ def format_full_width_log(
         au = compact_author(author_raw)
         au_w = visible_width(au)
         pad_w = max(1, 4 - au_w)
-        au_prefix = f"{author_color(author_raw)}{BOLD}{au}{RESET}{' ' * pad_w}"
+        au_col = au_pal[sum(ord(c) for c in author_raw) % len(au_pal)]
+        au_prefix = f"{au_col}{BOLD}{au}{RESET}{' ' * pad_w}"
         au_total_w = au_w + pad_w
 
         deco_badge = ""
@@ -415,17 +440,17 @@ def format_full_width_log(
                         trunc_chars.append(ch)
                         tw += cw
                     badge_txt = "".join(trunc_chars) + "…"
-                deco_badge = f"\x1b[38;5;221m[{badge_txt}]{RESET} "
+                deco_badge = f"{badge_col}[{badge_txt}]{RESET} "
 
         lead = f"{au_prefix}{graph_pfx}{RESET}"
-        body = f"{deco_badge}\x1b[38;5;252m{subject_raw}{RESET}"
+        body = f"{deco_badge}{subj_col}{subject_raw}{RESET}"
 
         if not wrap_enabled:
             out_lines.append(lead + body)
             continue
 
         lead_w = au_total_w + graph_w
-        cont_pfx = f"{' ' * au_total_w}{graph_cont}{RESET}{SHOWBREAK_GLYPH}"
+        cont_pfx = f"{' ' * au_total_w}{graph_cont}{RESET}{showbreak}"
         cont_w = lead_w + 1
 
         first_budget = max(10, panel_w - lead_w)

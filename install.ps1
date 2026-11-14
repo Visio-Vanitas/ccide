@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$PluginVersion = "0.8.0"
+$PluginVersion = "0.9.0"
 $HomeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 $ClaudeDir = Join-Path $HomeDir ".claude"
 $CacheDir = Join-Path $HomeDir ".cache\cc-ide"
@@ -132,10 +132,14 @@ if ($Uninstall) {
         Write-Ok "Restored pristine $FoundBin from .bak"
     }
     $YaziCfgDir = if ($env:APPDATA) { Join-Path $env:APPDATA "yazi\config" } else { Join-Path $HomeDir ".config\yazi" }
-    foreach ($fn in @("yazi.toml", "keymap.toml", "init.lua")) {
+    foreach ($fn in @("yazi.toml", "keymap.toml", "theme.toml", "init.lua")) {
         $fp = Join-Path $YaziCfgDir $fn
         if (Test-Path "$fp.ccide.bak") {
             Copy-Item -LiteralPath "$fp.ccide.bak" -Destination $fp -Force
+        } elseif (($fn -eq "theme.toml") -and (Test-Path $fp)) {
+            $thSrc = Get-Content -LiteralPath $fp -Raw -Encoding UTF8
+            $thClean = [regex]::Replace($thSrc, "(?m)\r?\n?# Managed by cc-ide:[^\r\n]*\r?\n(?:\[mgr\]\r?\n)?syntect_theme\s*=[^\r\n]*\r?\n?", "")
+            if ($thClean -ne $thSrc) { Set-Content -LiteralPath $fp -Value $thClean -Encoding UTF8 }
         }
     }
     $StFile = Join-Path $ClaudeDir "settings.json"
@@ -205,9 +209,7 @@ Get-ChildItem -Path (Join-Path $ProjectRoot "assets\sprites\*") | ForEach-Object
     $dst = Join-Path "$ConfigDir\sprites" $_.Name
     if (-not (Test-Path $dst)) { Copy-Item -LiteralPath $_.FullName -Destination $dst }
 }
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "assets\lazygit.yml") -Destination "$ConfigDir\lazygit.yml" -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "assets\glow-style.json") -Destination "$ConfigDir\glow-style.json" -Force
-foreach ($cfgName in @("palette.json", "viewer.json", "pricing.json", "orchestrator.json")) {
+foreach ($cfgName in @("lazygit.yml", "glow-style.json", "palette.json", "viewer.json", "pricing.json", "orchestrator.json")) {
     $dstCfg = Join-Path $ConfigDir $cfgName
     if (-not (Test-Path $dstCfg)) {
         Copy-Item -LiteralPath (Join-Path $ProjectRoot "assets\$cfgName") -Destination $dstCfg
@@ -237,6 +239,7 @@ if (($CurUserPath -split ";") -notcontains $LocalBinDir) {
 } else {
     Write-Ok "Launchers ccide.cmd / ccide.ps1 updated in $LocalBinDir"
 }
+& $EngineExe workspace theme sync 2>$null | Out-Null
 
 Write-Step "3/6 Syncing Yazi (%APPDATA%\yazi\config) & Lazygit companion configs..."
 if ($OptCompanion -eq "1") {
@@ -248,6 +251,25 @@ if ($OptCompanion -eq "1") {
     $InitTxt = if (Test-Path $InitLua) { Get-Content -LiteralPath $InitLua -Raw } else { "" }
     if ($InitTxt -notmatch 'require\(["'']hscroll["'']\)') {
         Set-Content -LiteralPath $InitLua -Value (($InitTxt.TrimEnd() + "`nrequire(`"hscroll`"):setup()`n").TrimStart("`n")) -Encoding UTF8
+    }
+    $ThemeToml = Join-Path $YaziCfgDir "theme.toml"
+    Backup-Once $ThemeToml
+    $TmPath = ((Join-Path $ConfigDir "ccide.tmTheme") -replace '\\', '/')
+    $ThSrc = if (Test-Path $ThemeToml) { Get-Content -LiteralPath $ThemeToml -Raw -Encoding UTF8 } else { "" }
+    $SyntectM = [regex]::Match($ThSrc, '(?m)^\s*syntect_theme\s*=\s*([^\r\n]+)')
+    if ($SyntectM.Success) {
+        if ($SyntectM.Groups[1].Value -like "*ccide.tmTheme*") {
+            $ThOut = [regex]::Replace($ThSrc, '(?m)^(\s*syntect_theme\s*=\s*)[^\r\n]+', "`${1}`"$TmPath`"", 1)
+            if ($ThOut -ne $ThSrc) { Set-Content -LiteralPath $ThemeToml -Value $ThOut -Encoding UTF8 }
+        }
+    } else {
+        if ($ThSrc -match '(?m)^\[mgr\]\s*$') {
+            $ThOut = [regex]::Replace($ThSrc, '(?m)^(\[mgr\]\s*)$', "`$1`n# Managed by cc-ide: palette-unified syntect theme`nsyntect_theme = `"$TmPath`"", 1)
+        } else {
+            $Sep = if ($ThSrc -and -not $ThSrc.EndsWith("`n")) { "`n" } else { "" }
+            $ThOut = "$ThSrc$Sep# Managed by cc-ide: palette-unified syntect theme`n[mgr]`nsyntect_theme = `"$TmPath`"`n"
+        }
+        Set-Content -LiteralPath $ThemeToml -Value $ThOut -Encoding UTF8
     }
     $LgCfgDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "lazygit" } else { Join-Path $HomeDir "AppData\Local\lazygit" }
     New-Item -ItemType Directory -Force -Path $LgCfgDir | Out-Null
@@ -273,7 +295,7 @@ foreach ($sub in @(".claude-plugin", "hooks", "skills", "scripts", "assets", "bi
 }
 Copy-Item -LiteralPath (Join-Path $ProjectRoot ".claude-plugin\plugin.json") -Destination "$PluginCacheDir\.claude-plugin\plugin.json" -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot ".claude-plugin\marketplace.json") -Destination "$PluginCacheDir\.claude-plugin\marketplace.json" -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "hooks\hooks.json") -Destination "$PluginCacheDir\hooks\hooks.json" -Force
+Copy-Item -Path (Join-Path $ProjectRoot "hooks\*") -Destination "$PluginCacheDir\hooks\" -Recurse -Force
 Copy-Item -Path (Join-Path $ProjectRoot "skills\*") -Destination "$PluginCacheDir\skills\" -Recurse -Force
 Copy-Item -Path (Join-Path $ProjectRoot "scripts\*") -Destination "$PluginCacheDir\scripts\" -Recurse -Force
 Copy-Item -Path (Join-Path $ProjectRoot "assets\*") -Destination "$PluginCacheDir\assets\" -Recurse -Force

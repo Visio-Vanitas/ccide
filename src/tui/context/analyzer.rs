@@ -211,13 +211,10 @@ pub fn aggregate_session_model_costs(
             );
             cost_usd += act;
             uncached_usd += unc;
-            perf_map.entry(short.clone()).or_default().record_fallback(
-                rec.out_tok,
-                rec.first_ms,
-                rec.dur_ms,
-                rec.first_bytes,
-                rec.total_bytes,
-            );
+            perf_map
+                .entry(short.clone())
+                .or_default()
+                .record_fallback(rec);
             let entry = model_map.entry(short.clone()).or_insert(ModelCostEntry {
                 model_short: short,
                 family: fam,

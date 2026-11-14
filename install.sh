@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${0:A:h}"
-PLUGIN_VERSION="0.8.0"
+PLUGIN_VERSION="0.9.0"
 HOME_DIR="$HOME"
 CLAUDE_DIR="$HOME_DIR/.claude"
 CACHE_DIR="$HOME_DIR/.cache/cc-ide"
@@ -175,6 +175,7 @@ yazi_dir = os.path.join(home_dir, ".config", "yazi")
 for fname, pat in (
     ("yazi.toml", r"\n?# Managed by cc-ide:[^\n]*\n(?:.*\n)*?(?=\Z|\n\[(?!\[plugin\.prepend_previewers\]\]))"),
     ("keymap.toml", r"\n?# Managed by cc-ide:[^\n]*\n(?:.*\n)*?(?=\Z|\n# (?!Managed by cc-ide))"),
+    ("theme.toml", r"\n?# Managed by cc-ide:[^\n]*\n(?:\[mgr\]\n)?syntect_theme\s*=[^\n]*\n?"),
     ("init.lua", r'(?m)^require\(["\']hscroll["\']\):setup\(\)\n?'),
 ):
     fp = os.path.join(yazi_dir, fname)
@@ -248,8 +249,12 @@ for sp_f in "$PROJECT_ROOT/assets/sprites/"*; do
     cp -f "$sp_f" "$HOME_DIR/.config/cc-ide/sprites/$sp_base"
   fi
 done
-cp -f "$PROJECT_ROOT/assets/lazygit.yml" "$HOME_DIR/.config/cc-ide/lazygit.yml"
-cp -f "$PROJECT_ROOT/assets/glow-style.json" "$HOME_DIR/.config/cc-ide/glow-style.json"
+if [[ ! -f "$HOME_DIR/.config/cc-ide/lazygit.yml" ]]; then
+  cp -f "$PROJECT_ROOT/assets/lazygit.yml" "$HOME_DIR/.config/cc-ide/lazygit.yml"
+fi
+if [[ ! -f "$HOME_DIR/.config/cc-ide/glow-style.json" ]]; then
+  cp -f "$PROJECT_ROOT/assets/glow-style.json" "$HOME_DIR/.config/cc-ide/glow-style.json"
+fi
 if [[ ! -f "$HOME_DIR/.config/cc-ide/palette.json" ]]; then
   cp -f "$PROJECT_ROOT/assets/palette.json" "$HOME_DIR/.config/cc-ide/palette.json"
 fi
@@ -268,17 +273,19 @@ if [[ -d "$PROJECT_ROOT/assets/workflows" ]]; then
   cp -f "$PROJECT_ROOT/assets/workflows/"*.js "$CLAUDE_DIR/workflows/" 2>/dev/null || true
 fi
 
-for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py bun_pe.py cc_patch_rules.py cc_schema_inspector.py cc-maint.py ccide_workflow_runner.py ccide_workflow_server.py pane-runner.sh lazygit-pager.sh lazygit-log.py git_smooth_graph.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py cc_tui_lib.py ccide ensure-ccide-core.sh ensure-ccide-core.mjs; do
+for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py bun_pe.py cc_patch_rules.py cc_schema_inspector.py cc-maint.py ccide_syntax_pal.py ccide_workflow_runner.py ccide_workflow_server.py pane-runner.sh lazygit-pager.sh lazygit-log.py git_smooth_graph.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py cc_tui_lib.py ccide ensure-ccide-core.sh ensure-ccide-core.mjs; do
   chmod +x "$PROJECT_ROOT/scripts/$script_name"
   ln -sf "$PROJECT_ROOT/scripts/$script_name" "$CLAUDE_DIR/scripts/$script_name"
 done
 ln -sf "$PROJECT_ROOT/scripts/ccide" "$HOME_DIR/.local/bin/cc-ide"
 ln -sf "$PROJECT_ROOT/scripts/ccide" "$HOME_DIR/.local/bin/ccide"
 ln -sf "$PROJECT_ROOT/scripts/lazygit-log.py" "$HOME_DIR/.local/bin/lazygit-log.py"
+"$PROJECT_ROOT/bin/ccide-core" workspace theme sync >/dev/null 2>&1 || true
 
 if [[ "$OPT_COMPANION" == "1" ]]; then
   YAZI_TOML="$HOME_DIR/.config/yazi/yazi.toml"
   backup_once "$YAZI_TOML"
+  backup_once "$HOME_DIR/.config/yazi/theme.toml"
   backup_once "$HOME_DIR/.config/yazi/init.lua"
   backup_once "$HOME_DIR/.config/yazi/keymap.toml"
   backup_once "$HOME_DIR/Library/Application Support/lazygit/config.yml"
@@ -435,6 +442,43 @@ if km_out != km_src:
     with open(keymap_toml, "w", encoding="utf-8") as f:
         f.write(km_out)
 
+theme_toml = os.path.join(yazi_dir, "theme.toml")
+tm_path = os.path.join(home_dir, ".config", "cc-ide", "ccide.tmTheme")
+th_src = ""
+if os.path.isfile(theme_toml):
+    with open(theme_toml, "r", encoding="utf-8") as f:
+        th_src = f.read()
+syntect_m = re.search(r"(?m)^\s*syntect_theme\s*=\s*([^\n]+)", th_src)
+if syntect_m:
+    if "ccide.tmTheme" in syntect_m.group(1):
+        th_out = re.sub(
+            r"(?m)^(\s*syntect_theme\s*=\s*)[^\n]+",
+            lambda m: f'{m.group(1)}"{tm_path}"',
+            th_src,
+            count=1,
+        )
+        if th_out != th_src:
+            with open(theme_toml, "w", encoding="utf-8") as f:
+                f.write(th_out)
+else:
+    if re.search(r"(?m)^\[mgr\]\s*$", th_src):
+        th_out = re.sub(
+            r"(?m)^(\[mgr\]\s*)$",
+            f'\\1\n# Managed by cc-ide: palette-unified syntect theme\nsyntect_theme = "{tm_path}"',
+            th_src,
+            count=1,
+        )
+    else:
+        sep = "\n" if th_src and not th_src.endswith("\n") else ""
+        th_out = (
+            th_src
+            + sep
+            + f'# Managed by cc-ide: palette-unified syntect theme\n[mgr]\nsyntect_theme = "{tm_path}"\n'
+        )
+    if th_out != th_src:
+        with open(theme_toml, "w", encoding="utf-8") as f:
+            f.write(th_out)
+
 for lg_cfg in (
     os.path.join(home_dir, "Library", "Application Support", "lazygit", "config.yml"),
     os.path.join(home_dir, ".config", "lazygit", "config.yml"),
@@ -573,7 +617,7 @@ mkdir -p "$PLUGIN_CACHE_DIR/.claude-plugin" \
 
 cp -f "$PROJECT_ROOT/.claude-plugin/plugin.json" "$PLUGIN_CACHE_DIR/.claude-plugin/plugin.json"
 cp -f "$PROJECT_ROOT/.claude-plugin/marketplace.json" "$PLUGIN_CACHE_DIR/.claude-plugin/marketplace.json"
-cp -f "$PROJECT_ROOT/hooks/hooks.json" "$PLUGIN_CACHE_DIR/hooks/hooks.json"
+cp -rf "$PROJECT_ROOT/hooks/"* "$PLUGIN_CACHE_DIR/hooks/"
 cp -rf "$PROJECT_ROOT/skills/"* "$PLUGIN_CACHE_DIR/skills/"
 rm -rf "$PROJECT_ROOT/scripts/__pycache__"
 cp -rf "$PROJECT_ROOT/scripts/"* "$PLUGIN_CACHE_DIR/scripts/"
@@ -589,7 +633,7 @@ cp -f "$PROJECT_ROOT/AGENT.md" "$PLUGIN_CACHE_DIR/AGENT.md"
 for prev_cache in "$CLAUDE_DIR/plugins/cache/cc-ide/cc-ide"/*; do
   if [[ -d "$prev_cache" && "$prev_cache" != "$PLUGIN_CACHE_DIR" ]]; then
     mkdir -p "$prev_cache/bin" "$prev_cache/hooks" "$prev_cache/scripts" "$prev_cache/assets"
-    cp -f "$PROJECT_ROOT/hooks/hooks.json" "$prev_cache/hooks/hooks.json"
+    cp -rf "$PROJECT_ROOT/hooks/"* "$prev_cache/hooks/"
     cp -rf "$PROJECT_ROOT/scripts/"* "$prev_cache/scripts/"
     cp -rf "$PROJECT_ROOT/assets/"* "$prev_cache/assets/"
     cp -f "$PROJECT_ROOT/bin/ccide-core" "$prev_cache/bin/ccide-core"

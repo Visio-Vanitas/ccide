@@ -204,6 +204,7 @@ pub fn get_session_subagents(
                 last_line: 0,
                 last_span: 0,
                 last_model: String::new(),
+                last_model_mtime: UNIX_EPOCH,
                 seq: 0,
                 done_from_tail: false,
             }

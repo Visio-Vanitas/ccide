@@ -17,6 +17,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -39,6 +40,28 @@ IPC_DIR = "/tmp/.cc-ide"
 SOCK_PATH = "/tmp/.cc-ide/iterm_daemon.sock"
 PID_PATH = "/tmp/.cc-ide/iterm_daemon.pid"
 YAZI_SESSION_CACHE: dict[str, str] = {}
+LAST_TAB_TITLES: dict[str, str] = {}
+
+
+def write_center_title_and_wake(yid: str, raw_name: str) -> None:
+    if not yid:
+        return
+    val = (raw_name or "").strip()
+    if LAST_TAB_TITLES.get(yid) == val:
+        return
+    LAST_TAB_TITLES[yid] = val
+    try:
+        os.makedirs(IPC_DIR, exist_ok=True)
+        with open(os.path.join(IPC_DIR, f"tab_title_{yid}.txt"), "w", encoding="utf-8") as f:
+            f.write(val + "\n")
+        sb_pf = os.path.join(IPC_DIR, f"sb_yazi_{yid}.pid")
+        if os.path.isfile(sb_pf):
+            with open(sb_pf, encoding="utf-8") as pf:
+                sb_pid = int(pf.read().strip() or "0")
+            if sb_pid > 1:
+                os.kill(sb_pid, signal.SIGUSR2)
+    except Exception:
+        pass
 
 
 def is_existing_daemon_alive() -> bool:
@@ -412,6 +435,7 @@ async def handle_open(
     await claude_sess.async_set_variable("user.cc_side_panes", ",".join(created_ids))
     if yazi_id:
         YAZI_SESSION_CACHE[str(yazi_id)] = claude_sess.session_id
+        write_center_title_and_wake(str(yazi_id), claude_sess.name or "")
     await claude_sess.async_activate()
     return ",".join(created_ids)
 
@@ -463,6 +487,7 @@ async def handle_rebalance(app: iterm2.App):
                         pass
                 if yid and spid:
                     YAZI_SESSION_CACHE[str(yid)] = s.session_id
+                    write_center_title_and_wake(str(yid), s.name or "")
                     try:
                         with open(os.path.join(cache_dir, f"tab_shell_{yid}.txt"), "w", encoding="utf-8") as f:
                             f.write(str(spid))
@@ -598,10 +623,39 @@ async def main(connection):
         finally:
             watched_selection_sessions.discard(sess_id)
 
+    watched_name_sessions: set[str] = set()
+
+    async def watch_session_name(sess_id: str):
+        if not sess_id or sess_id in watched_name_sessions:
+            return
+        watched_name_sessions.add(sess_id)
+        try:
+            sess0 = app.get_session_by_id(sess_id)
+            if sess0 is not None:
+                yid0 = await sess0.async_get_variable("user.cc_yazi_id")
+                if yid0:
+                    write_center_title_and_wake(str(yid0), sess0.name or "")
+            async with iterm2.VariableMonitor(
+                connection, iterm2.VariableScopes.SESSION, "name", sess_id
+            ) as mon:
+                while True:
+                    new_name = await mon.async_get()
+                    sess = app.get_session_by_id(sess_id)
+                    if sess is None:
+                        break
+                    yid = await sess.async_get_variable("user.cc_yazi_id")
+                    if yid:
+                        write_center_title_and_wake(str(yid), str(new_name or sess.name or ""))
+        except Exception:
+            pass
+        finally:
+            watched_name_sessions.discard(sess_id)
+
     for w in app.terminal_windows:
         for t in w.tabs:
             for s in t.sessions:
                 asyncio.create_task(watch_session_selection(s.session_id))
+                asyncio.create_task(watch_session_name(s.session_id))
 
     async def monitor_new_sessions():
         while True:
@@ -612,6 +666,7 @@ async def main(connection):
                         try:
                             if new_sid:
                                 asyncio.create_task(watch_session_selection(new_sid))
+                                asyncio.create_task(watch_session_name(new_sid))
                         except Exception:
                             pass
             except Exception:

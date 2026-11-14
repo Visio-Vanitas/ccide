@@ -8,7 +8,7 @@
     {
       "name": "cc-ide",
       "source": "./",
-      "description": "3-column tiling workspace (Yazi + Lazygit | Claude Code | AI Companion & Hardware Oscilloscope + Split CONTEXT/COST Telemetry) across iTerm2 Metal, SSH OSC 1337, WezTerm, Windows Terminal (wt.exe), and tmux."
+      "description": "3-column tiling workspace (Yazi + Lazygit | Claude Code | AI Companion & Hardware Oscilloscope + Split CONTEXT/COST Telemetry) with palette-unified syntax highlighting across iTerm2 Metal, Ghostty 1.3+, SSH OSC 1337, WezTerm, Windows Terminal (wt.exe), and tmux."
     }
   ]
 }

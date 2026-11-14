@@ -1,8 +1,11 @@
 //! `ccide-core workspace`: Adaptive Cross-Platform Tiling Workspace & Theme Controller (`src/commands/workspace/`).
 
 pub mod actions;
+pub mod ghostty;
+pub mod ghostty_script;
 pub mod iterm;
 pub mod open;
+pub mod reload;
 pub mod tmux;
 pub mod wezterm;
 pub mod wt;
@@ -15,6 +18,10 @@ use std::process::{Command, Stdio};
 use crate::platform::{cache_dir, ipc_dir, ipc_path, user_home_dir};
 
 use actions::{run_clear_subagents, run_theme_command};
+use ghostty::{
+    activate_ghostty_center, close_ghostty_panes, is_ghostty_env, probe_ghostty_native_capable,
+    rebalance_ghostty_panes,
+};
 use iterm::{emit_osc1337, ensure_daemon_started, find_python_bin, send_daemon_ipc};
 use open::handle_open;
 use wezterm::{activate_wezterm_center, close_wezterm_panes};
@@ -59,6 +66,10 @@ pub fn focus_center_after_view_switch(
     }
     if let Some(rest) = spec.strip_prefix("wezterm:") {
         activate_wezterm_center(home, rest.split(':').next().unwrap_or(""));
+        return;
+    }
+    if let Some(rest) = spec.strip_prefix("ghostty:") {
+        activate_ghostty_center(rest.split(':').next().unwrap_or(""));
         return;
     }
     if spec.starts_with("wt:") {
@@ -154,6 +165,8 @@ pub fn run(args: &[String]) {
                 }
             } else if spec.starts_with("wezterm:") {
                 close_wezterm_panes(&home, &spec);
+            } else if spec.starts_with("ghostty:") {
+                close_ghostty_panes(&spec);
             } else if let Some(yid) = spec.strip_prefix("wt:") {
                 close_wt_panes(yid);
             } else if let Some(yid) = spec.strip_prefix("osc:") {
@@ -184,6 +197,10 @@ pub fn run(args: &[String]) {
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();
+                return;
+            }
+            if is_ghostty_env() {
+                rebalance_ghostty_panes(30);
                 return;
             }
             if !cfg!(windows) && send_daemon_ipc("{\"op\":\"rebalance\"}", 1500).is_none() {
@@ -222,6 +239,13 @@ pub fn run(args: &[String]) {
         }
         "theme" | "palette" => {
             run_theme_command(&home, args.get(3).map(|s| s.as_str()).unwrap_or("list"))
+        }
+        "probe-ghostty" => {
+            std::process::exit(if probe_ghostty_native_capable(&home) {
+                0
+            } else {
+                1
+            });
         }
         _ => {}
     }
