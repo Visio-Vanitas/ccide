@@ -132,7 +132,7 @@ jobs:
           zsh -n install.sh
           zsh -n scripts/ccide
           zsh -n scripts/pane-runner.sh
-          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/git_smooth_graph.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py scripts/ccide_workflow_runner.py scripts/ccide_workflow_server.py
+          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/git_smooth_graph.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py scripts/ccide_workflow_runner.py scripts/ccide_workflow_server.py scripts/ccide_syntax_pal.py
 
       - name: Validate Plugin & Marketplace JSON Manifests & Version Parity
         run: |
@@ -160,7 +160,7 @@ jobs:
               print("OK:", p)
 
           pal = load_jsonc("assets/palette.json")
-          assert "preset" in pal and "ui" in pal and "statusline" in pal
+          assert "preset" in pal and "ui" in pal and "statusline" in pal and "syntax" in pal
           print("OK: assets/palette.json")
 
           vw = load_jsonc("assets/viewer.json")
@@ -193,8 +193,10 @@ jobs:
           print(f"OK: 4-way version parity ({cargo_ver})")
           PY
 
-      - name: Run Dynamic Patcher, Workbench & Cross-Platform Unit Tests
-        run: python3 -I -m unittest discover -s tests -v
+      - name: Build Debug Engine & Run Dynamic Patcher, Workbench & Cross-Platform Unit Tests
+        run: |
+          cargo build --locked
+          python3 -I -m unittest discover -s tests -v
 
       - name: Verify Live 3-OS Upstream @anthropic-ai/claude-code Compatibility (preview/main)
         if: github.ref == 'refs/heads/preview' || github.ref == 'refs/heads/main' || github.base_ref == 'preview' || github.base_ref == 'main'
