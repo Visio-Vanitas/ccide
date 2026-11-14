@@ -76,13 +76,13 @@ fn ghostty_app_stamp(home: &str) -> String {
 }
 
 pub fn probe_ghostty_native_capable(home: &str) -> bool {
-    if cfg!(target_os = "linux")
-        || env::var("SSH_CONNECTION").is_ok()
+    if env::var("SSH_CONNECTION").is_ok()
         || env::var("SSH_TTY").is_ok()
         || !env::var("TMUX").unwrap_or_default().is_empty()
     {
         return false;
     }
+    // Native splits are macOS-only; a mocked `CCIDE_OSASCRIPT_BIN` still drives the AppleScript path.
     let mock = !env::var("CCIDE_OSASCRIPT_BIN")
         .unwrap_or_default()
         .trim()

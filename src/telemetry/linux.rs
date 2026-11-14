@@ -207,12 +207,12 @@ pub fn sample_metrics(
                 let _ = std::thread::Builder::new().spawn(move || {
                     let _guard = _guard;
                     if let Ok(out) = child.wait_with_output() {
-                        if out.status.success() && !out.stdout.is_empty() {
-                            if fs::write(&nv_tmp, &out.stdout).is_ok()
-                                && fs::rename(&nv_tmp, &nv_cache).is_err()
-                            {
-                                let _ = fs::remove_file(&nv_tmp);
-                            }
+                        if out.status.success()
+                            && !out.stdout.is_empty()
+                            && fs::write(&nv_tmp, &out.stdout).is_ok()
+                            && fs::rename(&nv_tmp, &nv_cache).is_err()
+                        {
+                            let _ = fs::remove_file(&nv_tmp);
                         }
                     }
                 });
