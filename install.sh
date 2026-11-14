@@ -259,8 +259,16 @@ fi
 if [[ ! -f "$HOME_DIR/.config/cc-ide/pricing.json" ]]; then
   cp -f "$PROJECT_ROOT/assets/pricing.json" "$HOME_DIR/.config/cc-ide/pricing.json"
 fi
+if [[ ! -f "$HOME_DIR/.config/cc-ide/orchestrator.json" ]]; then
+  cp -f "$PROJECT_ROOT/assets/orchestrator.json" "$HOME_DIR/.config/cc-ide/orchestrator.json"
+fi
 
-for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py bun_pe.py cc_patch_rules.py cc_schema_inspector.py cc-maint.py pane-runner.sh lazygit-pager.sh lazygit-log.py git_smooth_graph.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py cc_tui_lib.py ccide ensure-ccide-core.sh ensure-ccide-core.mjs; do
+if [[ -d "$PROJECT_ROOT/assets/workflows" ]]; then
+  mkdir -p "$CLAUDE_DIR/workflows"
+  cp -f "$PROJECT_ROOT/assets/workflows/"*.js "$CLAUDE_DIR/workflows/" 2>/dev/null || true
+fi
+
+for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py bun_pe.py cc_patch_rules.py cc_schema_inspector.py cc-maint.py ccide_workflow_runner.py ccide_workflow_server.py pane-runner.sh lazygit-pager.sh lazygit-log.py git_smooth_graph.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py cc_tui_lib.py ccide ensure-ccide-core.sh ensure-ccide-core.mjs; do
   chmod +x "$PROJECT_ROOT/scripts/$script_name"
   ln -sf "$PROJECT_ROOT/scripts/$script_name" "$CLAUDE_DIR/scripts/$script_name"
 done
@@ -570,6 +578,10 @@ cp -rf "$PROJECT_ROOT/skills/"* "$PLUGIN_CACHE_DIR/skills/"
 rm -rf "$PROJECT_ROOT/scripts/__pycache__"
 cp -rf "$PROJECT_ROOT/scripts/"* "$PLUGIN_CACHE_DIR/scripts/"
 cp -rf "$PROJECT_ROOT/assets/"* "$PLUGIN_CACHE_DIR/assets/"
+if [[ -d "$PROJECT_ROOT/assets/workflows" ]]; then
+  mkdir -p "$PLUGIN_CACHE_DIR/workflows"
+  cp -f "$PROJECT_ROOT/assets/workflows/"*.js "$PLUGIN_CACHE_DIR/workflows/" 2>/dev/null || true
+fi
 cp -f "$PROJECT_ROOT/bin/ccide-core" "$PLUGIN_CACHE_DIR/bin/ccide-core"
 [[ "$OS_NAME" == "Darwin" ]] && codesign -f -s - "$PLUGIN_CACHE_DIR/bin/ccide-core" >/dev/null 2>&1 || true
 cp -f "$PROJECT_ROOT/AGENT.md" "$PLUGIN_CACHE_DIR/AGENT.md"
@@ -698,6 +710,7 @@ fi
 # 7. Rebalance Open Tabs & Hot-Reload Active Sidebars
 # ------------------------------------------------------------------------------
 log_step "7/7 Rebalancing open tabs & hot-reloading sidebars..."
+"$PROJECT_ROOT/bin/ccide-core" orchestrator sync >/dev/null 2>&1 || true
 "$PROJECT_ROOT/bin/ccide-core" workspace rebalance >/dev/null 2>&1 || true
 pkill -f "ccide-core sidebar" >/dev/null 2>&1 || true
 pkill -f "cc-right-sidebar.py" >/dev/null 2>&1 || true

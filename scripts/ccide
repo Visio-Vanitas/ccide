@@ -82,6 +82,25 @@ while [[ $# -gt 0 ]]; do
         exec "$PYTHON_BIN" -I "$SCRIPT_DIR/cc-maint.py" "$@"
       fi
       ;;
+    workflow)
+      shift
+      SCRIPT_DIR="${0:A:h}"
+      PYTHON_BIN="$(command -v python3 || echo /usr/bin/python3)"
+      if [[ "${1:-}" == "serve" ]]; then
+        shift
+        exec "$PYTHON_BIN" -I "$SCRIPT_DIR/ccide_workflow_server.py" "$@"
+      else
+        exec "$PYTHON_BIN" -I "$SCRIPT_DIR/ccide_workflow_runner.py" "$@"
+      fi
+      ;;
+    orchestrator)
+      shift
+      SCRIPT_DIR="${0:A:h}"
+      REPO_ROOT="${SCRIPT_DIR:h}"
+      CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
+      [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
+      exec "$CCIDE_CORE_BIN" orchestrator "$@"
+      ;;
     --ssh)
       shift
       mkdir -p "$HOME/.ssh"
@@ -122,6 +141,8 @@ Layout & Subagent Options:
   setup, --setup     Launch interactive TUI Setup & Live Theme Studio
   --sync-pricing     Sync ~/.config/cc-ide/pricing.json from LiteLLM & genai-prices
   --check-cc [...]   Run Cross-OS Claude Code symbol & schema maintenance workbench
+  workflow [...]     Run or serve native workflows (`list`, `run <name>`, `serve`)
+  orchestrator [...] Manage subagent/workflow model & effort presets (`status`, `preset`, `sync`)
 EOF
       exit 0
       ;;
@@ -220,9 +241,10 @@ auto_ensure_claude_patched() {
   [[ -f "$patcher" ]] || patcher="$SCRIPT_DIR/patch_claude_binary.py"
   py_bin="$(command -v python3 || true)"
   if [[ -f "$patcher" && -n "$py_bin" ]]; then
-    "$py_bin" -I "$patcher" --binary "$target_exe" >/dev/null 2>&1 || true
-    cur_stamp="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
-    [[ -n "$cur_stamp" ]] && printf '%s' "$cur_stamp" > "$stamp_file"
+    if "$py_bin" -I "$patcher" --binary "$target_exe" >/dev/null 2>&1; then
+      cur_stamp="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
+      [[ -n "$cur_stamp" ]] && printf '%s' "$cur_stamp" > "$stamp_file"
+    fi
   fi
 }
 auto_ensure_claude_patched
