@@ -75,13 +75,15 @@ pub fn sample_metrics(
             snap.load_1m = lavg[0];
         }
 
-        let mut u32_buf = [0u32; 40];
+        #[repr(C, align(8))]
+        struct VmStatBuf([u32; 40]);
+        let mut u32_buf = VmStatBuf([0u32; 40]);
         let mut vcnt: c_uint = 38;
-        if host_statistics64(host, 4, u32_buf.as_mut_ptr() as *mut c_void, &mut vcnt) == 0 {
-            let wired = u32_buf[3] as u64;
-            let purgeable = u32_buf[22] as u64;
-            let comp_occupied = u32_buf[32] as u64;
-            let internal = u32_buf[35] as u64;
+        if host_statistics64(host, 4, u32_buf.0.as_mut_ptr() as *mut c_void, &mut vcnt) == 0 {
+            let wired = u32_buf.0[3] as u64;
+            let purgeable = u32_buf.0[22] as u64;
+            let comp_occupied = u32_buf.0[32] as u64;
+            let internal = u32_buf.0[35] as u64;
             let used_pages = internal.saturating_sub(purgeable) + wired + comp_occupied;
             snap.mem_used_gb =
                 ((used_pages * (page_size as u64)) as f64) / (1024.0 * 1024.0 * 1024.0);
@@ -95,13 +97,15 @@ pub fn sample_metrics(
         snap.gpu_vram_gb = vram_g;
     }
 
-    let (rx_b, tx_b) = sample_net_sysctl();
-    if snap.prev_net_rx > 0 || snap.prev_net_tx > 0 {
-        snap.net_rx_bps = (rx_b.saturating_sub(snap.prev_net_rx) as f64) / dt_s;
-        snap.net_tx_bps = (tx_b.saturating_sub(snap.prev_net_tx) as f64) / dt_s;
+    let dt = dt_s.max(1e-3);
+    if let Some((rx_b, tx_b)) = sample_net_sysctl() {
+        if snap.prev_net_rx > 0 || snap.prev_net_tx > 0 {
+            snap.net_rx_bps = (rx_b.saturating_sub(snap.prev_net_rx) as f64) / dt;
+            snap.net_tx_bps = (tx_b.saturating_sub(snap.prev_net_tx) as f64) / dt;
+        }
+        snap.prev_net_rx = rx_b;
+        snap.prev_net_tx = tx_b;
     }
-    snap.prev_net_rx = rx_b;
-    snap.prev_net_tx = tx_b;
 }
 
 struct CfRef(*const c_void);
@@ -216,7 +220,7 @@ fn sample_gpu_iokit() -> (f64, f64) {
     }
 }
 
-fn sample_net_sysctl() -> (u64, u64) {
+fn sample_net_sysctl() -> Option<(u64, u64)> {
     unsafe {
         let mut mib: [c_int; 6] = [4, 17, 0, 0, 6, 0];
         let mut len: usize = 0;
@@ -230,7 +234,7 @@ fn sample_net_sysctl() -> (u64, u64) {
         ) != 0
             || len == 0
         {
-            return (0, 0);
+            return None;
         }
         let mut buf = vec![0u8; len];
         if sysctl(
@@ -242,7 +246,7 @@ fn sample_net_sysctl() -> (u64, u64) {
             0,
         ) != 0
         {
-            return (0, 0);
+            return None;
         }
         let mut rx_total = 0u64;
         let mut tx_total = 0u64;
@@ -267,6 +271,6 @@ fn sample_net_sysctl() -> (u64, u64) {
             }
             off += msglen;
         }
-        (rx_total, tx_total)
+        Some((rx_total, tx_total))
     }
 }

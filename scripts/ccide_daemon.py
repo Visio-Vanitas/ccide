@@ -50,17 +50,39 @@ def write_center_title_and_wake(yid: str, raw_name: str) -> None:
     if LAST_TAB_TITLES.get(yid) == val:
         return
     LAST_TAB_TITLES[yid] = val
+    title_path = os.path.join(IPC_DIR, f"tab_title_{yid}.txt")
     try:
         os.makedirs(IPC_DIR, exist_ok=True)
-        with open(os.path.join(IPC_DIR, f"tab_title_{yid}.txt"), "w", encoding="utf-8") as f:
+        tmp_path = f"{title_path}.tmp.{os.getpid()}"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(val + "\n")
-        sb_pf = os.path.join(IPC_DIR, f"sb_yazi_{yid}.pid")
-        if os.path.isfile(sb_pf):
-            with open(sb_pf, encoding="utf-8") as pf:
-                sb_pid = int(pf.read().strip() or "0")
-            if sb_pid > 1:
-                os.kill(sb_pid, signal.SIGUSR2)
-    except Exception:
+        os.replace(tmp_path, title_path)
+    except OSError:
+        pass
+    sb_pf = os.path.join(IPC_DIR, f"sb_yazi_{yid}.pid")
+    if not os.path.isfile(sb_pf):
+        return
+    try:
+        with open(sb_pf, encoding="utf-8") as pf:
+            sb_pid = int(pf.read().strip() or "0")
+    except (OSError, ValueError):
+        return
+    if sb_pid <= 1:
+        return
+    try:
+        os.kill(sb_pid, signal.SIGUSR2)
+    except ProcessLookupError:
+        # Sidebar already exited: drop the stale PID file so later frames stay cheap.
+        try:
+            os.unlink(sb_pf)
+        except OSError:
+            pass
+    except ValueError:
+        try:
+            os.unlink(sb_pf)
+        except OSError:
+            pass
+    except PermissionError:
         pass
 
 
@@ -435,15 +457,34 @@ async def handle_open(
     await claude_sess.async_set_variable("user.cc_side_panes", ",".join(created_ids))
     if yazi_id:
         YAZI_SESSION_CACHE[str(yazi_id)] = claude_sess.session_id
-        write_center_title_and_wake(str(yazi_id), claude_sess.name or "")
+        # Re-read the session so the title reflects a rename that happened since `async_refresh`.
+        fresh = app.get_session_by_id(claude_sess.session_id) or claude_sess
+        write_center_title_and_wake(str(yazi_id), fresh.name or "")
     await claude_sess.async_activate()
     return ",".join(created_ids)
 
 
+def discard_yazi_state(yid: str) -> None:
+    """Drops every per-tab cache entry and the published title file for `yid`."""
+    if not yid:
+        return
+    yid = str(yid)
+    YAZI_SESSION_CACHE.pop(yid, None)
+    LAST_TAB_TITLES.pop(yid, None)
+    try:
+        os.unlink(os.path.join(IPC_DIR, f"tab_title_{yid}.txt"))
+    except OSError:
+        pass
+
+
 async def handle_close(app: iterm2.App, pane_ids_arg: str = "", caller_guid: str = "", yid: str = ""):
-    if yid:
-        YAZI_SESSION_CACHE.pop(str(yid), None)
     await app.async_refresh()
+    if not yid and caller_guid:
+        # Resolve the owning tab from the Center session so caches are always released.
+        _, _, caller_sess = await find_target_session(app, caller_guid)
+        if caller_sess is not None:
+            yid = str(await caller_sess.async_get_variable("user.cc_yazi_id") or "")
+    discard_yazi_state(yid)
     if pane_ids_arg:
         target_ids = {x.strip() for x in pane_ids_arg.split(",") if x.strip()}
         for pid in target_ids:
@@ -596,6 +637,8 @@ async def main(connection):
     #       or `[SYS] macmon`, clearing the selection in `< 0.5ms` via `async_set_selection(Selection([]))`.
     #     - `FocusMonitor` bounces focus back to Center Claude Code if `[SYS] macmon` is clicked.
     watched_selection_sessions: set[str] = set()
+    # `sess_id -> (selection_task, name_task)` so a closing session can cancel both.
+    watched_tasks: dict[str, tuple[asyncio.Task, asyncio.Task]] = {}
 
     async def watch_session_selection(sess_id: str):
         if not sess_id or sess_id in watched_selection_sessions:
@@ -618,6 +661,8 @@ async def main(connection):
                             await sess.async_set_selection(iterm2.Selection([]))
                         except Exception:
                             pass
+        except asyncio.CancelledError:
+            raise
         except Exception:
             pass
         finally:
@@ -646,16 +691,31 @@ async def main(connection):
                     yid = await sess.async_get_variable("user.cc_yazi_id")
                     if yid:
                         write_center_title_and_wake(str(yid), str(new_name or sess.name or ""))
+        except asyncio.CancelledError:
+            raise
         except Exception:
             pass
         finally:
             watched_name_sessions.discard(sess_id)
 
+    def spawn_session_watchers(sess_id: str) -> None:
+        if not sess_id or sess_id in watched_tasks:
+            return
+        watched_tasks[sess_id] = (
+            asyncio.create_task(watch_session_selection(sess_id)),
+            asyncio.create_task(watch_session_name(sess_id)),
+        )
+
+    def stop_session_watchers(sess_id: str) -> None:
+        for task in watched_tasks.pop(sess_id, ()):
+            task.cancel()
+        watched_selection_sessions.discard(sess_id)
+        watched_name_sessions.discard(sess_id)
+
     for w in app.terminal_windows:
         for t in w.tabs:
             for s in t.sessions:
-                asyncio.create_task(watch_session_selection(s.session_id))
-                asyncio.create_task(watch_session_name(s.session_id))
+                spawn_session_watchers(s.session_id)
 
     async def monitor_new_sessions():
         while True:
@@ -665,14 +725,30 @@ async def main(connection):
                         new_sid = await mon.async_get()
                         try:
                             if new_sid:
-                                asyncio.create_task(watch_session_selection(new_sid))
-                                asyncio.create_task(watch_session_name(new_sid))
+                                spawn_session_watchers(new_sid)
                         except Exception:
                             pass
             except Exception:
                 await asyncio.sleep(0.5)
 
     asyncio.create_task(monitor_new_sessions())
+
+    async def monitor_session_termination():
+        # Releases per-session watchers the moment iTerm2 closes a pane, so closed tabs
+        # never leave orphaned `VariableMonitor` tasks or stale cache entries behind.
+        while True:
+            try:
+                async with iterm2.SessionTerminationMonitor(connection) as mon:
+                    while True:
+                        term_sid = await mon.async_get()
+                        try:
+                            stop_session_watchers(term_sid)
+                        except Exception:
+                            pass
+            except Exception:
+                await asyncio.sleep(0.5)
+
+    asyncio.create_task(monitor_session_termination())
 
     ya_bin = (
         shutil.which("ya")
@@ -790,13 +866,19 @@ async def main(connection):
             elif op == "focus":
                 q = str(req.get("query", "")).lower()
                 if q:
+                    found = False
                     for w in app.terminal_windows:
+                        if found:
+                            break
                         for t in w.tabs:
+                            if found:
+                                break
                             for s in t.sessions:
-                                if q in (s.name or "").lower() or s.session_id == q:
+                                if q in (s.name or "").lower() or s.session_id.lower() == q:
                                     await w.async_activate()
                                     await t.async_select()
                                     await s.async_activate()
+                                    found = True
                                     break
 
             writer.write((resp + "\n").encode("utf-8"))

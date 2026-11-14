@@ -17,7 +17,6 @@ import re
 import signal
 import subprocess
 import sys
-import tempfile
 import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -374,7 +373,7 @@ def format_full_width_log(
         cmd.extend([branch_arg, "--"])
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=10.0)
     except Exception:
         return []
 

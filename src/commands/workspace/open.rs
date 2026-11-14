@@ -182,19 +182,12 @@ pub fn handle_open(home: &str, cdir: &Path, args: &[String]) {
             println!("{}", spec);
         }
     } else if requested == "auto" {
-        if find_executable("tmux", home).is_some() {
-            if let Some(spec) = run_tmux_open(
-                home, target_dir, yazi_id, show_git, show_mon, left_pct, git_root, show_right,
-                shell_pid,
-            ) {
-                println!("{}", spec);
-                return;
-            }
+        if find_executable("tmux", home).is_none() {
+            eprintln!(
+                "ccide-core: no supported terminal (iTerm2/Ghostty/WezTerm/WT) or tmux session active; \
+                 run inside tmux or install tmux for 3-column tiling."
+            );
         }
-        eprintln!(
-            "ccide-core: no supported terminal (iTerm2/Ghostty/WezTerm/WT) or tmux session active; \
-             run inside tmux or install tmux for 3-column tiling."
-        );
     } else {
         eprintln!(
             "ccide-core: requested workspace backend '{}' is unavailable in this environment.",

@@ -28,7 +28,7 @@ if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-ANSI_OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
+ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 TRAILING_ANSI_SPACES_RE = re.compile(r"(?:(?:\x1b\[[0-9;]*m)+[ \t]+)+(?:\x1b\[[0-9;]*m)*$")
 SENTINEL_RE = re.compile(r"^(.*?)\x01(.*?)\x02(.*?)\x03(.*)$")
 HUNK_HDR_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$")
@@ -479,6 +479,7 @@ def run_glow(md_text: str, width: int, wrap_enabled: bool = False) -> str:
                 text=True,
                 capture_output=True,
                 env=env,
+                timeout=5.0,
             )
             if res.returncode == 0 and res.stdout.strip():
                 pal = ccide_syntax_pal.load_syntax_palette()
@@ -672,43 +673,64 @@ def render_fallback_unified_diff(
     return "\n".join(out) + ("\n" if out else "")
 
 
+def run_delta(delta_bin: str, diff_text: str, theme: str, hex_map: dict) -> subprocess.CompletedProcess:
+    """Runs `delta` with the given syntax theme, never inheriting `BAT_THEME` from the environment."""
+    env = {k: v for k, v in os.environ.items() if k != "BAT_THEME"}
+    return subprocess.run(
+        [
+            delta_bin,
+            "--dark",
+            f"--syntax-theme={theme}",
+            f"--plus-style=syntax {hex_map['diff_add_bg']}",
+            f"--plus-emph-style=syntax {hex_map['diff_add_emph_bg']}",
+            f"--minus-style=syntax {hex_map['diff_del_bg']}",
+            f"--minus-emph-style=syntax {hex_map['diff_del_emph_bg']}",
+            "--paging=never",
+            "--line-numbers",
+            "--line-numbers-left-format=\x01{nm}\x02",
+            "--line-numbers-right-format={np}\x03",
+            "--width=variable",
+            "--wrap-max-lines=0",
+            "--max-line-length=0",
+        ],
+        input=diff_text,
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=5.0,
+    )
+
+
+def delta_theme_failed(res: subprocess.CompletedProcess) -> bool:
+    stderr = (res.stderr or "").lower()
+    return res.returncode != 0 or not res.stdout or "theme" in stderr
+
+
 def render_diff(diff_text: str, width: int, wrap_enabled: bool = False) -> str:
     pal = ccide_syntax_pal.load_syntax_palette()
     hex_map = pal["hex"]
     bat_theme = pal.get("bat_theme", "base16-256")
     delta_bin = find_bin("delta")
     if delta_bin:
+        res = None
         try:
-            res = subprocess.run(
-                [
-                    delta_bin,
-                    "--dark",
-                    f"--syntax-theme={bat_theme}",
-                    f"--plus-style=syntax {hex_map['diff_add_bg']}",
-                    f"--plus-emph-style=syntax {hex_map['diff_add_emph_bg']}",
-                    f"--minus-style=syntax {hex_map['diff_del_bg']}",
-                    f"--minus-emph-style=syntax {hex_map['diff_del_emph_bg']}",
-                    "--paging=never",
-                    "--line-numbers",
-                    "--line-numbers-left-format=\x01{nm}\x02",
-                    "--line-numbers-right-format={np}\x03",
-                    "--width=variable",
-                    "--wrap-max-lines=0",
-                    "--max-line-length=0",
-                ],
-                input=diff_text,
-                text=True,
-                capture_output=True,
-            )
-            if res.returncode == 0 and res.stdout:
-                remapped = (
-                    res.stdout
-                    if bat_theme == "ccide"
-                    else ccide_syntax_pal.remap_base16_sgr(res.stdout, pal)
-                )
-                return format_delta_compact_single_column(remapped, width, wrap_enabled, pal)
+            res = run_delta(delta_bin, diff_text, bat_theme, hex_map)
         except Exception:
-            pass
+            res = None
+        if bat_theme != "base16-256" and (res is None or delta_theme_failed(res)):
+            # Configured theme (`ccide`) is not installed -> retry with the universal `base16-256` theme
+            try:
+                res = run_delta(delta_bin, diff_text, "base16-256", hex_map)
+            except Exception:
+                res = None
+            bat_theme = "base16-256"
+        if res is not None and res.returncode == 0 and res.stdout:
+            out = (
+                res.stdout
+                if bat_theme == "ccide"
+                else ccide_syntax_pal.remap_base16_sgr(res.stdout, pal)
+            )
+            return format_delta_compact_single_column(out, width, wrap_enabled, pal)
     return render_fallback_unified_diff(diff_text, width, wrap_enabled, pal)
 
 

@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$PluginVersion = "0.9.0"
+$PluginVersion = "0.9.1"
 $HomeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 $ClaudeDir = Join-Path $HomeDir ".claude"
 $CacheDir = Join-Path $HomeDir ".cache\cc-ide"
@@ -118,9 +118,11 @@ $PyExe = Resolve-PythonExe
 if ($Uninstall) {
     Write-Step "Uninstalling cc-ide Windows patches, launchers & managed config blocks..."
     Get-Process -Name "ccide-core" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    $FoundBin = $null
     if ($PyExe) {
         $FoundBin = & $PyExe -I -c "import sys; sys.path.insert(0, r'$ProjectRoot\scripts'); import bun_pe; print(bun_pe.discover_claude_bin())" 2>$null
-        if (-not $FoundBin) {
+    }
+    if (-not $FoundBin) {
         $ClaudeCmd = Get-Command claude -ErrorAction SilentlyContinue
         if ($ClaudeCmd) {
             $CandExe = Join-Path (Split-Path -Parent $ClaudeCmd.Source) "bin\claude.exe"
@@ -135,13 +137,30 @@ if ($Uninstall) {
     foreach ($fn in @("yazi.toml", "keymap.toml", "theme.toml", "init.lua")) {
         $fp = Join-Path $YaziCfgDir $fn
         if (Test-Path "$fp.ccide.bak") {
-            Copy-Item -LiteralPath "$fp.ccide.bak" -Destination $fp -Force
+            Move-Item -LiteralPath "$fp.ccide.bak" -Destination $fp -Force
         } elseif (($fn -eq "theme.toml") -and (Test-Path $fp)) {
             $thSrc = Get-Content -LiteralPath $fp -Raw -Encoding UTF8
             $thClean = [regex]::Replace($thSrc, "(?m)\r?\n?# Managed by cc-ide:[^\r\n]*\r?\n(?:\[mgr\]\r?\n)?syntect_theme\s*=[^\r\n]*\r?\n?", "")
-            if ($thClean -ne $thSrc) { Set-Content -LiteralPath $fp -Value $thClean -Encoding UTF8 }
+            if ([string]::IsNullOrWhiteSpace($thClean) -or ($thSrc -match "(?m)^# Managed by cc-ide:" -and $thClean.Trim() -eq "[mgr]")) {
+                Remove-Item -LiteralPath $fp -Force -ErrorAction SilentlyContinue
+            } elseif ($thClean -ne $thSrc) {
+                Set-Content -LiteralPath $fp -Value $thClean -Encoding UTF8
+            }
+        } elseif (($fn -eq "init.lua") -and (Test-Path $fp)) {
+            $initSrc = Get-Content -LiteralPath $fp -Raw -Encoding UTF8
+            $initClean = [regex]::Replace($initSrc, '(?m)^\s*require\(["'']hscroll["'']\):setup\(\)\r?\n?', "")
+            if ($initClean -ne $initSrc) { Set-Content -LiteralPath $fp -Value $initClean -Encoding UTF8 }
         }
     }
+    $LgCfgDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "lazygit" } else { Join-Path $HomeDir "AppData\Local\lazygit" }
+    $LgCfg = Join-Path $LgCfgDir "config.yml"
+    if (Test-Path "$LgCfg.ccide.bak") {
+        Move-Item -LiteralPath "$LgCfg.ccide.bak" -Destination $LgCfg -Force
+    }
+    $HscrollDir = Join-Path $YaziCfgDir "plugins\hscroll.yazi"
+    if (Test-Path $HscrollDir) { Remove-Item -LiteralPath $HscrollDir -Recurse -Force -ErrorAction SilentlyContinue }
+    $TmTheme = Join-Path $ConfigDir "ccide.tmTheme"
+    if (Test-Path $TmTheme) { Remove-Item -LiteralPath $TmTheme -Force -ErrorAction SilentlyContinue }
     $StFile = Join-Path $ClaudeDir "settings.json"
     if (Test-Path $StFile) {
         if ($PyExe) {

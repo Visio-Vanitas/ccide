@@ -51,6 +51,15 @@ fn cmd_first_line(bin: &Path, args: &[&str]) -> Option<String> {
         .map(String::from)
 }
 
+/// Shorthand for a `DoctorItem`.
+fn item(status: CheckStatus, label: &str, detail: String) -> DoctorItem {
+    DoctorItem {
+        status,
+        label: label.to_string(),
+        detail,
+    }
+}
+
 fn has_installer_marker(dir: &Path) -> bool {
     dir.join("install.sh").is_file() || dir.join("install.ps1").is_file()
 }
@@ -126,9 +135,12 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     } else if is_ghostty && !is_tmux && !is_ssh {
         if ghostty_native {
             "Ghostty · Native Metal Split Engine + Kitty APC Sprites".to_string()
-        } else {
+        } else if cfg!(target_os = "macos") {
+            // The `Ghostty 1.3+` native split path is macOS-only.
             "Ghostty · Tier 3 tmux Engine + Kitty Sprites (Ghostty 1.3+ enables native splits)"
                 .to_string()
+        } else {
+            "Ghostty · Tier 3 tmux Engine + Kitty APC Sprites".to_string()
         }
     } else {
         "Tier 3 · Universal tmux 3-Column Engine".to_string()
@@ -159,30 +171,26 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
                 .ok()
                 .and_then(|o| extract_json_bool(&String::from_utf8_lossy(&o.stdout), "required_ok"))
                 .unwrap_or(false);
-            items.push(DoctorItem {
-                status: if req_ok {
-                    CheckStatus::Ok
-                } else {
-                    CheckStatus::Warn
-                },
-                label: "Claude Code".to_string(),
-                detail: if req_ok {
-                    format!("{ver} · structural anchors verified")
-                } else {
-                    format!("{ver} · patch anchors need update")
-                },
-            });
+            let st = if req_ok {
+                CheckStatus::Ok
+            } else {
+                CheckStatus::Warn
+            };
+            let d = if req_ok {
+                format!("{ver} · structural anchors verified")
+            } else {
+                format!("{ver} · patch anchors need update")
+            };
+            items.push(item(st, "Claude Code", d));
         }
-        (Some(cbin), _, _) => items.push(DoctorItem {
-            status: CheckStatus::Ok,
-            label: "Claude Code".to_string(),
-            detail: cmd_first_line(cbin, &["--version"]).unwrap_or_else(|| "found".to_string()),
-        }),
-        (None, _, _) => items.push(DoctorItem {
-            status: CheckStatus::Warn,
-            label: "Claude Code".to_string(),
-            detail: "not found (npm i -g @anthropic-ai/claude-code)".to_string(),
-        }),
+        (Some(cbin), _, _) => {
+            let d = cmd_first_line(cbin, &["--version"]).unwrap_or_else(|| "found".to_string());
+            items.push(item(CheckStatus::Ok, "Claude Code", d));
+        }
+        (None, _, _) => {
+            let d = "not found (npm i -g @anthropic-ai/claude-code)".to_string();
+            items.push(item(CheckStatus::Warn, "Claude Code", d));
+        }
     }
 
     let settings_txt =
@@ -200,14 +208,11 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     })
     .collect();
     if !locked_vars.is_empty() {
-        items.push(DoctorItem {
-            status: CheckStatus::Warn,
-            label: "Orchestrator".to_string(),
-            detail: format!(
-                "{} set (locks Workflow per-agent model overrides)",
-                locked_vars.join(", ")
-            ),
-        });
+        let d = format!(
+            "{} set (locks Workflow per-agent model overrides)",
+            locked_vars.join(", ")
+        );
+        items.push(item(CheckStatus::Warn, "Orchestrator", d));
     }
 
     if cfg!(windows) {
@@ -228,28 +233,8 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
                 )
             }
         };
-        items.push(DoctorItem {
-            status: st,
-            label: "Split Engine".to_string(),
-            detail: det.to_string(),
-        });
-    } else if is_ghostty && !is_tmux && !is_ssh {
-        let det = if ghostty_native {
-            "Ghostty · Native Metal Split Engine + Kitty APC Sprites"
-        } else {
-            "Ghostty · Tier 3 tmux Engine + Kitty Sprites (Ghostty 1.3+ enables native splits)"
-        };
-        items.push(DoctorItem {
-            status: if ghostty_native || find_executable("tmux", home).is_some() {
-                CheckStatus::Ok
-            } else {
-                missing_pkgs.push("tmux");
-                CheckStatus::Warn
-            },
-            label: "Split Engine".to_string(),
-            detail: det.to_string(),
-        });
-    } else if is_macos && !is_ssh && !is_tmux {
+        items.push(item(st, "Split Engine", det.to_string()));
+    } else if is_macos && is_iterm {
         let iterm_app = [
             PathBuf::from("/Applications/iTerm.app"),
             Path::new(home).join("Applications/iTerm.app"),
@@ -282,61 +267,80 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
             .unwrap_or(false);
 
         if sock_live {
-            items.push(DoctorItem {
-                status: CheckStatus::Ok,
-                label: "iTerm2 Daemon".to_string(),
-                detail: "warm socket active (/tmp/.cc-ide/iterm_daemon.sock)".to_string(),
-            });
+            let d = "warm socket active (/tmp/.cc-ide/iterm_daemon.sock)".to_string();
+            items.push(item(CheckStatus::Ok, "iTerm2 Daemon", d));
         } else if iterm_app.is_some() && py_iterm_ok {
-            items.push(DoctorItem {
-                status: CheckStatus::Info,
-                label: "iTerm2 Daemon".to_string(),
-                detail: "iterm2 venv ready · socket starts on install / launch".to_string(),
-            });
+            items.push(item(
+                CheckStatus::Info,
+                "iTerm2 Daemon",
+                "iterm2 venv ready · socket starts on install / launch".to_string(),
+            ));
         } else if iterm_app.is_some() {
-            items.push(DoctorItem {
-                status: CheckStatus::Warn,
-                label: "iTerm2 API".to_string(),
-                detail: "run ./install.sh to provision ~/.local/share/cc-ide/pyenv + API"
-                    .to_string(),
-            });
+            items.push(item(
+                CheckStatus::Warn,
+                "iTerm2 API",
+                "run ./install.sh to provision ~/.local/share/cc-ide/pyenv + API".to_string(),
+            ));
         } else if let Some(tbin) = find_executable("tmux", home) {
             let tv = cmd_first_line(&tbin, &["-V"]).unwrap_or_else(|| "tmux".to_string());
-            items.push(DoctorItem {
-                status: CheckStatus::Ok,
-                label: "Split Engine".to_string(),
-                detail: format!("{tv} (iTerm2 not found · Tier 3 active)"),
-            });
+            items.push(item(
+                CheckStatus::Ok,
+                "Split Engine",
+                format!("{tv} (iTerm2 not found · Tier 3 active)"),
+            ));
         }
+    } else if is_wezterm && !is_tmux {
+        let wv = find_executable("wezterm", home)
+            .and_then(|b| cmd_first_line(&b, &["--version"]))
+            .unwrap_or_else(|| "wezterm".to_string());
+        let det = format!("{wv} (native CLI split engine)");
+        items.push(item(CheckStatus::Ok, "Split Engine", det));
+    } else if is_ghostty && !is_tmux && !is_ssh {
+        let det = if ghostty_native {
+            "Ghostty · Native Metal Split Engine + Kitty APC Sprites".to_string()
+        } else if cfg!(target_os = "macos") {
+            // The `Ghostty 1.3+` native split path is macOS-only.
+            "Ghostty · Tier 3 tmux Engine + Kitty Sprites (Ghostty 1.3+ enables native splits)"
+                .to_string()
+        } else {
+            "Ghostty · Tier 3 tmux Engine + Kitty APC Sprites".to_string()
+        };
+        let status = if ghostty_native || find_executable("tmux", home).is_some() {
+            CheckStatus::Ok
+        } else {
+            missing_pkgs.push("tmux");
+            CheckStatus::Warn
+        };
+        items.push(item(status, "Split Engine", det));
     } else if let Some(tbin) = find_executable("tmux", home) {
         let tv = cmd_first_line(&tbin, &["-V"]).unwrap_or_else(|| "tmux".to_string());
-        items.push(DoctorItem {
-            status: CheckStatus::Ok,
-            label: "Split Engine".to_string(),
-            detail: format!("{tv} (universal 3-column tiling)"),
-        });
+        items.push(item(
+            CheckStatus::Ok,
+            "Split Engine",
+            format!("{tv} (universal 3-column tiling)"),
+        ));
     } else {
         missing_pkgs.push("tmux");
-        items.push(DoctorItem {
-            status: CheckStatus::Warn,
-            label: "Split Engine".to_string(),
-            detail: "tmux not found (required outside local iTerm2/WezTerm)".to_string(),
-        });
+        items.push(item(
+            CheckStatus::Warn,
+            "Split Engine",
+            "tmux not found (required outside local iTerm2/WezTerm)".to_string(),
+        ));
     }
 
     match (find_executable("yazi", home), find_executable("ya", home)) {
-        (Some(yb), Some(_)) => items.push(DoctorItem {
-            status: CheckStatus::Ok,
-            label: "Yazi + ya".to_string(),
-            detail: cmd_first_line(&yb, &["--version"]).unwrap_or_else(|| "installed".to_string()),
-        }),
+        (Some(yb), Some(_)) => items.push(item(
+            CheckStatus::Ok,
+            "Yazi + ya",
+            cmd_first_line(&yb, &["--version"]).unwrap_or_else(|| "installed".to_string()),
+        )),
         _ => {
             missing_pkgs.push(if cfg!(windows) { "sxyazi.yazi" } else { "yazi" });
-            items.push(DoctorItem {
-                status: CheckStatus::Warn,
-                label: "Yazi + ya".to_string(),
-                detail: "missing (left-top file tree pane)".to_string(),
-            });
+            items.push(item(
+                CheckStatus::Warn,
+                "Yazi + ya",
+                "missing (left-top file tree pane)".to_string(),
+            ));
         }
     }
 
@@ -347,22 +351,22 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
             .find(|s| s.trim_start().starts_with("version="))
             .map(|s| format!("lazygit {}", s.trim().trim_start_matches("version=")))
             .unwrap_or(lv);
-        items.push(DoctorItem {
-            status: CheckStatus::Ok,
-            label: "Lazygit".to_string(),
-            detail: trunc_to_width(&short_lv, 44),
-        });
+        items.push(item(
+            CheckStatus::Ok,
+            "Lazygit",
+            trunc_to_width(&short_lv, 44),
+        ));
     } else {
         missing_pkgs.push(if cfg!(windows) {
             "JesseDuffield.lazygit"
         } else {
             "lazygit"
         });
-        items.push(DoctorItem {
-            status: CheckStatus::Warn,
-            label: "Lazygit".to_string(),
-            detail: "missing (left-bottom Git diff/graph pane)".to_string(),
-        });
+        items.push(item(
+            CheckStatus::Warn,
+            "Lazygit",
+            "missing (left-bottom Git diff/graph pane)".to_string(),
+        ));
     }
 
     let has_delta = find_executable("delta", home).is_some();
@@ -381,34 +385,26 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
             "glow"
         });
     }
-    items.push(DoctorItem {
-        status: if has_delta && has_glow {
-            CheckStatus::Ok
-        } else {
-            CheckStatus::Info
-        },
-        label: "Delta & Glow".to_string(),
-        detail: match (has_delta, has_glow) {
-            (true, true) => "delta + glow active",
-            (true, false) => "delta active · glow using Python fallback",
-            (false, true) => "glow active · diff using Python fallback",
-            (false, false) => "using built-in zero-dep Python ANSI renderers",
-        }
-        .to_string(),
-    });
+    let dg_status = if has_delta && has_glow {
+        CheckStatus::Ok
+    } else {
+        CheckStatus::Info
+    };
+    let dg_detail = match (has_delta, has_glow) {
+        (true, true) => "delta + glow active",
+        (true, false) => "delta active · glow using Python fallback",
+        (false, true) => "glow active · diff using Python fallback",
+        (false, false) => "using built-in zero-dep Python ANSI renderers",
+    };
+    items.push(item(dg_status, "Delta & Glow", dg_detail.to_string()));
 
+    let joined = missing_pkgs.join(" ");
     let missing_hint = if missing_pkgs.is_empty() {
         "All companion tools & optional renderers are installed.".to_string()
     } else if cfg!(windows) {
-        format!(
-            "Optional/missing tools: winget install {}",
-            missing_pkgs.join(" ")
-        )
+        format!("Optional/missing tools: winget install {joined}")
     } else if is_macos {
-        format!(
-            "Optional/missing tools: brew install {}",
-            missing_pkgs.join(" ")
-        )
+        format!("Optional/missing tools: brew install {joined}")
     } else {
         format!("Missing packages: {}", missing_pkgs.join(", "))
     };
@@ -447,11 +443,11 @@ mod tests {
         let rep = DoctorReport {
             os_arch: "windows/x86_64".to_string(),
             backend_tier: "Tier 1 (Win) · WezTerm".to_string(),
-            items: vec![DoctorItem {
-                status: CheckStatus::Ok,
-                label: "Claude Code".to_string(),
-                detail: "2.1.323 \"ok\"".to_string(),
-            }],
+            items: vec![item(
+                CheckStatus::Ok,
+                "Claude Code",
+                "2.1.323 \"ok\"".to_string(),
+            )],
             missing_hint: "All good.".to_string(),
         };
         let js = format_doctor_json(&rep);

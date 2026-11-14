@@ -86,23 +86,30 @@ def apply_patches(src_path: str, dst_path: str) -> dict:
         missing = [p["name"] for p in report["patches"] if p["required"] and not p["applied"]]
         raise RuntimeError(f"Required patches did not match: {', '.join(missing)}")
 
-    tmp_dst = dst_path + ".tmp"
-    with open(tmp_dst, "wb") as f:
-        f.write(buf)
-    if platform.system() != "Windows":
-        os.chmod(tmp_dst, 0o755)
-    if platform.system() == "Darwin" and shutil.which("codesign"):
-        subprocess.run(["codesign", "-f", "-s", "-", tmp_dst], check=True)
+    tmp_dst = f"{dst_path}.tmp.{os.getpid()}"
     try:
-        os.replace(tmp_dst, dst_path)
-    except PermissionError as exc:
+        with open(tmp_dst, "wb") as f:
+            f.write(buf)
+        if platform.system() != "Windows":
+            os.chmod(tmp_dst, 0o755)
+        if platform.system() == "Darwin" and shutil.which("codesign"):
+            subprocess.run(["codesign", "-f", "-s", "-", tmp_dst], check=True)
+        res = subprocess.run([tmp_dst, "--version"], capture_output=True, text=True, check=True)
+        try:
+            os.replace(tmp_dst, dst_path)
+        except PermissionError as exc:
+            raise RuntimeError(
+                f"Cannot overwrite {dst_path} (file locked by a running Claude Code process). "
+                "Close open Claude windows and re-run `install.ps1 -PatchOnly` or `ccide`."
+            ) from exc
+    except BaseException:
         if os.path.exists(tmp_dst):
-            os.remove(tmp_dst)
-        raise RuntimeError(
-            f"Cannot overwrite {dst_path} (file locked by a running Claude Code process). "
-            "Close open Claude windows and re-run `install.ps1 -PatchOnly` or `ccide`."
-        ) from exc
-    print(f"  [OK] Installed -> {dst_path}")
+            try:
+                os.remove(tmp_dst)
+            except OSError:
+                pass
+        raise
+    print(f"  [OK] Installed -> {dst_path} (verified `{res.stdout.strip()}`)")
     return report
 
 
@@ -145,9 +152,13 @@ def main() -> None:
     dst = os.path.join(os.path.dirname(bak_path), "claude-test-bin") if args.test else target_bin
     try:
         apply_patches(bak_path, dst)
-        res = subprocess.run([dst, "--version"], capture_output=True, text=True, check=True)
-        print(f"  [OK] Verified `{dst} --version` -> {res.stdout.strip()}")
-    except RuntimeError as e:
+    except (RuntimeError, subprocess.CalledProcessError) as e:
+        if not args.test and os.path.exists(bak_path):
+            try:
+                shutil.copy2(bak_path, target_bin)
+                print(f"  [OK] Rolled back {target_bin} from pristine backup.")
+            except OSError:
+                pass
         print(f"  [WARN] Binary patch skipped: {e}")
         sys.exit(0)
 

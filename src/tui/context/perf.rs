@@ -169,12 +169,13 @@ impl ModelPerfAccum {
 
     pub fn record_fallback(&mut self, rec: &TurnRecord) {
         if rec.stream_ms >= 100 && rec.out_tok >= 20 {
-            let (b0, btot) = if rec.out_tok.saturating_mul(2) > rec.total_vis_bytes
-                && rec.total_bytes > rec.first_bytes
+            let (b0, btot) = if rec.first_vis_bytes > 0
+                && rec.total_vis_bytes > rec.first_vis_bytes
+                && rec.out_tok.saturating_mul(2) <= rec.total_vis_bytes
             {
-                (rec.first_bytes, rec.total_bytes)
-            } else if rec.total_vis_bytes > rec.first_vis_bytes {
                 (rec.first_vis_bytes, rec.total_vis_bytes)
+            } else if rec.total_bytes > rec.first_bytes {
+                (rec.first_bytes, rec.total_bytes)
             } else {
                 (0, 0)
             };
@@ -266,5 +267,17 @@ mod tests {
         let _ = fs::remove_file(&p);
         assert_eq!(tr.samples.len(), 1);
         assert_eq!(tr.samples[0].out_tok, 320);
+
+        let mut fb = ModelPerfAccum::default();
+        fb.record_fallback(&TurnRecord {
+            out_tok: 400,
+            stream_ms: 1_000,
+            first_bytes: 5_000,
+            total_bytes: 10_000,
+            first_vis_bytes: 0,
+            total_vis_bytes: 5_000,
+            ..TurnRecord::default()
+        });
+        assert_eq!(fb.resolve().0, Some(200.0));
     }
 }

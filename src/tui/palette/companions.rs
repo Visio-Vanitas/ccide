@@ -2,8 +2,11 @@
 
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::platform::find_executable;
 
@@ -27,7 +30,13 @@ pub(crate) fn build_yazi_theme_toml(pal: &Palette, tm_path: &Path) -> String {
         u[11].to_hex_string(),
     ];
     let bg = s.code_bg.to_hex_string();
-    let tm_s = tm_path.to_string_lossy().replace('\\', "/");
+    let raw_tm = tm_path.to_string_lossy();
+    let stripped_tm = if let Some(rest) = raw_tm.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        raw_tm.strip_prefix(r"\\?\").unwrap_or(&raw_tm).to_string()
+    };
+    let tm_s = stripped_tm.replace('\\', r"\\").replace('"', r#"\""#);
     format!(
         "# Managed by cc-ide: palette-unified Yazi UI & syntect theme (preset: {})\n\
          [mgr]\n\
@@ -127,35 +136,102 @@ pub(crate) fn build_lazygit_yml(pal: &Palette) -> String {
     )
 }
 
+fn run_bat_timeout(bat: &Path, args: &[&str], capture: bool) -> Option<(bool, String)> {
+    let mut cmd = Command::new(bat);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(if capture {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().ok()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => {
+                let mut s = String::new();
+                if capture {
+                    if let Some(mut out) = child.stdout.take() {
+                        let _ = out.read_to_string(&mut s);
+                    }
+                }
+                return Some((st.success(), s));
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 fn try_sync_bat_cache(home: &str, tm_content: &str) -> bool {
     let Some(bat) = find_executable("bat", home).or_else(|| find_executable("batcat", home)) else {
         return false;
     };
-    let Ok(out) = Command::new(&bat)
-        .arg("--config-dir")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-    else {
+    let Some((ok, out_s)) = run_bat_timeout(&bat, &["--config-dir"], true) else {
         return false;
     };
-    let dir_s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !ok {
+        return false;
+    }
+    let dir_s = out_s.trim();
     if dir_s.is_empty() {
         return false;
     }
-    let themes_dir = Path::new(&dir_s).join("themes");
+    let themes_dir = Path::new(dir_s).join("themes");
+    let tm_dest = themes_dir.join("ccide.tmTheme");
+    let same_tm = fs::read(&tm_dest).ok().as_deref() == Some(tm_content.as_bytes());
+    if same_tm {
+        let has_bin = Path::new(dir_s).join("themes.bin").is_file()
+            || run_bat_timeout(&bat, &["--cache-dir"], true)
+                .filter(|(c_ok, s)| *c_ok && !s.trim().is_empty())
+                .map(|(_, s)| Path::new(s.trim()).join("themes.bin").is_file())
+                .unwrap_or(false);
+        if has_bin {
+            return true;
+        }
+    }
     if fs::create_dir_all(&themes_dir).is_err() {
         return false;
     }
-    atomic_write(&themes_dir.join("ccide.tmTheme"), tm_content);
-    Command::new(&bat)
-        .args(["cache", "--build"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
+    if !same_tm && atomic_write(&tm_dest, tm_content).is_err() {
+        return false;
+    }
+    run_bat_timeout(&bat, &["cache", "--build"], false)
+        .map(|(build_ok, _)| build_ok)
         .unwrap_or(false)
+}
+
+fn yazi_theme_target(home: &str) -> Option<PathBuf> {
+    let non_empty = |k| {
+        env::var(k)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    if let Some(y) = non_empty("YAZI_CONFIG_HOME") {
+        return Some(Path::new(&y).join("theme.toml"));
+    }
+    if cfg!(windows) {
+        return non_empty("APPDATA")
+            .map(|a| Path::new(&a).join("yazi").join("config").join("theme.toml"));
+    }
+    let base = non_empty("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(home).join(".config"));
+    Some(base.join("yazi").join("theme.toml"))
 }
 
 pub(crate) fn sync_companion_themes(
@@ -164,42 +240,35 @@ pub(crate) fn sync_companion_themes(
     pal: &Palette,
     tm_path: &Path,
     tm_content: &str,
-) -> &'static str {
+) -> (&'static str, bool) {
     let yazi_toml = build_yazi_theme_toml(pal, tm_path);
-    atomic_write(&cfg_dir.join("yazi-theme.toml"), &yazi_toml);
-    atomic_write(&cfg_dir.join("lazygit.yml"), &build_lazygit_yml(pal));
+    let cfg_ok = atomic_write(&cfg_dir.join("yazi-theme.toml"), &yazi_toml).is_ok()
+        && atomic_write(&cfg_dir.join("lazygit.yml"), &build_lazygit_yml(pal)).is_ok();
 
     let explicit_override = env::var("CCIDE_PALETTE_FILE")
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
     if explicit_override {
-        return "base16-256";
+        return ("base16-256", cfg_ok);
     }
 
-    let mut yazi_targets = vec![Path::new(home).join(".config/yazi/theme.toml")];
-    if cfg!(windows) {
-        if let Ok(appdata) = env::var("APPDATA") {
-            if !appdata.trim().is_empty() {
-                yazi_targets.push(Path::new(appdata.trim()).join("yazi/config/theme.toml"));
-            }
-        }
-    }
-    for yt in yazi_targets {
+    if let Some(yt) = yazi_theme_target(home) {
         let can_manage = match fs::read_to_string(&yt) {
-            Err(_) => true,
+            Err(e) => e.kind() == io::ErrorKind::NotFound && yt.symlink_metadata().is_err(),
             Ok(s) => s.trim().is_empty() || s.contains("Managed by cc-ide"),
         };
         if can_manage {
             if let Some(p) = yt.parent() {
                 let _ = fs::create_dir_all(p);
             }
-            atomic_write(&yt, &yazi_toml);
+            let _ = atomic_write(&yt, &yazi_toml);
         }
     }
 
-    if try_sync_bat_cache(home, tm_content) {
+    let bat_theme = if try_sync_bat_cache(home, tm_content) {
         "ccide"
     } else {
         "base16-256"
-    }
+    };
+    (bat_theme, cfg_ok)
 }

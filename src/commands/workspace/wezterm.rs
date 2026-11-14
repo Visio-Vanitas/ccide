@@ -32,7 +32,8 @@ pub fn run_wezterm_open(
     let engine = current_engine_exe(home);
     let eng_s = engine.to_str().unwrap_or("ccide-core");
     let pid_s = shell_pid.to_string();
-    let left_pct_s = left_pct.clamp(18, 45).to_string();
+    let left_clamped = left_pct.clamp(18, 45);
+    let left_pct_s = left_clamped.to_string();
     let mut created_sides = Vec::new();
 
     // 1. Left column (`yazi`, `left_pct%` of full window)
@@ -57,7 +58,11 @@ pub fn run_wezterm_open(
         ])
         .output()
     {
-        let left_top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let left_top = if out.status.success() {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        } else {
+            String::new()
+        };
         if !left_top.is_empty() {
             created_sides.push(left_top.clone());
             if show_git {
@@ -82,7 +87,11 @@ pub fn run_wezterm_open(
                     ])
                     .output()
                 {
-                    let gp = String::from_utf8_lossy(&gout.stdout).trim().to_string();
+                    let gp = if gout.status.success() {
+                        String::from_utf8_lossy(&gout.stdout).trim().to_string()
+                    } else {
+                        String::new()
+                    };
                     if !gp.is_empty() {
                         created_sides.push(gp);
                     }
@@ -93,7 +102,7 @@ pub fn run_wezterm_open(
 
     // 2. Right column (`sidebar`, ~16% of full window -> `23%` of remaining `70%` center+right)
     if show_right {
-        let rem_pct = 100usize.saturating_sub(left_pct).max(30);
+        let rem_pct = 100usize.saturating_sub(left_clamped).max(30);
         let right_rel_pct = ((1600 + rem_pct / 2) / rem_pct).clamp(18, 35).to_string();
         if let Ok(rout) = Command::new(&wez)
             .args([
@@ -116,7 +125,11 @@ pub fn run_wezterm_open(
             ])
             .output()
         {
-            let rp = String::from_utf8_lossy(&rout.stdout).trim().to_string();
+            let rp = if rout.status.success() {
+                String::from_utf8_lossy(&rout.stdout).trim().to_string()
+            } else {
+                String::new()
+            };
             if !rp.is_empty() {
                 created_sides.push(rp);
             }
@@ -140,12 +153,17 @@ pub fn activate_wezterm_center(home: &str, center_pane: &str) {
         return;
     }
     if let Some(wez) = find_executable("wezterm", home) {
-        let _ = Command::new(wez)
+        if let Ok(mut c) = Command::new(wez)
             .args(["cli", "activate-pane", "--pane-id", center_pane])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn();
+            .spawn()
+        {
+            let _ = std::thread::spawn(move || {
+                let _ = c.wait();
+            });
+        }
     }
 }
 

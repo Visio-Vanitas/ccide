@@ -8,6 +8,23 @@ use crate::orchestrator::router::{json_esc, push_opt_str};
 use crate::orchestrator::{OrchestratorConfig, ALL_ROLES};
 use crate::tui::context::json_scan::extract_json_array_slice;
 
+fn js_str_esc(s: &str, quote: char) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn expand_workflow_macros(script: &str, cfg: &OrchestratorConfig) -> String {
     let prof = cfg.active_profile();
     let mut out = script.to_string();
@@ -29,13 +46,18 @@ pub fn expand_workflow_macros(script: &str, cfg: &OrchestratorConfig) -> String 
             while let Some(pos) = rest.find(&pat) {
                 next.push_str(&rest[..pos]);
                 let b = next.trim_end();
-                let rep = if b.ends_with("effort:") || b.ends_with("effort :") {
-                    eff
-                } else {
-                    model
-                };
+                let is_effort = b
+                    .strip_suffix(':')
+                    .map(|s| s.trim_end())
+                    .map(|s| {
+                        s.ends_with("effort")
+                            || s.ends_with("\"effort\"")
+                            || s.ends_with("'effort'")
+                    })
+                    .unwrap_or(false);
+                let rep = if is_effort { eff } else { model };
                 next.push(q);
-                next.push_str(rep);
+                next.push_str(&js_str_esc(rep, q));
                 next.push(q);
                 rest = &rest[pos + pat.len()..];
             }
@@ -100,7 +122,12 @@ pub(crate) fn route_workflow(tool_in: &str, perm_mode: &str, home: &str) -> Opti
     let meta = build_ccide_meta(&cfg);
     if let Some(args_obj) = extract_json_object(tool_in, "args") {
         let inner = args_obj.trim();
-        let injected = if inner == "{}" {
+        let is_empty_obj = inner
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(false);
+        let injected = if is_empty_obj {
             format!("{{\"__ccide\":{}}}", meta)
         } else if let Some(prefix) = inner.strip_suffix('}') {
             format!("{},\"__ccide\":{}}}", prefix, meta)
@@ -110,7 +137,7 @@ pub(crate) fn route_workflow(tool_in: &str, perm_mode: &str, home: &str) -> Opti
         fields.push(format!("\"args\":{}", injected));
     } else if let Some(arr) = extract_json_array_slice(tool_in, "args") {
         fields.push(format!("\"args\":{}", arr));
-    } else if !tool_in.contains("\"args\"") {
+    } else if extract_json_str(tool_in, "args").is_none() {
         fields.push(format!("\"args\":{{\"__ccide\":{}}}", meta));
     }
     let decision = if perm_mode.contains("bypass") || perm_mode.contains("auto") {
