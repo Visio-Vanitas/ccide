@@ -61,9 +61,19 @@ fn ansi256_to_rgb(n: u8) -> (u8, u8, u8) {
         (17, 168, 205),
         (229, 229, 229),
     ];
+    const BRIGHT: [(u8, u8, u8); 8] = [
+        (102, 102, 102),
+        (241, 76, 76),
+        (35, 209, 139),
+        (245, 245, 67),
+        (59, 142, 234),
+        (214, 112, 214),
+        (41, 184, 219),
+        (255, 255, 255),
+    ];
     match n {
         0..=7 => BASE[n as usize],
-        8..=15 => (180, 180, 180),
+        8..=15 => BRIGHT[(n - 8) as usize],
         16..=231 => {
             let i = n - 16;
             let c = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
@@ -154,14 +164,12 @@ pub fn resolve_palette_path(home: &str) -> PathBuf {
     if let Some(e) = non_empty("CCIDE_PALETTE_FILE") {
         return PathBuf::from(e);
     }
+    let alt = Path::new(home).join(".claude/ccide-palette.json");
     if let Some(x) = non_empty("XDG_CONFIG_HOME") {
         let p = Path::new(&x).join("cc-ide/palette.json");
-        if p.exists() {
-            return p;
-        }
+        return if p.exists() || !alt.exists() { p } else { alt };
     }
     let primary = Path::new(home).join(".config/cc-ide/palette.json");
-    let alt = Path::new(home).join(".claude/ccide-palette.json");
     if primary.exists() || !alt.exists() {
         primary
     } else {

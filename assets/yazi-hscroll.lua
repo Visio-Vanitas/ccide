@@ -451,7 +451,13 @@ local function ensure_ipc_dir()
 	if IS_WIN then
 		os.execute('if not exist "' .. dir .. '" mkdir "' .. dir .. '" >NUL 2>&1')
 	else
-		os.execute('mkdir -p "' .. dir .. '" >/dev/null 2>&1')
+		pcall(function()
+			Command("mkdir")
+				:arg({ "-p", dir })
+				:stdout(Command.NULL)
+				:stderr(Command.NULL)
+				:status()
+		end)
 	end
 end
 
@@ -565,8 +571,9 @@ end
 local function sync_bounds_and_get_px(url_str, max_x, at_bot)
 	local mx = math.max(0, math.floor(max_x or 0))
 	write_url_bounds(url_str, mx, at_bot)
-	local px = math.min(read_url_px(url_str), mx)
-	if px ~= read_url_px(url_str) then
+	local raw_px = read_url_px(url_str)
+	local px = math.min(raw_px, mx)
+	if px ~= raw_px then
 		write_url_px(url_str, px)
 	end
 	return px
@@ -1259,9 +1266,32 @@ local function write_cached_block(cache_path, key, body)
 	atomic_replace(tmp, cache_path)
 end
 
+local _bat_win_probe = nil
+
 local function find_bat_bin()
 	if IS_WIN then
-		return "bat"
+		-- Probe `bat` once via `Command:status()` so a missing install never spawns a failing pane per peek
+		if _bat_win_probe == nil then
+			_bat_win_probe = false
+			local ok, res = pcall(function()
+				return Command("bat")
+					:arg({ "--version" })
+					:stdout(Command.NULL)
+					:stderr(Command.NULL)
+					:status()
+			end)
+			if ok and res ~= nil then
+				if type(res) == "boolean" then
+					_bat_win_probe = res
+				else
+					local ok_s, ok_v = pcall(function()
+						return res.success
+					end)
+					_bat_win_probe = (ok_s and ok_v) and true or false
+				end
+			end
+		end
+		return _bat_win_probe and "bat" or nil
 	end
 	for _, p in ipairs({ "/opt/homebrew/bin/bat", "/usr/local/bin/bat", "/usr/bin/bat", "/usr/bin/batcat" }) do
 		local f = io.open(p, "r")
@@ -1388,38 +1418,65 @@ local function fetch_or_warm_bat_cache(file, url_str, path_str, skip, area_h, ta
 	local theme_name = resolve_yazi_bat_theme()
 	local hl_tag = (hl_start and hl_start > 0) and string.format("%d:%d", hl_start, hl_end or hl_start) or ""
 	local cache_path = ipc_file("yc2_" .. url_hash(url_str) .. ".txt")
-	local key = file_stamp(file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name .. "\t" .. hl_tag .. "\t" .. syn.digest
+	local function make_key(theme)
+		return file_stamp(file)
+			.. "\t"
+			.. tostring(skip)
+			.. "\t"
+			.. tostring(area_h)
+			.. "\t"
+			.. theme
+			.. "\t"
+			.. hl_tag
+			.. "\t"
+			.. syn.digest
+	end
+	local key = make_key(theme_name)
 	local cached = read_cached_block(cache_path, key)
 	if cached then
-		return cached
+		return cached, false
 	end
 	local bat_bin = find_bat_bin()
 	if not bat_bin then
-		return nil
+		return nil, false
 	end
-	local range_arg = string.format("%d:%d", skip + 1, skip + area_h)
-	local cmd_args = {
-		"--color=always",
-		"--theme=" .. theme_name,
-		"--style=plain",
-		"--paging=never",
-		"--tabs=" .. tostring(tab_sz),
-		"--line-range=" .. range_arg,
-	}
-	if hl_tag ~= "" then
-		cmd_args[#cmd_args + 1] = "--highlight-line=" .. hl_tag
+	local function run_theme(theme)
+		local cmd_args = {
+			"--color=always",
+			"--theme=" .. theme,
+			"--style=plain",
+			"--paging=never",
+			"--tabs=" .. tostring(tab_sz),
+			"--line-range=" .. string.format("%d:%d", skip + 1, skip + area_h),
+		}
+		if hl_tag ~= "" then
+			cmd_args[#cmd_args + 1] = "--highlight-line=" .. hl_tag
+		end
+		cmd_args[#cmd_args + 1] = path_str
+		return Command(bat_bin):arg(cmd_args):stdout(Command.PIPED):stderr(Command.NULL):output()
 	end
-	cmd_args[#cmd_args + 1] = path_str
-	local out = Command(bat_bin)
-		:arg(cmd_args)
-		:stdout(Command.PIPED)
-		:stderr(Command.NULL)
-		:output()
+
+	local out = run_theme(theme_name)
+	if (not out or not out.stdout or out.stdout == "") and theme_name ~= "base16-256" then
+		-- Configured theme (`ccide`) is not installed -> retry `base16-256` and request `syn.sgr` remapping
+		theme_name = "base16-256"
+		key = make_key(theme_name)
+		cached = read_cached_block(cache_path, key)
+		if cached then
+			return cached, true
+		end
+		out = run_theme(theme_name)
+		if out and out.stdout and out.stdout ~= "" then
+			write_cached_block(cache_path, key, out.stdout)
+			return out.stdout, true
+		end
+		return nil, false
+	end
 	if out and out.stdout and out.stdout ~= "" then
 		write_cached_block(cache_path, key, out.stdout)
-		return out.stdout
+		return out.stdout, false
 	end
-	return nil
+	return nil, false
 end
 
 local function peek_code(job, url_str)
@@ -1502,8 +1559,26 @@ local function peek_code(job, url_str)
 	local theme_name = resolve_yazi_bat_theme()
 	local hl_tag = (hl_ln > 0) and string.format("%d:%d", hl_ln, hl_end) or ""
 	local cache_path = ipc_file("yc2_" .. url_hash(url_str) .. ".txt")
-	local key = file_stamp(job.file) .. "\t" .. tostring(skip) .. "\t" .. tostring(area_h) .. "\t" .. theme_name .. "\t" .. hl_tag .. "\t" .. syn.digest
-	local ansi_slice = read_cached_block(cache_path, key)
+	local function make_key(theme)
+		return file_stamp(job.file)
+			.. "\t"
+			.. tostring(skip)
+			.. "\t"
+			.. tostring(area_h)
+			.. "\t"
+			.. theme
+			.. "\t"
+			.. hl_tag
+			.. "\t"
+			.. syn.digest
+	end
+	local ansi_slice = read_cached_block(cache_path, make_key(theme_name))
+	local needs_sgr_remap = false
+	if not ansi_slice and theme_name ~= "base16-256" then
+		-- Fallback cache written by `fetch_or_warm_bat_cache` under the universal `base16-256` theme
+		ansi_slice = read_cached_block(cache_path, make_key("base16-256"))
+		needs_sgr_remap = ansi_slice ~= nil
+	end
 	local hl_bg_esc = "\27[" .. syn.code_bg .. "m"
 
 	if not ansi_slice then
@@ -1518,11 +1593,12 @@ local function peek_code(job, url_str)
 			end
 		end
 		ya.preview_widget(job, ui.Text.parse(table.concat(plain_rows, "\n")):area(job.area))
-		ansi_slice = fetch_or_warm_bat_cache(job.file, url_str, path_str, skip, area_h, tab_sz, hl_ln, hl_end)
+		ansi_slice, needs_sgr_remap = fetch_or_warm_bat_cache(job.file, url_str, path_str, skip, area_h, tab_sz, hl_ln, hl_end)
 		px = math.min(read_url_px(url_str), max_x)
 	end
 
-	local syn_sgr = (syn.loaded and syn.bat_theme ~= "ccide") and syn.sgr or nil
+	-- `base16-256` output (either configured or after the `ccide` theme fallback) needs `syn.sgr` remapping
+	local syn_sgr = ((syn.loaded and syn.bat_theme ~= "ccide") or needs_sgr_remap) and syn.sgr or nil
 	local function emit_code_at(pan_x)
 		local text
 		if ansi_slice and ansi_slice ~= "" then

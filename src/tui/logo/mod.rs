@@ -3,6 +3,7 @@
 
 pub mod image;
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -18,6 +19,12 @@ use image::{
     base64_encode, build_image_blit_sequence, detect_terminal_image_proto, parse_image_dimensions,
     ImageProto, ImageSprite,
 };
+
+/// Deletes the transmitted Kitty image (`i=71`) when falling back to ASCII / `OSC 1337`.
+const KITTY_CLEAR: &str = "\x1b_Ga=d,d=i,i=71,q=2\x1b\\";
+/// Minimum geometry able to host an image blit inside the bordered panel.
+const MIN_IMAGE_COLS: usize = 12;
+const MIN_IMAGE_ROWS: usize = 12;
 
 const FAMILIES: [&str; 5] = ["claude", "gemini", "deepseek", "openai", "grok"];
 
@@ -40,6 +47,8 @@ pub struct SpriteStore {
     detected_proto: ImageProto,
     viewer_path: PathBuf,
     last_viewer_mtime: Option<SystemTime>,
+    /// Set while a Kitty image is live, so the next ASCII / `OSC 1337` frame clears it.
+    was_kitty: Cell<bool>,
     pub mode: SpriteMode,
     pub cost_lines: u8,
 }
@@ -175,12 +184,24 @@ pub fn load_adaptive_logos(home: &str) -> SpriteStore {
         detected_proto: detect_terminal_image_proto(),
         viewer_path,
         last_viewer_mtime,
+        was_kitty: Cell::new(false),
         mode,
         cost_lines,
     }
 }
 
 impl SpriteStore {
+    /// One-shot Kitty image deletion when the previous frame used Kitty and this one does not.
+    fn kitty_transition_prefix(&self, next: Option<ImageProto>) -> &'static str {
+        let next = next == Some(ImageProto::Kitty);
+        let was = self.was_kitty.replace(next);
+        if was && !next {
+            KITTY_CLEAR
+        } else {
+            ""
+        }
+    }
+
     pub fn refresh_mode_if_changed(&mut self, home: &str) -> bool {
         let cur_mt = fs::metadata(&self.viewer_path)
             .and_then(|m| m.modified())
@@ -234,7 +255,15 @@ pub fn build_top_logo_panel(
 ) -> (PanelSpec, usize) {
     let (accent, accent_rgb) = pal.family_accent(family);
 
-    if let Some((proto, img)) = sprites.effective_proto_for(family) {
+    // Too-small geometry falls back to ASCII. Resolve the Kitty transition once per frame.
+    let img_choice = if geom.cols < MIN_IMAGE_COLS || geom.rows < MIN_IMAGE_ROWS {
+        None
+    } else {
+        sprites.effective_proto_for(family)
+    };
+    let clear_prefix = sprites.kitty_transition_prefix(img_choice.map(|(p, _)| p));
+
+    if let Some((proto, img)) = img_choice {
         let inner_cols = geom.cols.saturating_sub(2).max(10);
         let render_rows = (geom.rows / 5).clamp(8, 11);
         let aspect = (img.width_px.max(1) as f64) / (img.height_px.max(1) as f64);
@@ -254,7 +283,7 @@ pub fn build_top_logo_panel(
 
         let interior_h = render_rows + 2;
         let top_h = interior_h + 2;
-        let blit = build_image_blit_sequence(
+        let mut blit = build_image_blit_sequence(
             proto,
             img,
             inner_cols,
@@ -263,6 +292,9 @@ pub fn build_top_logo_panel(
             render_cols,
             render_rows,
         );
+        if !clear_prefix.is_empty() {
+            blit.insert_str(0, clear_prefix);
+        }
 
         let mut raw_rows = Vec::with_capacity(interior_h);
         raw_rows.push(BoxRow {
@@ -292,9 +324,10 @@ pub fn build_top_logo_panel(
         );
     }
 
+    // The leading blank row carries the one-shot Kitty deletion via `bg`, emitted verbatim.
     let mut logo_rows = vec![BoxRow {
         text: String::new(),
-        bg: String::new(),
+        bg: clear_prefix.to_string(),
         tag: None,
     }];
     if let Some(art) = sprites.ansi_map.get(family) {

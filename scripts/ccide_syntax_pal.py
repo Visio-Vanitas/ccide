@@ -34,7 +34,7 @@ _KEYWORDS = frozenset({
 })
 
 _TOKEN_RE = re.compile(
-    r'(?P<comment>//[^\n]*|(?:^|(?<=\s))#[^\n]*)'
+    r'(?P<comment>//[^\n]*|(?:^|(?<=\s))#(?!\[|!\[)[^\n]*)'
     r'|(?P<str>"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')'
     r'|(?P<num>\b0[xXbB][0-9a-fA-F_]+\b|\b\d+(?:\.\d+)?\b)'
     r'|(?P<call>\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\())'
@@ -164,8 +164,12 @@ def _rgb_to_xterm256(r: int, g: int, b: int) -> int:
 
 
 def upgrade_chroma_256_sgr(text: str, pal: dict | None = None) -> str:
-    """Upgrades Glamour/Chroma's `terminal256` `38;5;N` tokens back to exact 24-bit RGB."""
-    if "\x1b[38;5;" not in text:
+    """Upgrades Glamour/Chroma's `terminal256` `38;5;N` foreground tokens back to exact 24-bit RGB.
+
+    Handles compound SGR sequences (e.g. `\\x1b[1;38;5;117m`, `\\x1b[38;5;115;48;5;236m`) by
+    rewriting only the `38;5;<N>` foreground sub-triple and leaving `48;5;<N>` backgrounds intact!
+    """
+    if "38;5;" not in text:
         return text
     hx = (pal or load_syntax_palette()).get("hex", {})
     lut: dict[str, str] = {}
@@ -175,7 +179,34 @@ def upgrade_chroma_256_sgr(text: str, pal: dict | None = None) -> str:
             lut[str(_rgb_to_xterm256(*rgb))] = f"38;2;{rgb[0]};{rgb[1]};{rgb[2]}"
     if not lut:
         return text
-    return re.sub(r"\x1b\[38;5;(\d+)m", lambda m: f"\x1b[{lut[m.group(1)]}m" if m.group(1) in lut else m.group(0), text)
+
+    def _repl(m: re.Match[str]) -> str:
+        toks = m.group(1).split(";")
+        out: list[str] = []
+        i, n = 0, len(toks)
+        while i < n:
+            tok = toks[i]
+            if tok == "38" and i + 2 < n and toks[i + 1] == "5":
+                out.append(lut.get(toks[i + 2]) or ";".join(toks[i : i + 3]))
+                i += 3
+                continue
+            if tok == "38" and i + 4 < n and toks[i + 1] == "2":
+                out.extend(toks[i : i + 5])
+                i += 5
+                continue
+            if tok == "48" and i + 4 < n and toks[i + 1] == "2":
+                out.extend(toks[i : i + 5])
+                i += 5
+                continue
+            if tok == "48" and i + 2 < n and toks[i + 1] == "5":
+                out.extend(toks[i : i + 3])
+                i += 3
+                continue
+            out.append(tok)
+            i += 1
+        return f"\x1b[{';'.join(out)}m"
+
+    return SGR_CSI_RE.sub(_repl, text)
 
 
 def highlight_code_fallback(line: str, pal: dict | None = None) -> str:

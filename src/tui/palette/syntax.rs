@@ -1,13 +1,18 @@
 //! Palette-Unified Syntax Highlighting Model & Atomic Sync (`<= 300` lines).
 
-use std::fs;
-use std::path::Path;
+use std::env;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::{Duration, SystemTime};
 
 use crate::json::extract_json_str;
 
 use super::artifacts::{build_ghostty_theme, build_glow_style_json, build_tm_theme};
 use super::companions::sync_companion_themes;
-use super::{resolve_palette_path, ColorSpec, Palette};
+use super::{ColorSpec, Palette};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SyntaxPalette {
@@ -100,15 +105,22 @@ fn compute_digest(pal: &Palette) -> String {
     format!("{h:016x}")
 }
 
-pub(crate) fn atomic_write(path: &Path, content: &str) {
+static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("art");
-    let tmp = path.with_file_name(format!("{name}.tmp.{}", std::process::id()));
-    if fs::write(&tmp, content).is_ok() && fs::rename(&tmp, path).is_err() {
-        let _ = fs::remove_file(path);
-        if fs::rename(&tmp, path).is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
+    let tmp = path.with_file_name(format!("{name}.tmp.{}.{seq}", std::process::id()));
+    if let Err(e) = fs::write(&tmp, content) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
     }
+    if fs::rename(&tmp, path).is_err() {
+        let copy_res = fs::copy(&tmp, path);
+        let _ = fs::remove_file(&tmp);
+        copy_res?;
+    }
+    Ok(())
 }
 
 fn build_syntax_resolved_json(pal: &Palette, digest: &str, bat_theme: &str) -> String {
@@ -172,13 +184,77 @@ fn build_syntax_resolved_json(pal: &Palette, digest: &str, bat_theme: &str) -> S
     )
 }
 
-pub fn sync_syntax_artifacts(home: &str, pal: &Palette) {
-    let pal_path = resolve_palette_path(home);
+struct SyncLockGuard(PathBuf);
+
+impl Drop for SyncLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn acquire_sync_lock(cfg_dir: &Path) -> Option<SyncLockGuard> {
+    let lock_path = cfg_dir.join(".sync.lock");
+    for _ in 0..40 {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut f) => {
+                let _ = writeln!(f, "{}", std::process::id());
+                return Some(SyncLockGuard(lock_path));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = fs::metadata(&lock_path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| SystemTime::now().duration_since(t).ok())
+                    .map(|d| d > Duration::from_secs(15))
+                    .unwrap_or(false);
+                if stale {
+                    let _ = fs::remove_file(&lock_path);
+                    continue;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn sync_cfg_dir(home: &str) -> PathBuf {
+    let non_empty = |k| {
+        env::var(k)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
     let default_dir = Path::new(home).join(".config/cc-ide");
-    let cfg_dir = pal_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(&default_dir);
+    if let Some(pf) = non_empty("CCIDE_PALETTE_FILE") {
+        return Path::new(&pf)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or(default_dir);
+    }
+    if let Some(xdg) = non_empty("XDG_CONFIG_HOME") {
+        return Path::new(&xdg).join("cc-ide");
+    }
+    default_dir
+}
+
+fn artifacts_current(resolved: &Path, files: &[&PathBuf; 5], digest: &str) -> bool {
+    files.iter().all(|p| p.is_file())
+        && fs::read_to_string(resolved)
+            .ok()
+            .and_then(|t| extract_json_str(&t, "digest"))
+            .as_deref()
+            == Some(digest)
+}
+
+pub fn sync_syntax_artifacts(home: &str, pal: &Palette) {
+    let cfg_dir = sync_cfg_dir(home);
     let digest = compute_digest(pal);
     let resolved_path = cfg_dir.join("syntax_resolved.json");
     let (tm_p, glow_p, gh_p, yz_p, lg_p) = (
@@ -188,20 +264,29 @@ pub fn sync_syntax_artifacts(home: &str, pal: &Palette) {
         cfg_dir.join("yazi-theme.toml"),
         cfg_dir.join("lazygit.yml"),
     );
-    if tm_p.is_file() && glow_p.is_file() && gh_p.is_file() && yz_p.is_file() && lg_p.is_file() {
-        if let Ok(txt) = fs::read_to_string(&resolved_path) {
-            if extract_json_str(&txt, "digest").as_deref() == Some(&digest) {
-                return;
-            }
-        }
+    let all_files = [&tm_p, &glow_p, &gh_p, &yz_p, &lg_p];
+    if artifacts_current(&resolved_path, &all_files, &digest) {
+        return;
     }
-    if fs::create_dir_all(cfg_dir).is_ok() {
-        let tm_txt = build_tm_theme(pal);
-        atomic_write(&tm_p, &tm_txt);
-        atomic_write(&glow_p, &build_glow_style_json(pal));
-        atomic_write(&gh_p, &build_ghostty_theme(pal));
-        let bat_theme = sync_companion_themes(home, cfg_dir, pal, &tm_p, &tm_txt);
-        atomic_write(
+    if fs::create_dir_all(&cfg_dir).is_err() {
+        return;
+    }
+    let Some(_guard) = acquire_sync_lock(&cfg_dir) else {
+        return;
+    };
+    if artifacts_current(&resolved_path, &all_files, &digest) {
+        return;
+    }
+    let tm_txt = build_tm_theme(pal);
+    let core_ok = atomic_write(&tm_p, &tm_txt).is_ok()
+        && atomic_write(&glow_p, &build_glow_style_json(pal)).is_ok()
+        && atomic_write(&gh_p, &build_ghostty_theme(pal)).is_ok();
+    if !core_ok {
+        return;
+    }
+    let (bat_theme, comp_ok) = sync_companion_themes(home, &cfg_dir, pal, &tm_p, &tm_txt);
+    if comp_ok {
+        let _ = atomic_write(
             &resolved_path,
             &build_syntax_resolved_json(pal, &digest, bat_theme),
         );
