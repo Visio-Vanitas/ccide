@@ -36,6 +36,14 @@
     // "model_grok":     "#C08EFF"
   },
 
+  "syntax": {
+    // "syn_keyword":     "#C08EFF", "syn_function":   "#62A4FF", "syn_type":     "#FFC25C",
+    // "syn_string":      "#5CE49A", "syn_number":     "#FFC25C", "syn_comment":  "#787E96",
+    // "syn_operator":    "#56D6FF", "syn_variable":   "#E8ECF8", "syn_code_bg":  "#1E222E",
+    // "syn_diff_add_fg": "#5CE49A", "syn_diff_add_bg": "#1A3327",
+    // "syn_diff_del_fg": "#EE7C64", "syn_diff_del_bg": "#382022"
+  },
+
   "statusline": {
     // "sl_bypass_bg": 131,  "sl_bypass_fg": 255,
     // "sl_auto_bg":   61,   "sl_auto_fg":   255,

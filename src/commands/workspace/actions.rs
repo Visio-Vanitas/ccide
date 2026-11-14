@@ -3,12 +3,15 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 use crate::ffi::{is_pid_alive, wake_pid};
 use crate::json::{extract_json_str, extract_json_u64};
-use crate::platform::ipc_dir;
+use crate::platform::{find_executable, ipc_dir};
 use crate::session::transcript::{append_dismissed_subagents, get_session_subagents};
-use crate::tui::palette::{render_palette_template, resolve_palette_path, Palette, PRESET_NAMES};
+use crate::tui::palette::{
+    render_palette_template, resolve_palette_path, sync_syntax_artifacts, Palette, PRESET_NAMES,
+};
 use crate::tui::RESET;
 
 pub fn wake_all_sidebars() {
@@ -25,6 +28,37 @@ pub fn wake_all_sidebars() {
                             let _ = fs::remove_file(entry.path());
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+pub fn refresh_open_yazi_previews(home: &str) {
+    let Some(ya) = find_executable("ya", home) else {
+        return;
+    };
+    let Ok(rd) = fs::read_dir(ipc_dir()) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let fname = entry.file_name();
+        let name = fname.to_string_lossy();
+        if let Some(yid) = name
+            .strip_prefix("panes_")
+            .and_then(|s| s.strip_suffix(".txt"))
+        {
+            if !yid.is_empty() && yid.chars().all(|c| c.is_ascii_digit()) {
+                if let Ok(mut ch) = Command::new(&ya)
+                    .args(["emit-to", yid, "plugin", "hscroll", "refresh"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
+                    let _ = std::thread::spawn(move || {
+                        let _ = ch.wait();
+                    });
                 }
             }
         }
@@ -146,6 +180,7 @@ pub fn run_theme_command(home: &str, sub: &str) {
                 }
                 let _ = fs::write(&cfg_path, render_palette_template("default"));
             }
+            sync_syntax_artifacts(home, &Palette::load(home));
             println!("{}", cfg_path.display());
         }
         "reset" => {
@@ -153,8 +188,13 @@ pub fn run_theme_command(home: &str, sub: &str) {
                 let _ = fs::create_dir_all(parent);
             }
             let _ = fs::write(&cfg_path, render_palette_template("default"));
+            sync_syntax_artifacts(home, &Palette::load(home));
             wake_all_sidebars();
+            crate::commands::workspace::reload::reload_companion_panes(home);
             println!("Reset palette to default -> {}", cfg_path.display());
+        }
+        "sync" => {
+            sync_syntax_artifacts(home, &Palette::load(home));
         }
         "list" | "" => {
             let active = Palette::load(home);
@@ -202,9 +242,11 @@ pub fn run_theme_command(home: &str, sub: &str) {
                 render_palette_template(&probe.preset)
             };
             let _ = fs::write(&cfg_path, updated);
+            sync_syntax_artifacts(home, &Palette::load(home));
             wake_all_sidebars();
+            crate::commands::workspace::reload::reload_companion_panes(home);
             println!(
-                "Switched palette preset to '{}' ({}) and hot-reloaded open sidebars.",
+                "Switched palette preset to '{}' ({}) and hot-reloaded workspace + companion panes.",
                 probe.preset,
                 cfg_path.display()
             );

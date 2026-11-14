@@ -21,6 +21,12 @@ import subprocess
 import sys
 import unicodedata
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+try:
+    import ccide_syntax_pal  # type: ignore[import-not-found]
+except Exception:
+    ccide_syntax_pal = None  # type: ignore[assignment]
+
 if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
@@ -48,8 +54,11 @@ def find_glow() -> str | None:
 
 
 def resolve_glow_style() -> str:
-    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
     candidates = []
+    pal_file = os.environ.get("CCIDE_PALETTE_FILE", "").strip()
+    if pal_file:
+        candidates.append(os.path.join(os.path.dirname(pal_file), "glow-style.json"))
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
     if xdg:
         candidates.append(os.path.join(xdg, "cc-ide", "glow-style.json"))
     candidates.append(os.path.expanduser("~/.config/cc-ide/glow-style.json"))
@@ -162,16 +171,23 @@ def wrap_plain(text: str, width: int) -> list[str]:
     return rows
 
 
-def style_inline(text: str) -> str:
+def style_inline(text: str, pal: dict | None = None) -> str:
     code_spans: list[str] = []
+    if ccide_syntax_pal is not None:
+        hx = (pal or ccide_syntax_pal.load_syntax_palette())["hex"]
+        code_sgr = ccide_syntax_pal.hex_to_fg(hx["string"]) + ccide_syntax_pal.hex_to_bg(hx["code_bg"])
+        bold_sgr = "\x1b[1m" + ccide_syntax_pal.hex_to_fg(hx["text"])
+    else:
+        code_sgr = "\x1b[38;5;115;48;5;236m"
+        bold_sgr = "\x1b[1;38;5;255m"
 
     def _save_code(m: re.Match[str]) -> str:
         idx = len(code_spans)
-        code_spans.append(f"\x1b[38;5;115;48;5;236m{m.group(1)}\x1b[0m")
+        code_spans.append(f"{code_sgr}{m.group(1)}\x1b[0m")
         return f"\x00CODE{idx}\x00"
 
     text = re.sub(r"`([^`]+)`", _save_code, text)
-    text = re.sub(r"\*\*([^*]+)\*\*", "\x1b[1;38;5;255m\\1\x1b[0m", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", f"{bold_sgr}\\1\x1b[0m", text)
     for idx, span in enumerate(code_spans):
         text = text.replace(f"\x00CODE{idx}\x00", span)
     return text
@@ -179,14 +195,32 @@ def style_inline(text: str) -> str:
 
 def render_fallback_markdown(md_text: str, width: int, wrap_enabled: bool = False) -> str:
     """Pure-Python ANSI Markdown renderer used when `glow` is unavailable."""
-    heading_styles = {
-        1: ("▌ ", "\x1b[1;38;5;231;48;5;62m", " "),
-        2: ("▍ ", "\x1b[1;38;5;75m", ""),
-        3: ("▸ ", "\x1b[1;38;5;80m", ""),
-        4: ("• ", "\x1b[1;38;5;183m", ""),
-        5: ("› ", "\x1b[1;38;5;150m", ""),
-        6: ("· ", "\x1b[1;38;5;246m", ""),
-    }
+    pal = ccide_syntax_pal.load_syntax_palette() if ccide_syntax_pal is not None else None
+    if ccide_syntax_pal is not None and pal is not None:
+        hx = pal["hex"]
+        fg = ccide_syntax_pal.hex_to_fg
+        bg = ccide_syntax_pal.hex_to_bg
+        heading_styles = {
+            1: ("▌ ", f"\x1b[1m{fg(hx['text'])}{bg(hx['blue'])}", " "),
+            2: ("▍ ", f"\x1b[1m{fg(hx['blue'])}", ""),
+            3: ("▸ ", f"\x1b[1m{fg(hx['cyan'])}", ""),
+            4: ("• ", f"\x1b[1m{fg(hx['lavender'])}", ""),
+            5: ("› ", f"\x1b[1m{fg(hx['green'])}", ""),
+            6: ("· ", f"\x1b[1m{fg(hx['dim'])}", ""),
+        }
+        border_fg = fg(hx["border"])
+        amber_fg = fg(hx["amber"])
+    else:
+        heading_styles = {
+            1: ("▌ ", "\x1b[1;38;5;231;48;5;62m", " "),
+            2: ("▍ ", "\x1b[1;38;5;75m", ""),
+            3: ("▸ ", "\x1b[1;38;5;80m", ""),
+            4: ("• ", "\x1b[1;38;5;183m", ""),
+            5: ("› ", "\x1b[1;38;5;150m", ""),
+            6: ("· ", "\x1b[1;38;5;246m", ""),
+        }
+        border_fg = "\x1b[38;5;240m"
+        amber_fg = "\x1b[38;5;214m"
     in_fence = False
     fence_char = ""
     fence_len = 0
@@ -210,7 +244,12 @@ def render_fallback_markdown(md_text: str, width: int, wrap_enabled: bool = Fals
                 fence_char = ""
                 fence_len = 0
                 continue
-            full_code = f"\x1b[38;5;240m│\x1b[0m \x1b[38;5;115m{line.expandtabs(4)}\x1b[0m"
+            code_body = (
+                ccide_syntax_pal.highlight_code_fallback(line.expandtabs(4), pal)
+                if ccide_syntax_pal is not None
+                else f"\x1b[38;5;115m{line.expandtabs(4)}\x1b[0m"
+            )
+            full_code = f"{border_fg}│\x1b[0m {code_body}"
             out.extend(wrap_vi_ansi(full_code, width) if wrap_enabled else [full_code])
             continue
         mh = ATX_HEADING_RE.match(line)
@@ -223,16 +262,16 @@ def render_fallback_markdown(md_text: str, width: int, wrap_enabled: bool = Fals
             continue
         stripped = line.strip()
         if stripped in ("---", "***", "___"):
-            out.append(f"\x1b[38;5;240m{'─' * min(max(16, width - 2), 40)}\x1b[0m")
+            out.append(f"{border_fg}{'─' * min(max(16, width - 2), 40)}\x1b[0m")
             continue
         if stripped.startswith(("- ", "* ")):
-            full_li = "\x1b[38;5;214m•\x1b[0m " + style_inline(stripped[2:])
+            full_li = f"{amber_fg}•\x1b[0m " + style_inline(stripped[2:], pal)
             out.extend(wrap_vi_ansi(full_li, width) if wrap_enabled else [full_li])
             continue
         if not stripped:
             out.append("")
             continue
-        styled_ln = style_inline(line)
+        styled_ln = style_inline(line, pal)
         out.extend(wrap_vi_ansi(styled_ln, width) if wrap_enabled else [styled_ln])
     return "\n".join(out) + "\n"
 
@@ -306,6 +345,7 @@ def render_markdown(md_text: str, width: int, wrap_enabled: bool = False) -> str
         style_arg = resolve_glow_style()
         env = os.environ.copy()
         env["CLICOLOR_FORCE"] = "1"
+        env["COLORTERM"] = "truecolor"
         try:
             res = subprocess.run(
                 [glow_bin, "-s", style_arg, "-w", "2000", "-"],
@@ -316,8 +356,14 @@ def render_markdown(md_text: str, width: int, wrap_enabled: bool = False) -> str
                 timeout=5.0,
             )
             if res.returncode == 0 and res.stdout.strip():
+                pal = ccide_syntax_pal.load_syntax_palette() if ccide_syntax_pal else None
+                upgraded_out = (
+                    ccide_syntax_pal.upgrade_chroma_256_sgr(res.stdout, pal)
+                    if ccide_syntax_pal
+                    else res.stdout
+                )
                 cleaned = []
-                for ln in res.stdout.splitlines():
+                for ln in upgraded_out.splitlines():
                     cl = clean_glow_line(ln)
                     if cl.startswith("  "):
                         cl = cl[2:]
