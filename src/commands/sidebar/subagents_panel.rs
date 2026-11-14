@@ -57,6 +57,7 @@ pub fn build_subagents_panel(
     main_file: &str,
     subagents: &[SubagentItem],
     cached_cfg: &ConfigModels,
+    active_preset: &str,
     tick: usize,
     pal: &Palette,
 ) -> SubagentPanelOutput {
@@ -253,7 +254,7 @@ pub fn build_subagents_panel(
         });
     }
 
-    let sub_badge = if max_scroll > 0 {
+    let base_badge = if max_scroll > 0 {
         let first_item = (*sub_scroll_offset / 2) + 1;
         let last_item = (first_item + (viewport_h / 2).max(1) - 1).min(subagents.len());
         if running_cnt > 0 {
@@ -268,6 +269,11 @@ pub fn build_subagents_panel(
         format!("main+{}", subagents.len())
     } else {
         format!("{running_cnt} run/{}", subagents.len())
+    };
+    let sub_badge = if cols >= 32 {
+        format!("[{active_preset}] · {base_badge}")
+    } else {
+        format!("[{active_preset}]")
     };
 
     SubagentPanelOutput {

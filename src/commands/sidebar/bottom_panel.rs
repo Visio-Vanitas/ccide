@@ -74,3 +74,26 @@ pub fn append_bottom_panels(
     }
     (split_ctx_cost, ctx_box_h)
 }
+
+pub fn cleanup_sidebar_pid_files(tab_yazi_id: &str, c_sid: &str, c_pid: u32, my_pid_str: &str) {
+    use crate::platform::ipc_path;
+    use std::fs;
+    let rm_if_mine = |p: std::path::PathBuf| -> bool {
+        let mine = fs::read_to_string(&p)
+            .map(|s| s.trim() == my_pid_str)
+            .unwrap_or(false);
+        if mine {
+            let _ = fs::remove_file(&p);
+        }
+        mine
+    };
+    if !tab_yazi_id.is_empty() && rm_if_mine(ipc_path(&format!("sb_yazi_{}.pid", tab_yazi_id))) {
+        let _ = fs::remove_file(ipc_path(&format!("sidebar_tab_{}.json", tab_yazi_id)));
+    }
+    if !c_sid.is_empty() {
+        rm_if_mine(ipc_path(&format!("sb_{}.pid", c_sid)));
+    }
+    if c_pid > 1 {
+        rm_if_mine(ipc_path(&format!("sb_pid_{}.pid", c_pid)));
+    }
+}

@@ -6,6 +6,7 @@ use crate::commands::sidebar::hit_mask::{
     FocusZone, MaskedAction, PointerCapture, SidebarGeomMask,
 };
 use crate::commands::sidebar::ipc::{trigger_native_view_switch, trigger_yazi_reveal};
+use crate::orchestrator::{OrchestratorConfig, ALL_ROLES};
 use crate::session::emit_yazi_blur;
 use crate::session::transcript::{append_dismissed_subagents, SubagentItem};
 
@@ -51,9 +52,7 @@ impl<'a> DispatchEnv<'a> {
             done,
             rank,
         );
-        if fp.is_empty() {
-            emit_yazi_blur(self.home, self.yazi_id);
-        } else {
+        if !fp.is_empty() {
             trigger_yazi_reveal(self.home, self.yazi_id, self.cwd, fp, ln, sp);
         }
     }
@@ -103,6 +102,8 @@ pub struct SidebarSelectState {
     pub cost_scroll: usize,
     pub cost_lines: u8,
     pub show_context: bool,
+    pub show_orchestrator: bool,
+    pub orch_cursor: Option<usize>,
     pub pointer: PointerCapture,
     pub last_click_instant: Instant,
 }
@@ -117,6 +118,8 @@ impl Default for SidebarSelectState {
             cost_scroll: 0,
             cost_lines: 3,
             show_context: false,
+            show_orchestrator: false,
+            orch_cursor: None,
             pointer: PointerCapture::default(),
             last_click_instant: Instant::now() - Duration::from_secs(10),
         }
@@ -130,6 +133,7 @@ pub fn apply_masked_action(
     subagents: &[SubagentItem],
     active_view_id: &mut String,
     sel: &mut SidebarSelectState,
+    orch_cfg: &mut OrchestratorConfig,
     dismiss_idx: &mut Option<usize>,
     clear_all_done: &mut bool,
     restore_focus: &mut bool,
@@ -175,11 +179,48 @@ pub fn apply_masked_action(
             });
             emit_yazi_blur(env.home, env.yazi_id);
         }
+        MaskedAction::ToggleOrchestrator => {
+            sel.pane_has_focus = true;
+            sel.show_orchestrator = !sel.show_orchestrator;
+            sel.sub_cursor = None;
+            sel.orch_cursor = None;
+            sel.focus_zone = Some(FocusZone::Subagents);
+            emit_yazi_blur(env.home, env.yazi_id);
+        }
+        MaskedAction::OrchCyclePreset(fwd) => {
+            sel.pane_has_focus = true;
+            sel.focus_zone = Some(FocusZone::Subagents);
+            sel.orch_cursor = Some(0);
+            orch_cfg.cycle_preset(fwd);
+            orch_cfg.save(env.home);
+            emit_yazi_blur(env.home, env.yazi_id);
+        }
+        MaskedAction::OrchCycleModel(idx, fwd) => {
+            sel.pane_has_focus = true;
+            sel.focus_zone = Some(FocusZone::Subagents);
+            if let Some(&role) = ALL_ROLES.get(idx) {
+                sel.orch_cursor = Some(idx + 1);
+                orch_cfg.cycle_role_model(role, fwd);
+                orch_cfg.save(env.home);
+            }
+            emit_yazi_blur(env.home, env.yazi_id);
+        }
+        MaskedAction::OrchCycleEffort(idx, fwd) => {
+            sel.pane_has_focus = true;
+            sel.focus_zone = Some(FocusZone::Subagents);
+            if let Some(&role) = ALL_ROLES.get(idx) {
+                sel.orch_cursor = Some(idx + 1);
+                orch_cfg.cycle_role_effort(role, fwd);
+                orch_cfg.save(env.home);
+            }
+            emit_yazi_blur(env.home, env.yazi_id);
+        }
         MaskedAction::FocusZoneOnly(z) => {
             sel.pane_has_focus = z.is_some();
             sel.focus_zone = z;
             if z != Some(FocusZone::Subagents) {
                 sel.sub_cursor = None;
+                sel.orch_cursor = None;
             }
             if z.is_some() {
                 emit_yazi_blur(env.home, env.yazi_id);
