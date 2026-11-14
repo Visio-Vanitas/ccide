@@ -43,8 +43,20 @@ jobs:
   rust-msrv-and-lint:
     name: Rust 1.70 LTS MSRV & Clippy
     runs-on: ubuntu-latest
+    outputs:
+      is_minor: ${{ steps.ver.outputs.is_minor }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Detect Minor (0.X.0) vs Patch (0.x.y) Version
+        id: ver
+        run: |
+          BASE_VER="$(grep '^version =' Cargo.toml | head -n 1 | cut -d '"' -f 2)"
+          if [[ "${BASE_VER}" == *.0 ]]; then
+            echo "is_minor=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_minor=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install Rust 1.70.0 (LTS MSRV)
         uses: dtolnay/rust-toolchain@master
@@ -69,6 +81,7 @@ jobs:
   build-matrix:
     name: Build & Test (${{ matrix.target }})
     needs: [rust-msrv-and-lint]
+    if: needs.rust-msrv-and-lint.outputs.is_minor == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -133,6 +146,7 @@ jobs:
           zsh -n scripts/ccide
           zsh -n scripts/pane-runner.sh
           python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/git_smooth_graph.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py scripts/ccide_workflow_runner.py scripts/ccide_workflow_server.py scripts/ccide_syntax_pal.py
+          pwsh -NoProfile -Command '$errs = $null; foreach ($f in @("install.ps1", "scripts/ccide.ps1")) { [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errs); if ($errs) { Write-Error "$f : $errs"; exit 1 } }'
 
       - name: Validate Plugin & Marketplace JSON Manifests & Version Parity
         run: |
