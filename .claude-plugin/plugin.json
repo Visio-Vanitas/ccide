@@ -1,7 +1,7 @@
 {
   "name": "cc-ide",
   "displayName": "CC-IDE 3-Column Tiling Workspace & Hardware Telemetry",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Cross-platform adaptive 3-column tiling IDE for Claude Code (macOS iTerm2 Metal Daemon, SSH OSC 1337, WezTerm, Windows Terminal wt.exe, and tmux) with Yazi hunk auto-scroll, native subagent view switching, declarative TUI layout, and shared hardware oscilloscope + CONTEXT/COST telemetry.",
   "author": {
     "name": "Visio-Vanitas"

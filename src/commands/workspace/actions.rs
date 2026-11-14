@@ -19,7 +19,11 @@ pub fn wake_all_sidebars() {
             if name.starts_with("sb_") && name.ends_with(".pid") {
                 if let Ok(ptxt) = fs::read_to_string(entry.path()) {
                     if let Ok(pid) = ptxt.trim().parse::<u32>() {
-                        wake_pid(pid);
+                        if is_pid_alive(pid) {
+                            wake_pid(pid);
+                        } else {
+                            let _ = fs::remove_file(entry.path());
+                        }
                     }
                 }
             }
@@ -28,22 +32,72 @@ pub fn wake_all_sidebars() {
 }
 
 fn replace_preset_in_jsonc(existing: &str, new_preset: &str) -> Option<String> {
-    let needle = "\"preset\"";
-    let pos = existing.find(needle)?;
-    let after_key = &existing[pos + needle.len()..];
-    let colon_off = after_key.find(':')?;
-    let after_colon = &after_key[colon_off + 1..];
-    let q1_off = after_colon.find('"')?;
-    let rest_val = &after_colon[q1_off + 1..];
-    let q2_off = rest_val.find('"')?;
-
-    let val_start = pos + needle.len() + colon_off + 1 + q1_off + 1;
-    let val_end = val_start + q2_off;
-    let mut out = String::with_capacity(existing.len() + 16);
-    out.push_str(&existing[..val_start]);
-    out.push_str(new_preset);
-    out.push_str(&existing[val_end..]);
-    Some(out)
+    let bytes = existing.as_bytes();
+    let n = bytes.len();
+    let mut i = 0usize;
+    while i < n {
+        if bytes[i] == b'/' && i + 1 < n && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < n && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'/' && i + 1 < n && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < n && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(n);
+            continue;
+        }
+        if bytes[i] == b'"' {
+            if existing[i..].starts_with("\"preset\"") {
+                let after_key = &existing[i + 8..];
+                let trimmed = after_key.trim_start();
+                if let Some(after_colon) = trimmed.strip_prefix(':') {
+                    let val_trim = after_colon.trim_start();
+                    if let Some(rest_val) = val_trim.strip_prefix('"') {
+                        if let Some(q2_off) = rest_val.find('"') {
+                            let val_start = existing.len() - rest_val.len();
+                            let val_end = val_start + q2_off;
+                            let mut out = String::with_capacity(existing.len() + 16);
+                            out.push_str(&existing[..val_start]);
+                            out.push_str(new_preset);
+                            out.push_str(&existing[val_end..]);
+                            return Some(out);
+                        }
+                    }
+                }
+            }
+            i += 1;
+            while i < n {
+                if bytes[i] == b'\\' && i + 1 < n {
+                    i += 1;
+                    if let Some(ch) = existing[i..].chars().next() {
+                        i += ch.len_utf8();
+                    }
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                if let Some(ch) = existing[i..].chars().next() {
+                    i += ch.len_utf8();
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if let Some(ch) = existing[i..].chars().next() {
+            i += ch.len_utf8();
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 pub fn run_clear_subagents(home: &str, explicit_sid: String) {

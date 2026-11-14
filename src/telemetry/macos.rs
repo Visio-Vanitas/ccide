@@ -4,12 +4,21 @@ use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::ptr;
 
 use crate::ffi::{
-    getloadavg, host_page_size, host_statistics, host_statistics64, mach_host_self, sysctl,
-    sysctl_string, sysctl_u64, CFDictionaryGetValue, CFNumberGetValue, CFRelease,
-    CFStringCreateWithCString, HostCpuLoadInfo, IOIteratorNext, IOObjectRelease,
-    IORegistryEntryCreateCFProperties, IOServiceGetMatchingServices, IOServiceMatching, IfMsghdr2,
+    getloadavg, host_page_size, host_statistics, host_statistics64, mach_host_self,
+    mach_port_deallocate, mach_task_self_, sysctl, sysctl_string, sysctl_u64, CFDictionaryGetValue,
+    CFNumberGetValue, CFRelease, CFStringCreateWithCString, HostCpuLoadInfo, IOIteratorNext,
+    IOObjectRelease, IORegistryEntryCreateCFProperties, IOServiceGetMatchingServices,
+    IOServiceMatching, IfMsghdr2,
 };
 use crate::telemetry::SharedTelemetrySnapshot;
+
+pub fn release_host_port(host: c_uint) {
+    if host != 0 {
+        unsafe {
+            let _ = mach_port_deallocate(mach_task_self_, host);
+        }
+    }
+}
 
 pub fn detect_hw_info() -> (c_uint, usize, String, usize, f64) {
     let h = unsafe { mach_host_self() };
@@ -95,6 +104,16 @@ pub fn sample_metrics(
     snap.prev_net_tx = tx_b;
 }
 
+struct CfRef(*const c_void);
+
+impl Drop for CfRef {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { CFRelease(self.0) };
+        }
+    }
+}
+
 fn sample_gpu_iokit() -> (f64, f64) {
     unsafe {
         let Ok(cls) = CString::new("IOAccelerator") else {
@@ -112,33 +131,35 @@ fn sample_gpu_iokit() -> (f64, f64) {
         let mut vram_gb = 0.0f64;
 
         #[allow(clippy::manual_c_str_literals)]
-        let (k_perf, k_dev, k_ren, k_inuse, k_alloc) = (
-            CFStringCreateWithCString(
-                ptr::null(),
-                b"PerformanceStatistics\0".as_ptr() as *const c_char,
-                0x08000100,
-            ),
-            CFStringCreateWithCString(
-                ptr::null(),
-                b"Device Utilization %\0".as_ptr() as *const c_char,
-                0x08000100,
-            ),
-            CFStringCreateWithCString(
-                ptr::null(),
-                b"Renderer Utilization %\0".as_ptr() as *const c_char,
-                0x08000100,
-            ),
-            CFStringCreateWithCString(
-                ptr::null(),
-                b"In use system memory\0".as_ptr() as *const c_char,
-                0x08000100,
-            ),
-            CFStringCreateWithCString(
-                ptr::null(),
-                b"Alloc system memory\0".as_ptr() as *const c_char,
-                0x08000100,
-            ),
-        );
+        let k_perf = CfRef(CFStringCreateWithCString(
+            ptr::null(),
+            b"PerformanceStatistics\0".as_ptr() as *const c_char,
+            0x08000100,
+        ));
+        #[allow(clippy::manual_c_str_literals)]
+        let k_dev = CfRef(CFStringCreateWithCString(
+            ptr::null(),
+            b"Device Utilization %\0".as_ptr() as *const c_char,
+            0x08000100,
+        ));
+        #[allow(clippy::manual_c_str_literals)]
+        let k_ren = CfRef(CFStringCreateWithCString(
+            ptr::null(),
+            b"Renderer Utilization %\0".as_ptr() as *const c_char,
+            0x08000100,
+        ));
+        #[allow(clippy::manual_c_str_literals)]
+        let k_inuse = CfRef(CFStringCreateWithCString(
+            ptr::null(),
+            b"In use system memory\0".as_ptr() as *const c_char,
+            0x08000100,
+        ));
+        #[allow(clippy::manual_c_str_literals)]
+        let k_alloc = CfRef(CFStringCreateWithCString(
+            ptr::null(),
+            b"Alloc system memory\0".as_ptr() as *const c_char,
+            0x08000100,
+        ));
 
         loop {
             let entry = IOIteratorNext(iter);
@@ -149,42 +170,47 @@ fn sample_gpu_iokit() -> (f64, f64) {
             if IORegistryEntryCreateCFProperties(entry, &mut props, ptr::null(), 0) == 0
                 && !props.is_null()
             {
-                let perf = CFDictionaryGetValue(props, k_perf);
-                if !perf.is_null() {
-                    let mut v: i64 = 0;
-                    let d_ptr = CFDictionaryGetValue(perf, k_dev);
-                    if !d_ptr.is_null()
-                        && CFNumberGetValue(d_ptr, 4, &mut v as *mut i64 as *mut c_void)
-                    {
-                        gpu_pct = gpu_pct.max(v as f64);
-                    }
-                    let r_ptr = CFDictionaryGetValue(perf, k_ren);
-                    if !r_ptr.is_null()
-                        && CFNumberGetValue(r_ptr, 4, &mut v as *mut i64 as *mut c_void)
-                    {
-                        gpu_pct = gpu_pct.max(v as f64);
-                    }
-                    let m_ptr = CFDictionaryGetValue(perf, k_inuse);
-                    let m_ptr = if m_ptr.is_null() {
-                        CFDictionaryGetValue(perf, k_alloc)
-                    } else {
-                        m_ptr
-                    };
-                    if !m_ptr.is_null()
-                        && CFNumberGetValue(m_ptr, 4, &mut v as *mut i64 as *mut c_void)
-                    {
-                        vram_gb = (v as f64) / (1024.0 * 1024.0 * 1024.0);
+                let _props_guard = CfRef(props);
+                if !k_perf.0.is_null() {
+                    let perf = CFDictionaryGetValue(props, k_perf.0);
+                    if !perf.is_null() {
+                        let mut v: i64 = 0;
+                        if !k_dev.0.is_null() {
+                            let d_ptr = CFDictionaryGetValue(perf, k_dev.0);
+                            if !d_ptr.is_null()
+                                && CFNumberGetValue(d_ptr, 4, &mut v as *mut i64 as *mut c_void)
+                            {
+                                gpu_pct = gpu_pct.max(v as f64);
+                            }
+                        }
+                        if !k_ren.0.is_null() {
+                            let r_ptr = CFDictionaryGetValue(perf, k_ren.0);
+                            if !r_ptr.is_null()
+                                && CFNumberGetValue(r_ptr, 4, &mut v as *mut i64 as *mut c_void)
+                            {
+                                gpu_pct = gpu_pct.max(v as f64);
+                            }
+                        }
+                        let m_ptr = if !k_inuse.0.is_null() {
+                            CFDictionaryGetValue(perf, k_inuse.0)
+                        } else {
+                            ptr::null()
+                        };
+                        let m_ptr = if m_ptr.is_null() && !k_alloc.0.is_null() {
+                            CFDictionaryGetValue(perf, k_alloc.0)
+                        } else {
+                            m_ptr
+                        };
+                        if !m_ptr.is_null()
+                            && CFNumberGetValue(m_ptr, 4, &mut v as *mut i64 as *mut c_void)
+                        {
+                            vram_gb = (v as f64) / (1024.0 * 1024.0 * 1024.0);
+                        }
                     }
                 }
-                CFRelease(props);
             }
             IOObjectRelease(entry);
         }
-        CFRelease(k_perf);
-        CFRelease(k_dev);
-        CFRelease(k_ren);
-        CFRelease(k_inuse);
-        CFRelease(k_alloc);
         IOObjectRelease(iter);
         (gpu_pct, vram_gb)
     }
@@ -221,20 +247,25 @@ fn sample_net_sysctl() -> (u64, u64) {
         let mut rx_total = 0u64;
         let mut tx_total = 0u64;
         let mut off = 0usize;
-        while off + std::mem::size_of::<IfMsghdr2>() <= len {
-            let hdr = &*(buf.as_ptr().add(off) as *const IfMsghdr2);
-            if hdr.ifm_msglen == 0 {
+        while off + std::mem::size_of::<u16>() <= len {
+            let msglen = ptr::read_unaligned(buf.as_ptr().add(off) as *const u16) as usize;
+            if msglen == 0 || off + msglen > len {
                 break;
             }
-            if hdr.ifm_type == 0x12
-                && (hdr.ifm_flags & 0x8) == 0
-                && (hdr.ifm_flags & 0x1) != 0
-                && hdr.ifm_data.ifi_type == 6
-            {
-                rx_total = rx_total.saturating_add(hdr.ifm_data.ifi_ibytes);
-                tx_total = tx_total.saturating_add(hdr.ifm_data.ifi_obytes);
+            if msglen >= std::mem::size_of::<IfMsghdr2>() {
+                let hdr = ptr::read_unaligned(buf.as_ptr().add(off) as *const IfMsghdr2);
+                if (hdr.ifm_msglen as usize) >= std::mem::size_of::<IfMsghdr2>()
+                    && off + (hdr.ifm_msglen as usize) <= len
+                    && hdr.ifm_type == 0x12
+                    && (hdr.ifm_flags & 0x8) == 0
+                    && (hdr.ifm_flags & 0x1) != 0
+                    && hdr.ifm_data.ifi_type == 6
+                {
+                    rx_total = rx_total.saturating_add(hdr.ifm_data.ifi_ibytes);
+                    tx_total = tx_total.saturating_add(hdr.ifm_data.ifi_obytes);
+                }
             }
-            off += hdr.ifm_msglen as usize;
+            off += msglen;
         }
         (rx_total, tx_total)
     }

@@ -70,7 +70,7 @@ pub fn build_setup_panels(
     );
 
     let top_spec = PanelSpec {
-        title: "CC-IDE v0.7.0 · SETUP & DOCTOR".to_string(),
+        title: "CC-IDE v0.8.0 · SETUP & DOCTOR".to_string(),
         badge: report.os_arch.clone(),
         accent: cyan.clone(),
         rows: vec![

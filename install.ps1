@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$PluginVersion = "0.7.0"
+$PluginVersion = "0.8.0"
 $HomeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 $ClaudeDir = Join-Path $HomeDir ".claude"
 $CacheDir = Join-Path $HomeDir ".cache\cc-ide"
@@ -120,10 +120,16 @@ if ($Uninstall) {
     Get-Process -Name "ccide-core" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     if ($PyExe) {
         $FoundBin = & $PyExe -I -c "import sys; sys.path.insert(0, r'$ProjectRoot\scripts'); import bun_pe; print(bun_pe.discover_claude_bin())" 2>$null
-        if ($FoundBin -and (Test-Path "$FoundBin.bak")) {
-            Copy-Item -LiteralPath "$FoundBin.bak" -Destination $FoundBin -Force
-            Write-Ok "Restored pristine $FoundBin from .bak"
+        if (-not $FoundBin) {
+        $ClaudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+        if ($ClaudeCmd) {
+            $CandExe = Join-Path (Split-Path -Parent $ClaudeCmd.Source) "bin\claude.exe"
+            $FoundBin = if (Test-Path $CandExe) { $CandExe } else { $ClaudeCmd.Source }
         }
+    }
+    if ($FoundBin -and (Test-Path "$FoundBin.bak")) {
+        Copy-Item -LiteralPath "$FoundBin.bak" -Destination $FoundBin -Force
+        Write-Ok "Restored pristine $FoundBin from .bak"
     }
     $YaziCfgDir = if ($env:APPDATA) { Join-Path $env:APPDATA "yazi\config" } else { Join-Path $HomeDir ".config\yazi" }
     foreach ($fn in @("yazi.toml", "keymap.toml", "init.lua")) {
@@ -133,8 +139,27 @@ if ($Uninstall) {
         }
     }
     $StFile = Join-Path $ClaudeDir "settings.json"
-    if ($PyExe -and (Test-Path $StFile)) {
-        & $PyExe -I -c "import json,os; p=r'$StFile'; st=json.load(open(p,encoding='utf-8')); (st.get('enabledPlugins') or {}).pop('cc-ide@cc-ide',None); (st.get('extraKnownMarketplaces') or {}).pop('cc-ide',None); sl=st.get('statusLine'); (st.pop('statusLine',None) if isinstance(sl,dict) and 'ccide-core' in str(sl.get('command','')) else None); json.dump(st,open(p,'w',encoding='utf-8'),indent=2)"
+    if (Test-Path $StFile) {
+        if ($PyExe) {
+            & $PyExe -I -c "import json,os; p=r'$StFile'; st=json.load(open(p,encoding='utf-8')); (st.get('enabledPlugins') or {}).pop('cc-ide@cc-ide',None); (st.get('extraKnownMarketplaces') or {}).pop('cc-ide',None); sl=st.get('statusLine'); (st.pop('statusLine',None) if isinstance(sl,dict) and 'ccide-core' in str(sl.get('command','')) else None); json.dump(st,open(p,'w',encoding='utf-8'),indent=2)"
+        } else {
+            try {
+                $st = Get-Content -LiteralPath $StFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($st.enabledPlugins -and ($st.enabledPlugins.PSObject.Properties.Name -contains "cc-ide@cc-ide")) {
+                    $st.enabledPlugins.PSObject.Properties.Remove("cc-ide@cc-ide")
+                }
+                if ($st.extraKnownMarketplaces -and ($st.extraKnownMarketplaces.PSObject.Properties.Name -contains "cc-ide")) {
+                    $st.extraKnownMarketplaces.PSObject.Properties.Remove("cc-ide")
+                }
+                if ($st.statusLine -and $st.statusLine.command -and ($st.statusLine.command -like "*ccide-core*")) {
+                    $st.PSObject.Properties.Remove("statusLine")
+                }
+                $st | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $StFile -Encoding UTF8
+            } catch {}
+        }
+    }
+    if (Test-Path $PluginCacheDir) {
+        Remove-Item -LiteralPath $PluginCacheDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($UserPath -and $UserPath.Contains($LocalBinDir)) {
@@ -182,14 +207,22 @@ Get-ChildItem -Path (Join-Path $ProjectRoot "assets\sprites\*") | ForEach-Object
 }
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "assets\lazygit.yml") -Destination "$ConfigDir\lazygit.yml" -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "assets\glow-style.json") -Destination "$ConfigDir\glow-style.json" -Force
-foreach ($cfgName in @("palette.json", "viewer.json", "pricing.json")) {
+foreach ($cfgName in @("palette.json", "viewer.json", "pricing.json", "orchestrator.json")) {
     $dstCfg = Join-Path $ConfigDir $cfgName
     if (-not (Test-Path $dstCfg)) {
         Copy-Item -LiteralPath (Join-Path $ProjectRoot "assets\$cfgName") -Destination $dstCfg
     }
 }
+$WorkflowSrcDir = Join-Path $ProjectRoot "assets\workflows"
+if (Test-Path $WorkflowSrcDir) {
+    $UserWfDir = Join-Path $ClaudeDir "workflows"
+    New-Item -ItemType Directory -Force -Path $UserWfDir | Out-Null
+    Copy-Item -Path (Join-Path $WorkflowSrcDir "*.js") -Destination $UserWfDir -Force -ErrorAction SilentlyContinue
+}
 
 Copy-Item -Path (Join-Path $ProjectRoot "scripts\*") -Destination "$ClaudeDir\scripts\" -Force
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "scripts\lazygit-log.py") -Destination "$ClaudeDir\scripts\lazygit-log.py" -Force
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "scripts\git_smooth_graph.py") -Destination "$ClaudeDir\scripts\git_smooth_graph.py" -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "scripts\ccide.ps1") -Destination (Join-Path $LocalBinDir "ccide.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "scripts\ccide.cmd") -Destination (Join-Path $LocalBinDir "ccide.cmd") -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "scripts\ccide.cmd") -Destination (Join-Path $LocalBinDir "cc-ide.cmd") -Force
@@ -216,7 +249,19 @@ if ($OptCompanion -eq "1") {
     if ($InitTxt -notmatch 'require\(["'']hscroll["'']\)') {
         Set-Content -LiteralPath $InitLua -Value (($InitTxt.TrimEnd() + "`nrequire(`"hscroll`"):setup()`n").TrimStart("`n")) -Encoding UTF8
     }
-    Write-Ok "Installed hscroll.yazi plugin -> $YaziCfgDir"
+    $LgCfgDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "lazygit" } else { Join-Path $HomeDir "AppData\Local\lazygit" }
+    New-Item -ItemType Directory -Force -Path $LgCfgDir | Out-Null
+    $LgCfg = Join-Path $LgCfgDir "config.yml"
+    Backup-Once $LgCfg
+    $PyCmd = if ($PyExe) { "`"$PyExe`"" } else { "python" }
+    $PagerPath = Join-Path $ClaudeDir "scripts\lazygit-pager.sh"
+    $LogPath = Join-Path $ClaudeDir "scripts\lazygit-log.py"
+    $LgYml = Get-Content -LiteralPath (Join-Path $ProjectRoot "assets\lazygit.yml") -Raw -Encoding UTF8
+    $LgYml = $LgYml -replace '(?m)^(\s*pager:\s*).*$', "`$1'$PyCmd -I `"$PagerPath`" --col-width={{columnWidth}}'"
+    $LgYml = $LgYml -replace '(?m)^(\s*branchLogCmd:\s*).*$', "`$1'$PyCmd -I `"$LogPath`" --branch={{branchName}}'"
+    $LgYml = $LgYml -replace '(?m)^(\s*-\s*)lazygit-log\.py --all\s*$', "`$1'$PyCmd -I `"$LogPath`" --all'"
+    Set-Content -LiteralPath $LgCfg -Value $LgYml -Encoding UTF8
+    Write-Ok "Installed hscroll.yazi -> $YaziCfgDir & Lazygit Windows config -> $LgCfg"
 } else {
     Write-Ok "Skipped Yazi/Lazygit companion config edits per user selection"
 }
@@ -232,14 +277,16 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot "hooks\hooks.json") -Destination 
 Copy-Item -Path (Join-Path $ProjectRoot "skills\*") -Destination "$PluginCacheDir\skills\" -Recurse -Force
 Copy-Item -Path (Join-Path $ProjectRoot "scripts\*") -Destination "$PluginCacheDir\scripts\" -Recurse -Force
 Copy-Item -Path (Join-Path $ProjectRoot "assets\*") -Destination "$PluginCacheDir\assets\" -Recurse -Force
+if (Test-Path (Join-Path $ProjectRoot "assets\workflows")) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $PluginCacheDir "workflows") | Out-Null
+    Copy-Item -Path (Join-Path $ProjectRoot "assets\workflows\*.js") -Destination "$PluginCacheDir\workflows\" -Force -ErrorAction SilentlyContinue
+}
 Copy-Item -LiteralPath $EngineExe -Destination "$PluginCacheDir\bin\ccide-core.exe" -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "AGENT.md") -Destination "$PluginCacheDir\AGENT.md" -Force
 
 if ($OptPlugin -eq "1" -and $PyExe) {
     Backup-Once (Join-Path $ClaudeDir "settings.json")
     $StatusCmd = "`"" + (Join-Path $ClaudeDir "bin\ccide-core.exe") + "`" statusline"
-    & $PyExe -I - $ProjectRoot $PluginCacheDir $PluginVersion $ClaudeDir $StatusCmd <<'PY' 2>$null
-PY
     $RegScript = @"
 import datetime, json, os, sys
 proj, pcache, ver, cdir, sl_cmd = sys.argv[1:6]
@@ -273,4 +320,5 @@ if ($OptPatch -eq "1" -and $PyExe) {
 }
 
 Write-Step "6/6 Installation complete! Launch `ccide` inside WezTerm or Windows Terminal (`wt.exe`)."
+& $EngineExe orchestrator sync 2>$null | Out-Null
 Write-Ok "Run `ccide doctor` at any time to verify your Windows workspace."

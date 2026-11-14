@@ -1,0 +1,46 @@
+{
+  // Subagent & Native Workflow Model/Effort Orchestration (`~/.config/cc-ide/orchestrator.json`).
+  // - Live hot-reloads in the Right Sidebar `[ORCH]` panel and applies on the next `Agent` / `Workflow` call
+  //   via official `PreToolUse` (`updatedInput`) + `~/.claude/agents/ccide-*.md` shims (zero binary patch).
+  // - Inline override in prompts/descriptions: prefix with `[@kimi-k3:high]` or `[@hydrogen:low]`.
+  "active_preset": "balanced",
+  "model_pool": [
+    "gemini-4-carbon[1M]",
+    "gemini-4-hydrogen[1M]",
+    "deepseek-v4.1-flash[1M]",
+    "gemini-3.8-flash-tiered",
+    "kimi-k3",
+    "glm-5.3",
+    "inherit"
+  ],
+  "presets": {
+    "balanced": {
+      "scout":    { "models": ["deepseek-v4.1-flash[1M]"], "effort": "low" },
+      "coder":    { "models": ["gemini-4-hydrogen[1M]"],   "effort": "medium" },
+      "reviewer": { "models": ["gemini-4-carbon[1M]"],     "effort": "high" },
+      "plan":     { "models": ["gemini-4-carbon[1M]"],     "effort": "high" },
+      "workflow": { "models": ["gemini-4-hydrogen[1M]"],   "effort": "medium" }
+    },
+    "fast": {
+      "scout":    { "models": ["deepseek-v4.1-flash[1M]"], "effort": "low" },
+      "coder":    { "models": ["deepseek-v4.1-flash[1M]"], "effort": "low" },
+      "reviewer": { "models": ["gemini-4-hydrogen[1M]"],   "effort": "medium" },
+      "plan":     { "models": ["gemini-4-hydrogen[1M]"],   "effort": "medium" },
+      "workflow": { "models": ["deepseek-v4.1-flash[1M]"], "effort": "low" }
+    },
+    "deep-audit": {
+      "scout":    { "models": ["gemini-4-hydrogen[1M]"],   "effort": "medium" },
+      "coder":    { "models": ["gemini-4-carbon[1M]"],     "effort": "high" },
+      "reviewer": { "models": ["gemini-4-carbon[1M]"],     "effort": "xhigh" },
+      "plan":     { "models": ["gemini-4-carbon[1M]"],     "effort": "xhigh" },
+      "workflow": { "models": ["gemini-4-carbon[1M]"],     "effort": "high" }
+    },
+    "hetero-rr": {
+      "scout":    { "models": ["deepseek-v4.1-flash[1M]", "gemini-3.8-flash-tiered"], "effort": "low" },
+      "coder":    { "models": ["gemini-4-hydrogen[1M]", "kimi-k3"],                   "effort": "medium" },
+      "reviewer": { "models": ["gemini-4-carbon[1M]", "kimi-k3", "glm-5.3"],          "effort": "high" },
+      "plan":     { "models": ["gemini-4-carbon[1M]"],                                "effort": "xhigh" },
+      "workflow": { "models": ["gemini-4-hydrogen[1M]"],                              "effort": "medium" }
+    }
+  }
+}

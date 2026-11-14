@@ -93,8 +93,6 @@ def make_command_profile(cmd: str, cwd: str = "") -> iterm2.LocalWriteOnlyProfil
     prof.set_mouse_reporting_allow_mouse_wheel(True)
     if hasattr(prof, "_simple_set"):
         prof._simple_set("Mouse Reporting allow clicks and drags", True)
-    if hasattr(prof, "set_background_image_location"):
-        prof.set_background_image_location("")
     if cwd and os.path.isdir(cwd):
         prof.set_initial_directory_mode(
             iterm2.InitialWorkingDirectory.INITIAL_WORKING_DIRECTORY_CUSTOM
@@ -103,7 +101,7 @@ def make_command_profile(cmd: str, cwd: str = "") -> iterm2.LocalWriteOnlyProfil
     return prof
 
 
-async def lock_tui_pane_no_scrollback(sess: iterm2.Session):
+async def lock_tui_pane_no_scrollback(sess: iterm2.Session, center_bg_img: str | None = None):
     try:
         prof = await sess.async_get_profile()
         await prof.async_set_unlimited_scrollback(False)
@@ -115,6 +113,9 @@ async def lock_tui_pane_no_scrollback(sess: iterm2.Session):
         await prof.async_set_mouse_reporting_allow_mouse_wheel(True)
         if hasattr(prof, "_async_simple_set"):
             await prof._async_simple_set("Mouse Reporting allow clicks and drags", True)
+        if center_bg_img is not None and hasattr(prof, "async_set_background_image_location"):
+            if (prof.background_image_location or "") != center_bg_img:
+                await prof.async_set_background_image_location(center_bg_img)
     except Exception:
         pass
 
@@ -221,7 +222,10 @@ def detect_ssh_transport_for_pid(root_pid: int) -> list[str] | None:
         visited.add(cur)
         for cpid, comm, args_str in children.get(cur, []):
             if comm == "ssh":
-                tokens = shlex.split(args_str)
+                try:
+                    tokens = shlex.split(args_str)
+                except ValueError:
+                    continue
                 # Extract SSH connection options (-p, -i, -J, -F, -l, -o) and destination host
                 ssh_opts: list[str] = []
                 target_host: str | None = None
@@ -257,6 +261,7 @@ async def close_existing_side_panes(tab: iterm2.Tab, claude_sess: iterm2.Session
             or "[TREE] yazi" in name
             or "[GIT] lazygit" in name
             or "[SYS] macmon" in name
+            or "[SYS] monitor" in name
             or "[AI] Companion" in name
             or "[PET] clawd" in name
         ):
@@ -316,11 +321,17 @@ async def handle_open(
             + " ".join(shlex.quote(x) for x in ssh_transport)
             + " -t "
         )
-        yazi_cmd = ssh_prefix + shlex.quote(f"~/.claude/scripts/pane-runner.sh yazi {q_dir} {q_yid}")
-        git_cmd = ssh_prefix + shlex.quote(f"~/.claude/scripts/pane-runner.sh lazygit {q_git}")
-        mon_cmd = ssh_prefix + shlex.quote(f"~/.claude/scripts/pane-runner.sh macmon {q_dir}")
-        sidebar_cmd = ssh_prefix + shlex.quote(
-            f"~/.claude/scripts/pane-runner.sh sidebar {q_dir} {q_yid} {r_shell_pid}"
+        yazi_cmd = ssh_prefix + "sh -lc " + shlex.quote(
+            f'exec "$HOME/.claude/scripts/pane-runner.sh" yazi {q_dir} {q_yid}'
+        )
+        git_cmd = ssh_prefix + "sh -lc " + shlex.quote(
+            f'exec "$HOME/.claude/scripts/pane-runner.sh" lazygit {q_git}'
+        )
+        mon_cmd = ssh_prefix + "sh -lc " + shlex.quote(
+            f'exec "$HOME/.claude/scripts/pane-runner.sh" macmon {q_dir}'
+        )
+        sidebar_cmd = ssh_prefix + "sh -lc " + shlex.quote(
+            f'exec "$HOME/.claude/scripts/pane-runner.sh" sidebar {q_dir} {q_yid} {int(r_shell_pid)}'
         )
         local_cwd = os.path.expanduser("~")
     else:
@@ -406,6 +417,8 @@ async def handle_open(
 
 
 async def handle_close(app: iterm2.App, pane_ids_arg: str = "", caller_guid: str = "", yid: str = ""):
+    if yid:
+        YAZI_SESSION_CACHE.pop(str(yid), None)
     await app.async_refresh()
     if pane_ids_arg:
         target_ids = {x.strip() for x in pane_ids_arg.split(",") if x.strip()}
@@ -438,9 +451,16 @@ async def handle_rebalance(app: iterm2.App):
     os.makedirs(cache_dir, exist_ok=True)
     for w in app.terminal_windows:
         for t in w.tabs:
+            center_bg_img = None
             for s in t.sessions:
                 yid = await s.async_get_variable("user.cc_yazi_id")
                 spid = await s.async_get_variable("pid")
+                if yid:
+                    try:
+                        cprof = await s.async_get_profile()
+                        center_bg_img = cprof.background_image_location or ""
+                    except Exception:
+                        pass
                 if yid and spid:
                     YAZI_SESSION_CACHE[str(yid)] = s.session_id
                     try:
@@ -448,9 +468,10 @@ async def handle_rebalance(app: iterm2.App):
                             f.write(str(spid))
                     except Exception:
                         pass
+            for s in t.sessions:
                 name = s.name or ""
                 if any(tag in name for tag in ("[TREE] yazi", "[GIT] lazygit", "[AI] Companion")):
-                    await lock_tui_pane_no_scrollback(s)
+                    await lock_tui_pane_no_scrollback(s, center_bg_img)
             if hasattr(t.root, "children") and len(t.root.children) >= 3:
                 await apply_consistent_tab_widths(app, t, left_pct=30, right_pct=16)
 
@@ -465,21 +486,16 @@ async def handle_focus_or_switch(
     if yazi_id:
         cached_sid = YAZI_SESSION_CACHE.get(str(yazi_id), "")
         if cached_sid:
-            target_claude = app.get_session_by_id(cached_sid)
+            cached_sess = app.get_session_by_id(cached_sid)
+            if cached_sess is not None:
+                try:
+                    await cached_sess.async_activate()
+                    return
+                except Exception:
+                    pass
+            YAZI_SESSION_CACHE.pop(str(yazi_id), None)
 
-    if target_claude is None and yazi_id:
-        for w in app.terminal_windows:
-            for t in w.tabs:
-                for s in t.sessions:
-                    yid = await s.async_get_variable("user.cc_yazi_id")
-                    if str(yid) == str(yazi_id):
-                        YAZI_SESSION_CACHE[str(yazi_id)] = s.session_id
-                        target_claude = s
-                        break
-                if target_claude:
-                    break
-
-    if target_claude is None and yazi_id:
+    if yazi_id:
         await app.async_refresh()
         for w in app.terminal_windows:
             for t in w.tabs:
@@ -491,6 +507,8 @@ async def handle_focus_or_switch(
                         break
                 if target_claude:
                     break
+            if target_claude:
+                break
 
     if target_claude is not None:
         await target_claude.async_activate()
@@ -570,7 +588,7 @@ async def main(connection):
                     if sess is None:
                         break
                     name = sess.name or ""
-                    if any(tag in name for tag in ("[AI] Companion", "[SYS] macmon", "[PET] clawd")):
+                    if any(tag in name for tag in ("[AI] Companion", "[SYS] macmon", "[SYS] monitor", "[PET] clawd")):
                         try:
                             await sess.async_set_selection(iterm2.Selection([]))
                         except Exception:
@@ -586,14 +604,18 @@ async def main(connection):
                 asyncio.create_task(watch_session_selection(s.session_id))
 
     async def monitor_new_sessions():
-        try:
-            async with iterm2.NewSessionMonitor(connection) as mon:
-                while True:
-                    new_sid = await mon.async_get()
-                    if new_sid:
-                        asyncio.create_task(watch_session_selection(new_sid))
-        except Exception:
-            pass
+        while True:
+            try:
+                async with iterm2.NewSessionMonitor(connection) as mon:
+                    while True:
+                        new_sid = await mon.async_get()
+                        try:
+                            if new_sid:
+                                asyncio.create_task(watch_session_selection(new_sid))
+                        except Exception:
+                            pass
+            except Exception:
+                await asyncio.sleep(0.5)
 
     asyncio.create_task(monitor_new_sessions())
 
@@ -604,49 +626,63 @@ async def main(connection):
     )
 
     async def guard_readonly_pane_focus():
-        last_blurred_yid = ""
-        try:
-            async with iterm2.FocusMonitor(connection) as monitor:
-                while True:
-                    update = await monitor.async_get_next_update()
-                    changed = update.active_session_changed
-                    if not changed or not changed.session_id:
-                        continue
-                    sess = app.get_session_by_id(changed.session_id)
-                    if sess is None:
-                        continue
-                    name = sess.name or ""
-                    for w in app.terminal_windows:
-                        for t in w.tabs:
-                            if sess in t.sessions:
-                                tab_yid = ""
-                                target_center = None
-                                for cand in t.sessions:
-                                    yid = await cand.async_get_variable("user.cc_yazi_id")
-                                    if yid:
-                                        tab_yid = str(yid)
-                                        target_center = cand
-                                        YAZI_SESSION_CACHE[tab_yid] = cand.session_id
+        yazi_focused_yids: set[str] = set()
+        while True:
+            try:
+                async with iterm2.FocusMonitor(connection) as monitor:
+                    while True:
+                        update = await monitor.async_get_next_update()
+                        try:
+                            changed = update.active_session_changed
+                            if not changed or not changed.session_id:
+                                continue
+                            sess = app.get_session_by_id(changed.session_id)
+                            if sess is None:
+                                continue
+                            name = sess.name or ""
+                            found_tab = False
+                            for w in app.terminal_windows:
+                                for t in w.tabs:
+                                    if sess in t.sessions:
+                                        found_tab = True
+                                        tab_yid = ""
+                                        target_center = None
+                                        for cand in t.sessions:
+                                            yid = await cand.async_get_variable("user.cc_yazi_id")
+                                            if yid:
+                                                tab_yid = str(yid)
+                                                target_center = cand
+                                                YAZI_SESSION_CACHE[tab_yid] = cand.session_id
+                                                break
+                                        if ("[SYS] macmon" in name or "[SYS] monitor" in name or "[PET] clawd" in name) and target_center:
+                                            await target_center.async_activate()
+                                        if tab_yid and ya_bin:
+                                            if "[TREE] yazi" in name:
+                                                yazi_focused_yids.add(tab_yid)
+                                            elif tab_yid in yazi_focused_yids:
+                                                yazi_focused_yids.discard(tab_yid)
+                                                try:
+                                                    proc = await asyncio.create_subprocess_exec(
+                                                        ya_bin,
+                                                        "emit-to",
+                                                        tab_yid,
+                                                        "plugin",
+                                                        "hscroll",
+                                                        "blur",
+                                                        stdin=asyncio.subprocess.DEVNULL,
+                                                        stdout=asyncio.subprocess.DEVNULL,
+                                                        stderr=asyncio.subprocess.DEVNULL,
+                                                    )
+                                                    asyncio.create_task(proc.wait())
+                                                except Exception:
+                                                    pass
                                         break
-                                if ("[SYS] macmon" in name or "[PET] clawd" in name) and target_center:
-                                    await target_center.async_activate()
-                                if tab_yid and ya_bin:
-                                    if "[TREE] yazi" in name:
-                                        last_blurred_yid = ""
-                                    elif last_blurred_yid != tab_yid:
-                                        last_blurred_yid = tab_yid
-                                        try:
-                                            subprocess.Popen(
-                                                [ya_bin, "emit-to", tab_yid, "plugin", "hscroll", "blur"],
-                                                stdin=subprocess.DEVNULL,
-                                                stdout=subprocess.DEVNULL,
-                                                stderr=subprocess.DEVNULL,
-                                            )
-                                        except Exception:
-                                            pass
-                                break
-        except Exception:
-            pass
+                                if found_tab:
+                                    break
+                        except Exception:
+                            pass
+            except Exception:
+                await asyncio.sleep(0.5)
 
     asyncio.create_task(guard_readonly_pane_focus())
 
@@ -719,6 +755,7 @@ async def main(connection):
         finally:
             try:
                 writer.close()
+                await writer.wait_closed()
             except Exception:
                 pass
 

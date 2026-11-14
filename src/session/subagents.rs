@@ -1,10 +1,10 @@
 //! Session-Isolated Subagent Discovery, Per-Agent Model/Effort & `stoppedByUser` Tracking.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use crate::json::{extract_json_bool, extract_json_str};
 use crate::session::transcript::{update_jsonl_tracker, JsonlTracker};
@@ -44,21 +44,72 @@ pub fn find_session_dir(home: &str, session_id: &str) -> Option<PathBuf> {
     None
 }
 
+fn load_id_set(path: &str) -> HashSet<String> {
+    fs::read_to_string(path)
+        .map(|t| {
+            t.lines()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn load_dismissed_subagents(home: &str, session_id: &str) -> HashSet<String> {
-    let mut set = HashSet::new();
     if session_id.is_empty() {
-        return set;
+        return HashSet::new();
     }
-    let p = format!("{}/.cache/cc-ide/dismissed_{}.txt", home, session_id);
-    if let Ok(txt) = fs::read_to_string(p) {
-        for line in txt.lines() {
-            let id = line.trim();
+    load_id_set(&format!(
+        "{}/.cache/cc-ide/dismissed_{}.txt",
+        home, session_id
+    ))
+}
+
+fn load_parent_task_states(parent_jsonl: &Path) -> HashMap<String, &'static str> {
+    let mut states = HashMap::new();
+    let Ok(mut f) = File::open(parent_jsonl) else {
+        return states;
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let _ = f.seek(SeekFrom::Start(len.saturating_sub(524_288)));
+    let mut raw = Vec::new();
+    if f.read_to_end(&mut raw).is_err() {
+        return states;
+    }
+    for line in String::from_utf8_lossy(&raw).lines() {
+        let task_id = line
+            .find("<task-id>")
+            .and_then(|s| line[s + 9..].split("</task-id>").next())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if line.contains("was resumed by the user") {
+            if let Some(id) = task_id {
+                states.remove(id);
+            }
+            states.retain(|k: &String, _| !line.contains(k.as_str()));
+            continue;
+        }
+        if let Some(id) = task_id {
+            if line.contains("<status>killed</status>") {
+                states.insert(id.to_string(), "stopped");
+            } else if line.contains("<status>completed</status>")
+                || line.contains("<status>failed</status>")
+            {
+                states.insert(id.to_string(), "done");
+            }
+        }
+        if let Some(pos) = line.find("Successfully stopped task: ") {
+            let id: String = line[pos + 27..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
             if !id.is_empty() {
-                set.insert(id.to_string());
+                states.insert(id, "stopped");
             }
         }
     }
-    set
+    states
 }
 
 pub fn append_dismissed_subagents(home: &str, session_id: &str, ids: &[String]) {
@@ -95,10 +146,11 @@ pub fn get_session_subagents(
     let settings_txt =
         fs::read_to_string(format!("{}/.claude/settings.json", home)).unwrap_or_default();
     let dismissed = load_dismissed_subagents(home, session_id);
-    let now_s = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let stopped_hook = load_id_set(&format!(
+        "{}/.cache/cc-ide/stopped_{}.txt",
+        home, session_id
+    ));
+    let parent_states = load_parent_task_states(&sess_dir.with_extension("jsonl"));
 
     let mut metas = Vec::new();
     for entry in rd.flatten() {
@@ -141,10 +193,11 @@ pub fn get_session_subagents(
             .unwrap_or_else(|| target_cwd.to_string());
 
         let jpath = mpath.with_file_name(format!("agent-{}.jsonl", agent_id));
-        let tr = trackers.entry(agent_id.clone()).or_insert_with(|| {
+        let tracker_key = format!("{session_id}:{agent_id}");
+        let tr = trackers.entry(tracker_key).or_insert_with(|| {
             let sz = fs::metadata(&jpath).map(|m| m.len()).unwrap_or(0);
             JsonlTracker {
-                jpath: None,
+                jpath: Some(jpath.clone()),
                 offset: sz.saturating_sub(262_144),
                 last_tool: String::new(),
                 last_file: String::new(),
@@ -157,22 +210,14 @@ pub fn get_session_subagents(
         });
         update_jsonl_tracker(&jpath, &agent_cwd, home, tr);
 
-        let j_mtime_s = fs::metadata(&jpath)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(mtime_ms / 1000);
-        let age_s = now_s.saturating_sub(j_mtime_s);
-
-        let stopped_by_user = extract_json_bool(&mtxt, "stoppedByUser") == Some(true);
+        let parent_st = parent_states.get(&agent_id).copied();
+        let stopped_by_user =
+            extract_json_bool(&mtxt, "stoppedByUser") == Some(true) || parent_st == Some("stopped");
         let is_done = extract_json_bool(&mtxt, "finished") == Some(true)
             || stopped_by_user
-            || tr.done_from_tail
-            || age_s > 25;
-        if is_done && dismissed.contains(&agent_id) {
-            continue;
-        }
+            || stopped_hook.contains(&agent_id)
+            || parent_st == Some("done")
+            || tr.done_from_tail;
         let status = if stopped_by_user {
             "stopped"
         } else if is_done {
@@ -180,12 +225,19 @@ pub fn get_session_subagents(
         } else {
             "running"
         };
+        if status != "running" && dismissed.contains(&agent_id) {
+            continue;
+        }
 
+        let raw_type =
+            extract_json_str(&mtxt, "agentType").unwrap_or_else(|| "general-purpose".to_string());
+        let shim_resolved = crate::orchestrator::model_from_shim_agent_type(home, &raw_type);
         let meta_model = extract_json_str(&mtxt, "model")
             .filter(|m| is_valid_model_name(m))
             .or_else(|| {
                 extract_json_str(&mtxt, "pickedEffortModel").filter(|m| is_valid_model_name(m))
             })
+            .or_else(|| shim_resolved.as_ref().map(|(_, m)| m.clone()))
             .or_else(|| {
                 (!tr.last_model.is_empty() && is_valid_model_name(&tr.last_model))
                     .then(|| tr.last_model.clone())
@@ -199,10 +251,9 @@ pub fn get_session_subagents(
         };
         let effort = extract_json_str(&mtxt, "effort").filter(|e| !e.is_empty());
 
-        let raw_type =
-            extract_json_str(&mtxt, "agentType").unwrap_or_else(|| "general-purpose".to_string());
         let label_src = extract_json_str(&mtxt, "name")
             .filter(|s| !s.is_empty())
+            .or_else(|| shim_resolved.map(|(badge, _)| badge.to_string()))
             .unwrap_or_else(|| raw_type.rsplit(':').next().unwrap_or(&raw_type).to_string());
         let short_type: String = label_src.chars().take(12).collect();
         let desc =
@@ -236,4 +287,39 @@ pub fn get_session_subagents(
         }
     }
     items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_stop_killed_and_resumed_transitions_status() {
+        let base = std::env::temp_dir().join(format!("ccide_subagent_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let sid = "sess-123";
+        let proj = base.join(".claude/projects/proj");
+        let sub_dir = proj.join(sid).join("subagents");
+        fs::create_dir_all(&sub_dir).unwrap();
+        fs::write(
+            sub_dir.join("agent-abc.meta.json"),
+            r#"{"agentType":"Explore"}"#,
+        )
+        .unwrap();
+        let parent = proj.join(format!("{}.jsonl", sid));
+        fs::write(&parent, "<task-id>abc</task-id><status>killed</status>\n").unwrap();
+
+        let home = base.to_string_lossy().into_owned();
+        let mut trackers = HashMap::new();
+        let items = get_session_subagents(&home, sid, "/tmp", &mut trackers);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].status, "stopped");
+
+        let mut f = OpenOptions::new().append(true).open(&parent).unwrap();
+        writeln!(f, "<task-id>abc</task-id> was resumed by the user").unwrap();
+        let items2 = get_session_subagents(&home, sid, "/tmp", &mut trackers);
+        assert_eq!(items2.len(), 1);
+        assert_eq!(items2[0].status, "running");
+        let _ = fs::remove_dir_all(&base);
+    }
 }

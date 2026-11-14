@@ -8,13 +8,13 @@
 //! 3. Supports `filenames[0]` fallback for `Glob`/`Grep` tool responses and ignores `staged: true`
 //!    unapplied file previews.
 
-use std::fs;
-use std::io::Read;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ffi::{current_ppid, notify_sidebar};
-use crate::json::{extract_json_bool, extract_json_str};
+use crate::json::{extract_json_bool, extract_json_object, extract_json_str};
 use crate::platform::{cache_dir, ipc_path, is_internal_or_temp_path, user_home_dir};
 use crate::session::{
     emit_yazi_reveal_at, extract_tool_line_target, is_valid_model_name, normalize_path_under_cwd,
@@ -92,18 +92,44 @@ pub fn run() {
         );
     }
 
+    if hook_event == "SubagentStop" && !session_id.is_empty() && !agent_id.is_empty() {
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(cdir.join(format!("stopped_{}.txt", session_id)))
+        {
+            let _ = writeln!(f, "{}", agent_id);
+        }
+    }
+
     // Always wake the Right Sidebar immediately on ANY hook event
     notify_sidebar(&session_id, &target_yazi_id);
+
+    if hook_event == "SessionStart" {
+        let _ = crate::orchestrator::OrchestratorWatcher::new(&home);
+        let agents_dir = Path::new(&home)
+            .join(".claude/agents")
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        println!(
+            "{{\"hookSpecificOutput\":{{\"hookEventName\":\"SessionStart\",\"watchPaths\":[\"{}\"],\"additionalContext\":\"cc-ide Orchestrator active: prefix Agent description/prompt with [@<model>:<effort>] (e.g. [@kimi-k3:high], [@:low]) to override routing, and use '@scout'/'@coder'/'@reviewer'/'@plan' macros in Workflow scripts.\"}}}}",
+            agents_dir
+        );
+    }
 
     // Skip staged-only (unwritten) remote/review edits where disk file was not modified
     if extract_json_bool(&input, "staged") == Some(true) {
         return;
     }
 
-    let mut raw_file = extract_json_str(&input, "file_path")
+    let tool_in = extract_json_object(&input, "tool_input").unwrap_or(&input);
+    let mut raw_file = extract_json_str(tool_in, "file_path")
+        .or_else(|| extract_json_str(tool_in, "filePath"))
+        .or_else(|| extract_json_str(tool_in, "notebook_path"))
+        .or_else(|| extract_json_str(tool_in, "path"))
+        .or_else(|| extract_json_str(&input, "file_path"))
         .or_else(|| extract_json_str(&input, "filePath"))
-        .or_else(|| extract_json_str(&input, "notebook_path"))
-        .or_else(|| extract_json_str(&input, "path"))
         .unwrap_or_default();
 
     let to_abs = |f: &str| -> String {

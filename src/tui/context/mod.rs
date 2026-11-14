@@ -187,10 +187,7 @@ impl SessionContextAnalyzer {
         if let Some(active_jpath) =
             resolve_transcript_file(&mut self.path_cache, home, session_id, active_view_id)
         {
-            let tr = self
-                .trackers
-                .entry(active_jpath.clone())
-                .or_insert_with(TranscriptCtxTracker::new);
+            let tr = self.trackers.entry(active_jpath.clone()).or_default();
             update_transcript_ctx_tracker(&active_jpath, is_sub, tr);
             (in_tok, cc_tok, cr_tok, turns) =
                 (tr.in_tok, tr.cc_tok, tr.cr_tok, tr.turns_by_id.len());

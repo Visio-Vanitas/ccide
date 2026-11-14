@@ -72,9 +72,20 @@ fn write_shared_snapshot(snap: &SharedTelemetrySnapshot) {
     };
     let dst = ipc_path("hw_telemetry_v1.bin");
     let tmp = ipc_path(&format!("hw_telemetry_v1.bin.tmp.{}", std::process::id()));
-    if fs::write(&tmp, bytes).is_ok() && fs::rename(&tmp, &dst).is_err() {
-        let _ = fs::write(&dst, bytes);
-        let _ = fs::remove_file(&tmp);
+    if fs::write(&tmp, bytes).is_ok() {
+        let mut renamed = fs::rename(&tmp, &dst).is_ok();
+        if !renamed {
+            for _ in 0..3 {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                if fs::rename(&tmp, &dst).is_ok() {
+                    renamed = true;
+                    break;
+                }
+            }
+        }
+        if !renamed {
+            let _ = fs::remove_file(&tmp);
+        }
     }
 }
 
@@ -253,5 +264,12 @@ impl TelemetrySampler {
                 snap.cpu_pct, snap.gpu_pct, snap.mem_pct
             ),
         );
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for TelemetrySampler {
+    fn drop(&mut self) {
+        macos::release_host_port(self.host);
     }
 }

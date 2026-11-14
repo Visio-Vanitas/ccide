@@ -251,15 +251,20 @@ pub fn build_context_panel(
                 tag: None,
             });
         }
-        rows.push(BoxRow {
-            text: row_fmt.split(
-                &format!("{dim}[{amber}t{dim}/{amber}Tab{dim}] toggle{RESET}"),
-                &format!("{dim}[{amber}HW{dim}]{RESET}"),
-                1,
-            ),
-            bg: String::new(),
-            tag: Some((TAG_CTX_TOGGLE, 0)),
-        });
+        while rows.len() >= interior_h {
+            rows.pop();
+        }
+        if rows.len() < interior_h {
+            rows.push(BoxRow {
+                text: row_fmt.split(
+                    &format!("{dim}[{amber}t{dim}/{amber}Tab{dim}] toggle{RESET}"),
+                    &format!("{dim}[{amber}HW{dim}]{RESET}"),
+                    1,
+                ),
+                bg: String::new(),
+                tag: Some((TAG_CTX_TOGGLE, 0)),
+            });
+        }
     }
 
     PanelSpec {

@@ -8,8 +8,8 @@ pub mod transcript;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::ffi::{current_ppid, is_descendant_of, is_pid_alive};
-use crate::json::{extract_json_str, extract_json_u64};
+use crate::ffi::{current_ppid, get_ppid_of, is_descendant_of, is_pid_alive};
+use crate::json::{extract_json_bool, extract_json_str, extract_json_u64};
 use crate::platform::{cache_dir, clean_canonicalize, ipc_dir, normalize_slashes};
 
 pub use focus::{emit_yazi_blur, emit_yazi_reveal_at, extract_tool_line_target};
@@ -17,6 +17,33 @@ pub use model::{
     classify_model_family, compact_model_for_width, is_valid_model_name, load_config_models,
     map_alias_with_settings, short_model_label, ConfigModels,
 };
+
+fn ancestor_distance(mut pid: u32, target_ancestor: u32) -> Option<usize> {
+    if target_ancestor == 0 || pid == 0 {
+        return None;
+    }
+    for hops in 0..=32 {
+        if pid == target_ancestor {
+            return Some(hops);
+        }
+        #[cfg(unix)]
+        if pid <= 1 {
+            return None;
+        }
+        #[cfg(windows)]
+        if pid == 4 {
+            return None;
+        }
+        if hops == 32 {
+            return None;
+        }
+        match get_ppid_of(pid) {
+            Some(p) if p != pid && p > 0 => pid = p,
+            _ => return None,
+        }
+    }
+    None
+}
 
 /// Strictly resolves the `(sessionId, claude_pid)` belonging ONLY to this tab's Claude process.
 pub fn resolve_isolated_session_id(
@@ -58,7 +85,7 @@ pub fn resolve_isolated_session_id(
                 continue;
             }
             if let Ok(txt) = fs::read_to_string(&p) {
-                if txt.contains("\"spare\":true") {
+                if extract_json_bool(&txt, "spare") == Some(true) {
                     continue;
                 }
                 let pid = extract_json_u64(&txt, "pid").unwrap_or(0) as u32;
@@ -90,26 +117,34 @@ pub fn resolve_isolated_session_id(
     alive_entries.sort_by_key(|b| std::cmp::Reverse((b.is_busy, b.updated_at, b.started_at)));
 
     if shell_pid > 0 {
-        for e in &alive_entries {
-            if is_descendant_of(e.pid, shell_pid) {
-                let mut chosen = e;
-                if !e.is_busy {
-                    if let Some(bg_active) = alive_entries.iter().find(|cand| {
-                        cand.kind == "bg"
-                            && cand.cwd == e.cwd
-                            && (cand.is_busy || cand.updated_at > e.updated_at)
-                    }) {
-                        chosen = bg_active;
-                    }
+        if let Some((_dist, e)) = alive_entries
+            .iter()
+            .filter_map(|e| ancestor_distance(e.pid, shell_pid).map(|d| (d, e)))
+            .min_by_key(|(d, e)| {
+                (
+                    *d,
+                    std::cmp::Reverse((e.is_busy, e.updated_at, e.started_at)),
+                )
+            })
+        {
+            let mut chosen = e;
+            if !e.is_busy {
+                if let Some(bg_active) = alive_entries.iter().find(|cand| {
+                    cand.kind == "bg"
+                        && cand.cwd == e.cwd
+                        && (cand.is_busy || cand.updated_at > e.updated_at)
+                        && (shell_pid == 0 || is_descendant_of(cand.pid, shell_pid))
+                }) {
+                    chosen = bg_active;
                 }
-                if !tab_yazi_id.is_empty() {
-                    let _ = fs::write(
-                        cdir.join(format!("session_{}.yazi", chosen.session_id)),
-                        tab_yazi_id,
-                    );
-                }
-                return (chosen.session_id.clone(), chosen.pid);
             }
+            if !tab_yazi_id.is_empty() {
+                let _ = fs::write(
+                    cdir.join(format!("session_{}.yazi", chosen.session_id)),
+                    tab_yazi_id,
+                );
+            }
+            return (chosen.session_id.clone(), chosen.pid);
         }
     }
 

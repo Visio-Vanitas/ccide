@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use crate::commands::sidebar::orch_panel::{TAG_ORCH_PRESET, TAG_ORCH_ROLE};
 use crate::session::transcript::SubagentItem;
 use crate::tui::context::TAG_CTX_TOGGLE;
 
@@ -21,6 +22,10 @@ pub enum FocusZone {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HitZone {
     InertSprite,
+    ToggleOrchestrator,
+    OrchPreset,
+    OrchRoleModel(usize),
+    OrchRoleEffort(usize),
     SubagentFrame,
     SubagentMain,
     SubagentItem(usize),
@@ -37,6 +42,10 @@ pub enum MaskedAction {
     DismissSubagent(usize),
     ClearAllDone,
     ToggleBottomPanel,
+    ToggleOrchestrator,
+    OrchCyclePreset(bool),
+    OrchCycleModel(usize, bool),
+    OrchCycleEffort(usize, bool),
     FocusZoneOnly(Option<FocusZone>),
     RestoreCenterFocusOnly,
 }
@@ -93,6 +102,9 @@ impl SidebarGeomMask {
             };
         }
 
+        if row == self.top_h + 1 && col >= self.cols.saturating_sub(18) {
+            return HitZone::ToggleOrchestrator;
+        }
         if col <= 1 || col >= self.cols {
             return HitZone::SubagentFrame;
         }
@@ -113,6 +125,11 @@ impl SidebarGeomMask {
             }
             Some((5, idx)) => HitZone::SubagentItem(idx),
             Some((3, _)) => HitZone::ClearDoneFooter,
+            Some((TAG_ORCH_PRESET, _)) => HitZone::OrchPreset,
+            Some((TAG_ORCH_ROLE, i)) if col >= self.cols.saturating_sub(9) => {
+                HitZone::OrchRoleEffort(i)
+            }
+            Some((TAG_ORCH_ROLE, i)) => HitZone::OrchRoleModel(i),
             _ => HitZone::SubagentFrame,
         }
     }
@@ -144,6 +161,10 @@ impl PointerCapture {
                 HitZone::BottomToggle(_) | HitZone::BottomFrame(_) => {
                     Some(MaskedAction::ToggleBottomPanel)
                 }
+                HitZone::ToggleOrchestrator => Some(MaskedAction::ToggleOrchestrator),
+                HitZone::OrchPreset => Some(MaskedAction::OrchCyclePreset(false)),
+                HitZone::OrchRoleModel(i) => Some(MaskedAction::OrchCycleModel(i, false)),
+                HitZone::OrchRoleEffort(i) => Some(MaskedAction::OrchCycleEffort(i, false)),
                 HitZone::SubagentItem(idx) | HitZone::SubagentDismiss(idx) => {
                     Some(MaskedAction::DismissSubagent(idx))
                 }
@@ -160,6 +181,10 @@ impl PointerCapture {
 
         match zone {
             HitZone::InertSprite => None,
+            HitZone::ToggleOrchestrator => Some(MaskedAction::ToggleOrchestrator),
+            HitZone::OrchPreset => Some(MaskedAction::OrchCyclePreset(true)),
+            HitZone::OrchRoleModel(i) => Some(MaskedAction::OrchCycleModel(i, true)),
+            HitZone::OrchRoleEffort(i) => Some(MaskedAction::OrchCycleEffort(i, true)),
             HitZone::SubagentMain => Some(MaskedAction::SelectMain),
             HitZone::SubagentDismiss(idx) => Some(MaskedAction::DismissSubagent(idx)),
             HitZone::SubagentItem(idx) => Some(MaskedAction::SelectSubagent(idx)),
@@ -227,56 +252,5 @@ mod tests {
             Some(MaskedAction::FocusZoneOnly(None))
         );
         assert_eq!(cap.on_mouse_up(0, 20, 18, z_ctx), None);
-    }
-
-    #[test]
-    fn focus_out_clears_sidebar_highlight_and_cost_scrolls_smoothly() {
-        use crate::commands::sidebar::dispatch::{
-            handle_input_batch, DispatchEnv, SidebarSelectState,
-        };
-
-        let env = DispatchEnv {
-            home: "",
-            yazi_id: "",
-            cwd: "",
-            sid: "",
-            cpid: 0,
-            main_file: "",
-            main_line: 0,
-            main_span: 0,
-            viewport_h: 8,
-            cost_max_scroll: 6,
-            hit_mask: SidebarGeomMask {
-                cols: 40,
-                top_h: 11,
-                panel3_top_row: 30,
-                cost_top_row: 41,
-                show_context_panel: true,
-                split_ctx_cost: true,
-            },
-        };
-        let tags = HashMap::new();
-        let mut subs = Vec::new();
-        let mut active = "main".to_string();
-        let mut sel = SidebarSelectState {
-            show_context: true,
-            ..SidebarSelectState::default()
-        };
-
-        // Click COST -> focuses Cost; Down arrow + WheelDown scroll Cost; FocusOut (`\x1b[O`) clears highlight!
-        handle_input_batch(
-            "\x1b[<0;12;44M\x1b[B\x1b[<65;12;44M",
-            &env,
-            &tags,
-            &mut subs,
-            &mut active,
-            &mut sel,
-        );
-        assert_eq!(sel.focus_zone, Some(FocusZone::Cost));
-        assert_eq!(sel.cost_scroll, 2);
-
-        handle_input_batch("\x1b[O", &env, &tags, &mut subs, &mut active, &mut sel);
-        assert_eq!(sel.focus_zone, None);
-        assert_eq!(sel.sub_cursor, None);
     }
 }

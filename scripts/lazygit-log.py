@@ -17,6 +17,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -61,14 +62,23 @@ def visible_width(s: str) -> int:
     return sum(char_cols(c) for c in strip_ansi(s))
 
 
+def get_ipc_dir() -> str:
+    return os.environ.get("CCIDE_IPC_DIR") or (
+        os.path.join(tempfile.gettempdir(), ".cc-ide") if os.name == "nt" else "/tmp/.cc-ide"
+    )
+
+
 def get_sid_str() -> str:
-    return os.environ.get("CCIDE_LG_SID", "").strip() or str(os.getsid(0))
+    return os.environ.get("CCIDE_LG_SID", "").strip() or str(
+        os.getsid(0) if hasattr(os, "getsid") else os.getppid()
+    )
 
 
 def write_full_lines_cache(sid_str: str, panel_w: int, full_lines: list[str]) -> None:
     try:
-        os.makedirs("/tmp/.cc-ide", exist_ok=True)
-        dst = f"/tmp/.cc-ide/lg_full_{sid_str}.json"
+        ipc_dir = get_ipc_dir()
+        os.makedirs(ipc_dir, exist_ok=True)
+        dst = os.path.join(ipc_dir, f"lg_full_{sid_str}.json")
         h = hashlib.blake2s(f"{panel_w}\0".encode("utf-8"), digest_size=12)
         for ln in full_lines:
             h.update(ln.encode("utf-8", errors="surrogatepass"))
@@ -213,8 +223,8 @@ def load_wrap_enabled(argv: list[str] | None = None) -> bool:
 def get_panel_geometry() -> tuple[int, int]:
     rows, cols, exact_main_w = 0, 0, 0
     try:
-        sid_str = os.environ.get("CCIDE_LG_SID", "").strip() or str(os.getsid(0))
-        geom_path = f"/tmp/.cc-ide/lg_geom_{sid_str}.txt"
+        sid_str = get_sid_str()
+        geom_path = os.path.join(get_ipc_dir(), f"lg_geom_{sid_str}.txt")
         if os.path.isfile(geom_path):
             with open(geom_path, "r", encoding="utf-8") as f:
                 parts = f.read().split()
@@ -395,8 +405,16 @@ def format_full_width_log(
             ]
             if refs:
                 badge_txt = ", ".join(refs[:2])
-                if len(badge_txt) > 18:
-                    badge_txt = badge_txt[:17] + "…"
+                if visible_width(badge_txt) > 18:
+                    trunc_chars: list[str] = []
+                    tw = 0
+                    for ch in badge_txt:
+                        cw = char_cols(ch)
+                        if tw + cw > 17:
+                            break
+                        trunc_chars.append(ch)
+                        tw += cw
+                    badge_txt = "".join(trunc_chars) + "…"
                 deco_badge = f"\x1b[38;5;221m[{badge_txt}]{RESET} "
 
         lead = f"{au_prefix}{graph_pfx}{RESET}"

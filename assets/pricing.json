@@ -34,7 +34,7 @@
     "claude-sonnet-4":    { "input": 3.0,  "output": 15.0, "cache_write_5m": 3.75,  "cache_write_1h": 6.0,  "cache_read": 0.30 },
     "claude-3-7-sonnet":  { "input": 3.0,  "output": 15.0, "cache_write_5m": 3.75,  "cache_write_1h": 6.0,  "cache_read": 0.30 },
     "claude-3-5-sonnet":  { "input": 3.0,  "output": 15.0, "cache_write_5m": 3.75,  "cache_write_1h": 6.0,  "cache_read": 0.30 },
-    "claude-haiku-5-5":   { "input": 0.10, "output": 0.50, "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_read": 0.01, "above_tokens": 100000, "long_input": 0.50, "long_output": 2.50, "long_cache_write": 0.625, "long_cache_read": 0.05 },
+    "claude-haiku-5-5":   { "input": 0.10, "output": 0.50, "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_read": 0.01, "above_tokens": 100000, "request_wide_tier": true, "long_input": 0.50, "long_output": 2.50, "long_cache_write": 0.625, "long_cache_read": 0.05 },
     "claude-haiku-4-5":   { "input": 1.0,  "output": 5.0,  "cache_write_5m": 1.25,  "cache_write_1h": 2.0,  "cache_read": 0.10 },
     "claude-3-5-haiku":   { "input": 0.80, "output": 4.0,  "cache_write_5m": 1.0,   "cache_write_1h": 1.6,  "cache_read": 0.08 },
 

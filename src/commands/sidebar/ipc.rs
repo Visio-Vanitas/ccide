@@ -241,7 +241,10 @@ pub fn refresh_session_and_subagents(
         target_cwd,
         main_tracker,
     );
-    if seen_main_seq.map(|p| m_ops.seq > p).unwrap_or(false) && active_view_id == "main" {
+    let init_reveal = seen_main_seq.is_none() && !m_ops.file.is_empty();
+    if (init_reveal || seen_main_seq.map(|p| m_ops.seq > p).unwrap_or(false))
+        && active_view_id == "main"
+    {
         trigger_yazi_reveal(
             home,
             tab_yazi_id,
