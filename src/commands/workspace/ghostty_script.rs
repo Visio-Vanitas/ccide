@@ -4,8 +4,21 @@ use std::env;
 
 pub fn compute_ghostty_split_deltas(total_px: usize, left_pct: usize) -> (isize, isize) {
     let lp = left_pct.clamp(18, 45) as isize;
-    let w = total_px.max(640) as isize;
+    let w = total_px.max(1) as isize;
     (((50 - lp) * w) / 100, (((100 - lp) - 32) * w) / 200)
+}
+
+pub fn compute_ghostty_equalized_deltas(
+    total_px: usize,
+    left_pct: usize,
+    has_right: bool,
+) -> ((&'static str, usize), Option<(&'static str, usize)>) {
+    let lp = left_pct.clamp(18, 45) as isize;
+    let w = total_px.max(1) as isize;
+    let cols = if has_right { 3 } else { 2 };
+    let dx_l = w / cols - (lp * w) / 100;
+    let dr = has_right.then(|| rsz(w / 3 - (16 * w) / 100, "right", "left"));
+    (rsz(dx_l, "left", "right"), dr)
 }
 
 pub fn escape_applescript_str(s: &str) -> String {
@@ -20,11 +33,11 @@ pub fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-pub(crate) fn rsz(d: isize, pos: &'static str, neg: &'static str) -> (&'static str, isize) {
+pub(crate) fn rsz(d: isize, pos: &'static str, neg: &'static str) -> (&'static str, usize) {
     if d >= 0 {
-        (pos, d)
+        (pos, d as usize)
     } else {
-        (neg, -d)
+        (neg, d.unsigned_abs())
     }
 }
 
@@ -162,5 +175,22 @@ mod tests {
         );
         assert!(sc.contains("resize_split:left,480") && sc.contains("resize_split:right,456"));
         assert!(sc.contains("pane-runner yazi") && sc.contains("pane-runner sidebar"));
+    }
+
+    #[test]
+    fn computes_equalized_deltas_for_two_and_three_columns() {
+        assert_eq!(
+            compute_ghostty_equalized_deltas(2400, 30, true),
+            (("left", 80), Some(("right", 416)))
+        );
+        assert_eq!(
+            compute_ghostty_equalized_deltas(2400, 30, false),
+            (("left", 480), None)
+        );
+        assert_eq!(
+            compute_ghostty_equalized_deltas(2400, 40, true),
+            (("right", 160), Some(("right", 416)))
+        );
+        assert_eq!(compute_ghostty_split_deltas(400, 30), (80, 76));
     }
 }

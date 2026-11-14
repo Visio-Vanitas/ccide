@@ -43,6 +43,9 @@ pub fn ro_shim_name(model_id: &str) -> String {
 /// Resolves `(clean_role_badge, model_id)` if `agent_type` is a managed `ccide-{gp,ro}--<slug>` shim.
 pub fn model_from_shim_agent_type(home: &str, agent_type: &str) -> Option<(&'static str, String)> {
     let clean_name = agent_type.rsplit(':').next().unwrap_or(agent_type);
+    if clean_name.contains('/') || clean_name.contains('\\') || clean_name.contains("..") {
+        return None;
+    }
     let role_badge = if clean_name.starts_with("ccide-ro--") {
         "scout"
     } else if clean_name.starts_with("ccide-gp--") {
@@ -51,7 +54,8 @@ pub fn model_from_shim_agent_type(home: &str, agent_type: &str) -> Option<(&'sta
         return None;
     };
     let md_path = Path::new(home)
-        .join(".claude/agents")
+        .join(".claude")
+        .join("agents")
         .join(format!("{}.md", clean_name));
     if let Ok(txt) = fs::read_to_string(md_path) {
         for line in txt.lines().take(12) {
@@ -87,7 +91,7 @@ pub fn sync_agent_shims(home: &str, pool: &[String]) {
     if home.is_empty() || home == "." {
         return;
     }
-    let agents_dir = Path::new(home).join(".claude/agents");
+    let agents_dir = Path::new(home).join(".claude").join("agents");
     if fs::create_dir_all(&agents_dir).is_err() {
         return;
     }
@@ -99,7 +103,10 @@ pub fn sync_agent_shims(home: &str, pool: &[String]) {
         }
         let gp = gp_shim_name(m);
         let ro = ro_shim_name(m);
-        let safe_m = m.replace('"', "");
+        let safe_m: String = m
+            .chars()
+            .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
+            .collect();
         let gp_md = format!(
             "---\nname: {gp}\ndescription: \"[cc-ide] Routed general-purpose subagent on {safe_m}\"\nmodel: \"{safe_m}\"\n---\nYou are a focused engineering subagent orchestrated by cc-ide. Execute the assigned task accurately and concisely.\n"
         );
@@ -127,7 +134,19 @@ pub fn sync_agent_shims(home: &str, pool: &[String]) {
 }
 
 fn esc_json(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 impl OrchestratorConfig {

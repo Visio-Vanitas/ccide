@@ -26,6 +26,42 @@ pub use compact::{
     ContextBudget, CtxTier,
 };
 
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Atomic shared-cache write: `PID`-scoped temp + `rename`, falling back to a direct write when
+/// Windows holds the destination open for a concurrent reader.
+fn write_cache(path: &Path, data: &str) {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let tmp = path.with_file_name(format!(".{}.tmp.{}", name, std::process::id()));
+    if fs::write(&tmp, data).is_ok() && fs::rename(&tmp, path).is_ok() {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let _ = fs::remove_file(path);
+        if fs::rename(&tmp, path).is_ok() {
+            return;
+        }
+    }
+    let _ = fs::write(path, data);
+    let _ = fs::remove_file(&tmp);
+}
+
 fn read_git_head_branch(dot_git: &Path) -> Option<String> {
     let head_path = if dot_git.is_dir() {
         dot_git.join("HEAD")
@@ -43,15 +79,22 @@ fn read_git_head_branch(dot_git: &Path) -> Option<String> {
     };
     let htxt = fs::read_to_string(head_path).ok()?;
     let trimmed = htxt.trim();
-    let br = trimmed
-        .strip_prefix("ref: refs/heads/")
-        .unwrap_or_else(|| &trimmed[..floor_char_boundary(trimmed, trimmed.len().min(7))]);
-    Some(br.to_string())
+    // Symbolic refs (`ref: refs/heads/main`, `ref: refs/tags/v1.0`, ...) resolve to a short name
+    if let Some(sym) = trimmed.strip_prefix("ref:") {
+        let rp = sym.trim();
+        let br = rp
+            .strip_prefix("refs/heads/")
+            .or_else(|| rp.strip_prefix("refs/"))
+            .unwrap_or(rp);
+        return (!br.is_empty()).then(|| br.to_string());
+    }
+    let br = &trimmed[..floor_char_boundary(trimmed, trimmed.len().min(7))];
+    (!br.is_empty()).then(|| br.to_string())
 }
 
 fn fast_git_summary(cwd: &str, wt_hint: &str) -> String {
     let mut cur = PathBuf::from(cwd);
-    for _ in 0..8 {
+    for _ in 0..64 {
         let dg = cur.join(".git");
         if let Some(branch) = read_git_head_branch(&dg) {
             if !wt_hint.is_empty() && wt_hint != branch {
@@ -127,6 +170,9 @@ pub fn run() {
     let (mut cc_cost_usd, mut lines_add, mut lines_del) = (0.0f64, 0u64, 0u64);
     if let Some(cost_obj) = extract_json_object(&input, "cost") {
         cc_cost_usd = extract_json_f64(cost_obj, "total_cost_usd").unwrap_or(0.0);
+        if !cc_cost_usd.is_finite() {
+            cc_cost_usd = 0.0;
+        }
         lines_add = extract_json_u64(cost_obj, "total_lines_added").unwrap_or(0);
         lines_del = extract_json_u64(cost_obj, "total_lines_removed").unwrap_or(0);
     }
@@ -192,7 +238,10 @@ pub fn run() {
     };
 
     let sys_text = fs::read_to_string(ipc_path("sys_telemetry.cache"))
-        .unwrap_or_else(|_| "CPU --% \u{e0b1} RAM --%".to_string());
+        .map(|t| t.trim().to_string())
+        .ok()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "CPU --% \u{e0b1} RAM --%".to_string());
 
     let mut yid = env::var("CC_YAZI_ID").unwrap_or_default();
     if yid.is_empty() && !session_id.is_empty() {
@@ -205,8 +254,8 @@ pub fn run() {
         yid = resolve_yazi_id_from_ppid(&base_cache_s);
     }
     if !yid.is_empty() && !session_id.is_empty() {
-        let _ = fs::write(
-            base_cache.join(format!("session_{}.yazi", session_id)),
+        write_cache(
+            &base_cache.join(format!("session_{}.yazi", session_id)),
             &yid,
         );
     }
@@ -215,11 +264,11 @@ pub fn run() {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let safe_sid = session_id.replace('\\', "\\\\").replace('"', "\\\"");
-    let safe_eff = effort.replace('\\', "\\\\").replace('"', "\\\"");
-    let safe_cwd = cwd.replace('\\', "\\\\").replace('"', "\\\"");
-    let safe_mod = model.replace('\\', "\\\\").replace('"', "\\\"");
-    let safe_mid = model_id.replace('\\', "\\\\").replace('"', "\\\"");
+    let safe_sid = json_escape(&session_id);
+    let safe_eff = json_escape(&effort);
+    let safe_cwd = json_escape(&cwd);
+    let safe_mod = json_escape(&model);
+    let safe_mid = json_escape(&model_id);
     let rl5_json = rl_5h_pct
         .map(|v| v.to_string())
         .unwrap_or_else(|| "null".to_string());
@@ -247,14 +296,14 @@ pub fn run() {
         now_s
     );
     if !session_id.is_empty() {
-        let _ = fs::write(
-            base_cache.join(format!("live_sess_{}.json", session_id)),
+        write_cache(
+            &base_cache.join(format!("live_sess_{}.json", session_id)),
             &live_json,
         );
     }
     if !yid.is_empty() {
-        let _ = fs::write(
-            base_cache.join(format!("live_tab_{}.json", yid)),
+        write_cache(
+            &base_cache.join(format!("live_tab_{}.json", yid)),
             &live_json,
         );
     }

@@ -18,7 +18,7 @@ use crate::ffi::{install_signal_handlers, ConsoleRawSession, DIRTY_EVENT, RUNNIN
 use crate::orchestrator::OrchestratorWatcher;
 use crate::platform::{cache_dir, ipc_dir, user_home_dir};
 use crate::session::transcript::SubagentItem;
-use crate::session::{classify_model_family, load_config_models, ConfigModels};
+use crate::session::{classify_model_family, load_config_models, ConfigModels, SessionBinding};
 use crate::telemetry::TelemetrySampler;
 use crate::tui::context::SessionContextAnalyzer;
 use crate::tui::grid::{get_terminal_geometry, render_multi_panel_grid};
@@ -68,21 +68,21 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
     let mut ctx_analyzer = SessionContextAnalyzer::new();
     write_active_view_state(&home, tab_yazi_id, "main");
 
-    let (mut c_sid, mut c_pid) = (String::new(), 0u32);
+    let mut sb = SessionBinding::default();
     let _ = update_isolated_session_binding(
         &home,
         tab_yazi_id,
         target_cwd,
         shell_pid_arg,
         &my_pid_str,
-        &mut c_sid,
-        &mut c_pid,
+        &mut sb,
     );
 
     let (mut main_tool, mut main_file) = (String::new(), String::new());
     let (mut main_line, mut main_span) = (0usize, 0usize);
     let mut subagents: Vec<SubagentItem> = Vec::new();
-    let mut cached_cfg: ConfigModels = load_config_models(&home, &c_sid, tab_yazi_id, None, None);
+    let mut cached_cfg: ConfigModels =
+        load_config_models(&home, &sb.session_id, tab_yazi_id, None, None);
     let mut prev_geom_key = (0usize, 0usize);
 
     while RUNNING.load(Ordering::Relaxed) {
@@ -105,17 +105,17 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         }
         let pal = &pal_watcher.palette;
 
-        if !fast_input_redraw && (is_dirty || has_running_sub || c_sid.is_empty() || tick % 2 == 0)
+        if !fast_input_redraw
+            && (is_dirty || has_running_sub || sb.session_id.is_empty() || tick % 2 == 0)
         {
-            if (c_sid.is_empty() || is_dirty || tick % 2 == 0)
+            if (sb.session_id.is_empty() || is_dirty || tick % 2 == 0)
                 && update_isolated_session_binding(
                     &home,
                     tab_yazi_id,
                     target_cwd,
                     shell_pid_arg,
                     &my_pid_str,
-                    &mut c_sid,
-                    &mut c_pid,
+                    &mut sb,
                 )
             {
                 main_tracker.clear();
@@ -133,8 +133,8 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 &home,
                 tab_yazi_id,
                 target_cwd,
-                &c_sid,
-                c_pid,
+                &sb.session_id,
+                sb.ui_pid,
                 &mut active_view_id,
                 &sel.last_click_instant,
                 &mut main_tracker,
@@ -206,10 +206,10 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             cached_ctx_snap = Some(ctx_analyzer.sample(
                 &home,
                 target_cwd,
-                &c_sid,
-                c_pid,
+                &sb.session_id,
+                sb.data_pid,
                 &active_view_id,
-                &cached_cfg.main_model_short,
+                &cached_cfg.main_model_raw,
                 active_sub_m,
             ));
         }
@@ -245,7 +245,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             fast_input_redraw = false;
             DIRTY_EVENT.store(true, Ordering::Relaxed);
             8
-        } else if running_cnt > 0 || c_sid.is_empty() {
+        } else if running_cnt > 0 || sb.session_id.is_empty() {
             250
         } else {
             1000
@@ -258,8 +258,8 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 home: &home,
                 yazi_id: tab_yazi_id,
                 cwd: target_cwd,
-                sid: &c_sid,
-                cpid: c_pid,
+                sid: &sb.session_id,
+                cpid: sb.ui_pid,
                 main_file: &main_file,
                 main_line,
                 main_span,
@@ -287,7 +287,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         tick = tick.wrapping_add(1);
     }
 
-    bottom_panel::cleanup_sidebar_pid_files(tab_yazi_id, &c_sid, c_pid, &my_pid_str);
+    bottom_panel::cleanup_sidebar_pid_files(tab_yazi_id, &sb.session_id, sb.ui_pid, &my_pid_str);
 
     let _ = stdout.write_all(
         b"\x1b_Ga=d,d=i,i=71,q=2\x1b\\\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1049l\x1b[?25h\x1b[0m\n",

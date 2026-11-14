@@ -111,26 +111,32 @@ pub fn detect_terminal_image_proto() -> ImageProto {
     let lc_term = env::var("LC_TERMINAL").unwrap_or_default();
     let term = env::var("TERM").unwrap_or_default();
 
-    // Use Kitty Graphics Protocol (`APC _G`, `q=2,C=1`) on Kitty, Ghostty, and WezTerm.
-    if env::var("KITTY_WINDOW_ID").is_ok()
-        || term == "xterm-kitty"
-        || term_prog.eq_ignore_ascii_case("ghostty")
-        || env::var("GHOSTTY_RESOURCES_DIR").is_ok()
-        || term_prog == "WezTerm"
-        || env::var("WEZTERM_PANE").is_ok()
-    {
-        return ImageProto::Kitty;
-    }
+    // Explicit outer terminal identity always wins over inherited child-process env vars:
+    // a nested `claude` launched from iTerm2 inside a Kitty-hosted shell must not be
+    // misdetected via a stale `KITTY_WINDOW_ID`, and vice versa.
 
     // Use native `OSC 1337` on iTerm2: iTerm2's partial Kitty emulation does not upscale
     // 256x256 sprites across Retina HiDPI cell boxes, leaving them small and top-left aligned,
     // whereas `OSC 1337` (`width=<cols>;height=<rows>;preserveAspectRatio=1`) scales & centers
     // cleanly while `ccide_daemon.py` clears any accidental selection in < 0.5ms.
-    if term_prog == "iTerm.app"
-        || lc_term == "iTerm2"
-        || env::var("ITERM_SESSION_ID").is_ok()
-        || term_prog == "WarpTerminal"
+    if term_prog == "iTerm.app" || lc_term == "iTerm2" || term_prog == "WarpTerminal" {
+        return ImageProto::Osc1337;
+    }
+
+    // Use Kitty Graphics Protocol (`APC _G`, `q=2,C=1`) on Kitty, Ghostty, and WezTerm.
+    if term_prog.eq_ignore_ascii_case("ghostty") || term_prog == "WezTerm" || term == "xterm-kitty"
     {
+        return ImageProto::Kitty;
+    }
+
+    // Inherited-env fallbacks only apply when no explicit terminal identity was reported.
+    if env::var("KITTY_WINDOW_ID").is_ok()
+        || env::var("GHOSTTY_RESOURCES_DIR").is_ok()
+        || env::var("WEZTERM_PANE").is_ok()
+    {
+        return ImageProto::Kitty;
+    }
+    if env::var("ITERM_SESSION_ID").is_ok() {
         return ImageProto::Osc1337;
     }
     ImageProto::None
@@ -167,6 +173,9 @@ pub fn build_image_blit_sequence(
     render_cols: usize,
     render_rows: usize,
 ) -> String {
+    if render_cols == 0 || render_rows == 0 || inner_cols == 0 {
+        return String::new();
+    }
     let mut blit = String::with_capacity(img.b64.len() + 512);
     if proto == ImageProto::Kitty {
         blit.push_str("\x1b_Ga=d,d=i,i=71,q=2\x1b\\");

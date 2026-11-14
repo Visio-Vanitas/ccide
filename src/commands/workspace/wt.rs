@@ -9,6 +9,11 @@ use std::process::{Command, Stdio};
 
 use crate::platform::{current_engine_exe, find_executable, ipc_path};
 
+/// `wt.exe` treats `;` as a subcommand separator, so directory arguments must escape it.
+fn escape_wt_dir(dir: &str) -> String {
+    dir.replace(';', "\\;")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_wt_open(
     home: &str,
@@ -28,6 +33,8 @@ pub fn run_wt_open(
     let pid_s = shell_pid.to_string();
     let left_clamped = left_pct.clamp(20, 42);
     let center_plus_right_frac = format!("{:.2}", (100 - left_clamped) as f64 / 100.0);
+    let dir_arg = escape_wt_dir(target_dir);
+    let git_arg = escape_wt_dir(git_root);
 
     // Build a single atomic `wt.exe -w 0` command chain (`;` separates subcommands in `wt.exe`):
     // 1. Split vertical (`-V`) at `(1 - left_pct)` with `yazi` -> `swap-pane left` puts Yazi in the
@@ -40,11 +47,11 @@ pub fn run_wt_open(
         "-s".into(),
         center_plus_right_frac,
         "-d".into(),
-        target_dir.into(),
+        dir_arg.clone(),
         eng_s.into(),
         "pane-runner".into(),
         "yazi".into(),
-        target_dir.into(),
+        dir_arg.clone(),
         yazi_id.into(),
         pid_s.clone(),
         ";".into(),
@@ -62,11 +69,11 @@ pub fn run_wt_open(
             "-s".into(),
             "0.50".into(),
             "-d".into(),
-            git_root.into(),
+            git_arg.clone(),
             eng_s.into(),
             "pane-runner".into(),
             "lazygit".into(),
-            git_root.into(),
+            git_arg.clone(),
             yazi_id.into(),
             pid_s.clone(),
         ]);
@@ -84,11 +91,11 @@ pub fn run_wt_open(
             "-s".into(),
             right_frac,
             "-d".into(),
-            target_dir.into(),
+            dir_arg.clone(),
             eng_s.into(),
             "pane-runner".into(),
             "sidebar".into(),
-            target_dir.into(),
+            dir_arg.clone(),
             yazi_id.into(),
             pid_s,
             ";".into(),
@@ -106,6 +113,8 @@ pub fn run_wt_open(
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
+        // Partial open: signal any pane that did get created to self-exit.
+        close_wt_panes(yazi_id);
         return None;
     }
 
@@ -116,12 +125,17 @@ pub fn run_wt_open(
 
 pub fn focus_wt_center_from_sidebar(home: &str) {
     if let Some(wt) = find_executable("wt", home) {
-        let _ = Command::new(wt)
+        if let Ok(mut c) = Command::new(wt)
             .args(["-w", "0", "move-focus", "left"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn();
+            .spawn()
+        {
+            let _ = std::thread::spawn(move || {
+                let _ = c.wait();
+            });
+        }
     }
 }
 

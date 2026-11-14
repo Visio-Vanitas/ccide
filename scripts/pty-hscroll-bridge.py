@@ -283,6 +283,8 @@ def slice_tokens_padded(tokens: list[tuple[bool, str, int]], offset_cols: int, w
                 pos_col += cw
                 continue
 
+        if cw == 0 and out_w >= width_cols:
+            break
         if out_w + cw > width_cols:
             break
         out.append(txt)
@@ -1088,7 +1090,7 @@ def get_winsize_packed(fd: int) -> bytes:
 def write_geom_file(sid: int, rows: int, cols: int, main_inner_w: int = 0) -> None:
     try:
         os.makedirs("/tmp/.cc-ide", exist_ok=True)
-        tmp = f"/tmp/.cc-ide/lg_geom_{sid}.txt.tmp"
+        tmp = f"/tmp/.cc-ide/lg_geom_{sid}.txt.tmp.{os.getpid()}"
         dst = f"/tmp/.cc-ide/lg_geom_{sid}.txt"
         with open(tmp, "w", encoding="utf-8") as f:
             if main_inner_w > 0:
@@ -1180,15 +1182,24 @@ def translate_key_chunk(buf: bytes, screen: VtScreen, direct_out: list[bytes]) -
 
     if b"\x1b" in buf:
         if KEY_HLEFT_RE.search(buf):
-            return KEY_HLEFT_RE.sub(lambda _: clamp_key_dir(-1), buf)
+            buf = KEY_HLEFT_RE.sub(lambda _: clamp_key_dir(-1), buf)
         if KEY_HRIGHT_RE.search(buf):
-            return KEY_HRIGHT_RE.sub(lambda _: clamp_key_dir(1), buf)
+            buf = KEY_HRIGHT_RE.sub(lambda _: clamp_key_dir(1), buf)
         if b"\x1b[O" in buf:
             dim_ansi = screen.render_unfocused_border_dim()
             if dim_ansi:
                 direct_out.append(dim_ansi)
         if FOCUS_EVENT_RE.sub(b"", buf):
             restore_main_pan_zero(screen, direct_out)
+        return buf
+
+    if len(buf) > 1:
+        # Coalesced multi-byte ASCII bursts: treat every key independently (`HL`, digits, `[]` lock)
+        if all(0x20 <= b < 0x7F for b in buf):
+            return b"".join(
+                translate_key_chunk(buf[idx : idx + 1], screen, direct_out)
+                for idx in range(len(buf))
+            )
         return buf
 
     if len(buf) == 1:
@@ -1374,9 +1385,23 @@ def main() -> int:
         if force_nudge:
             winch_req[1] = True
         try:
-            os.write(wake_w, b"\x01")
+            # `\x02` = force nudge, `\x01` = plain winch; the byte (not the flag) carries intent
+            os.write(wake_w, b"\x02" if force_nudge else b"\x01")
         except OSError:
             pass
+
+    def drain_wake() -> None:
+        """Drains the self-pipe; any byte is a winch request, `\\x02` marks a force nudge."""
+        while True:
+            try:
+                chunk = os.read(wake_r, 64)
+            except OSError:
+                return
+            if not chunk:
+                return
+            winch_req[0] = True
+            if b"\x02" in chunk:
+                winch_req[1] = True
 
     def sync_winch_on_loop(force_nudge: bool = False) -> None:
         packed = get_winsize_packed(stdout_fd)
@@ -1440,11 +1465,7 @@ def main() -> int:
                 break
 
             if wake_r in rlist:
-                try:
-                    while os.read(wake_r, 64):
-                        pass
-                except OSError:
-                    pass
+                drain_wake()
                 if winch_req[0] and not screen.frame_gate.has_pending():
                     nudge = winch_req[1]
                     winch_req[0] = False
@@ -1479,9 +1500,10 @@ def main() -> int:
                     break
                 if not in_data:
                     break
-                had_focus_in = b"\x1b[I" in in_data
                 direct_out: list[bytes] = []
                 translated = translate_input(in_data, screen, last_emit, direct_out)
+                # Reassemble split ESC sequences first, then detect focus-in on the full stream
+                had_focus_in = b"\x1b[I" in translated
                 if direct_out and not screen.frame_gate.has_pending():
                     write_all(stdout_fd, b"".join(direct_out))
                 if translated:

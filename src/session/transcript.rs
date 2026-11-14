@@ -163,20 +163,23 @@ pub fn update_jsonl_tracker(
         let consumed = (nl_pos + 1) as u64;
         let buf = String::from_utf8_lossy(&raw_bytes[..=nl_pos]);
         for line in buf.lines() {
-            if let Some(pos) = line.find("Set model to ") {
-                let rest = &line[pos + 13..];
-                let cleaned = rest.trim_start_matches("\\u0060").trim_start_matches('`');
-                let m: String = cleaned
-                    .chars()
-                    .take_while(|&c| c != '`' && c != '\\' && c != ' ' && c != '<' && c != '"')
-                    .collect();
-                if is_valid_model_name(&m) {
-                    tracker.last_model = m;
-                    tracker.last_model_mtime = if is_initial_scan {
-                        SystemTime::UNIX_EPOCH
-                    } else {
-                        file_mt
-                    };
+            if line.contains("local-command-stdout") && line.contains("Set model to ") {
+                if let Some(pos) = line.find("Set model to ") {
+                    let rest = &line[pos + 13..];
+                    let cleaned = rest.trim_start_matches("\\u0060").trim_start_matches('`');
+                    let m: String = cleaned
+                        .chars()
+                        .take_while(|&c| c != '`' && c != '\\' && c != '<' && c != '"' && c != '(')
+                        .collect();
+                    let m = m.trim().to_string();
+                    if is_valid_model_name(&m) {
+                        tracker.last_model = m;
+                        tracker.last_model_mtime = if is_initial_scan {
+                            SystemTime::UNIX_EPOCH
+                        } else {
+                            file_mt
+                        };
+                    }
                 }
             } else if line.contains("\"role\":\"assistant\"")
                 || line.contains("\"type\":\"message\"")

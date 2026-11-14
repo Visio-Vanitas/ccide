@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.1] - 2026-11-15
+
+### Fixed
+- **FleetView Dual-PID `SessionBinding` & Model Resolution (`src/session/{mod,model}.rs`, `src/commands/sidebar/`, `src/commands/statusline/mod.rs`, `src/session/transcript.rs`, `scripts/ccide_daemon.py`)**:
+  - Replaced the `(sessionId, claude_pid)` tuple with `SessionBinding { session_id, ui_pid, data_pid }`, so a FleetView (`/subtask`) tab keeps the interactive viewer `ui_pid` (`SIGUSR2` view switching) while reading `CONTEXT`/`COST` from the attached `bg` session's `data_pid`, and never steals a sibling tab's active session (`is_claimed_by_live_sibling`).
+  - Preserved raw model strings end-to-end (`ConfigModels.main_model_raw` instead of the compacted `main_model_short`), propagated the `[1M]` suffix through alias mapping and `live_sess_<id>.json` resolution, narrowed `o1`/`o3`/`o4` OpenAI detection to whole tokens (`nemo1-turbo3` stays `claude`), and restricted `Set model to` parsing to `local-command-stdout` lines with `(`-safe truncation.
+  - Bounded the `tmux` pane-title probe to `150 ms` (killing the child on timeout), atomically rewrote the statusline `live_sess_*`/`live_tab_*`/`session_*.yazi` caches (PID temp + `rename`), hardened `read_git_head_branch` for `ref: refs/tags/*`, and released iTerm2 per-session watcher tasks on pane termination.
+- **`register.ts` `perfQueues` Serialization & Deduplicated Model Sync (`hooks/register.ts`)**:
+  - Serialized `turn.step` perf appends through a per-session `perfQueues` promise chain so concurrent samples can no longer interleave and truncate `pf_sid_<sessionId>.jsonl`, removed the unbounded `512`-line buffer growth, and deduplicated `syncSessionModel` via a `lastModels` cache plus a single `sb_<sid>.pid` wake instead of scanning every `sb_yazi_*.pid`.
+- **Palette `.sync.lock`, `bat` Timeout & `base16-256` Auto-Fallback (`src/tui/palette/{syntax,companions}.rs`, `scripts/ccide_syntax_pal.py`, `assets/yazi-hscroll.lua`, `scripts/lazygit-pager.sh`, `scripts/md-render.py`)**:
+  - Guarded concurrent artifact generation with a stale-aware `~/.config/cc-ide/.sync.lock` (`15 s` expiry, RAII release) and bounded every `bat cache --build`/`--config-dir` shell-out to `5 s`, so a hung `bat` (or a multi-tab theme switch) can no longer pin a sidebar cycle.
+  - Added a universal `base16-256` fallback when the generated `ccide` theme is missing: `yazi-hscroll.lua` retries `base16-256` and requests `syn.sgr` remapping, `lazygit-pager.sh` re-runs `delta` without an inherited `BAT_THEME`, `.tmTheme`/`theme.toml` paths are Windows UNC-safe, and compound SGR (`1;38;5;117`, `38;5;115;48;5;236`) is upgraded to 24-bit RGB without touching backgrounds.
+  - Added a one-shot Kitty image deletion (`APC _G a=d,i=71`) when the sprite renderer transitions to ASCII/`OSC 1337`, made explicit terminal identity win over inherited `KITTY_WINDOW_ID`/`ITERM_SESSION_ID`, and gated image blits below `12×12` cells.
+  - Window-scrolled the `ccide setup` configuration panel so all 9 rows plus `[ ▶ Apply ... ]` stay reachable and clickable at `80x24`, and compacted the key hints below 86 columns.
+- **Ghostty Equalized-Split Rebalance, Ghostty/TMUX/WT Backend Hardening (`src/commands/workspace/`, `scripts/ccide`, `scripts/ccide.ps1`)**:
+  - Rewrote Ghostty rebalance around `compute_ghostty_equalized_deltas` (per-tab `ghostty_w_<yid>.txt` width + right-column presence) after `equalize_splits`, cached the native capability against the `Ghostty.app` `Info.plist` stamp, and disabled the macOS-only native path on Linux so Ghostty always falls back to tmux.
+  - Added a local `tmux -L ccide` fallback in `scripts/ccide` whenever the auto backend returns no pane spec, passed `--tmux` last so launcher arguments survive, made `--backend`/`--width` tolerant of a missing value, clamped tmux side columns on narrow windows, targeted `TMUX_PANE` explicitly, and cleared stale `close_<yazi_id>` sentinels before splitting.
+  - Escaped `;` in `wt.exe` directory arguments, closed partially-created WT panes on failure, reaped short-lived `wezterm`/`wt` focus children, and joined the bounded (`< 320 ms`) Yazi reveal-restore thread so `ccide --theme` never drops a reveal.
+- **Linux 64-bit `poll` `NfdsT` & PID Bounds, macOS/Windows FFI & Telemetry (`src/ffi/`, `src/telemetry/`)**:
+  - Typed Linux `poll(2)` `nfds` as `c_ulong` (`NfdsT`) and `ioctl` requests as `c_ulong`, replaced the `0x40087468`/`0x5413` literals, and rejected `pid > i32::MAX` before `kill(2)` casts.
+  - Guarded `NVIDIA_IN_FLIGHT` with an atomic compare-exchange + `Drop` guard and PIPED stdout committed through a PID temp + `rename` on both Linux and Windows, clamped `dt` to `>= 1 ms` so the first `NET` sample cannot divide by zero, made macOS `sample_net_sysctl` return `Option` instead of zeroing counters, aligned the `host_statistics64` buffer to 8 bytes, rejected short `proc_pidinfo` reads, and widened the ancestry walk to 33 levels.
+- **`PreToolUse` Shim Model Guard & Workflow Server Hardening (`src/orchestrator/`, `scripts/ccide_workflow_{runner,server}.py`)**:
+  - Kept `model` off `Agent` rewrites for existing `ccide-{gp,ro}--*` shims (only emitting real aliases), added `target_model` to the shim pool on demand, and rejected path-traversal shim names while escaping control characters in generated `.md`/JSON.
+  - Bounded the workflow CLI dispatch with guaranteed child termination, validated `Content-Type`, body shape and `Origin` (localhost only), compared bearer tokens with `hmac.compare_digest`, and resolved workflow sources through realpath containment so `../` escapes fail with `404`.
+- **Binary Patcher, Installers & Companion Scripts (`scripts/patch_claude_binary.py`, `install.sh`, `install.ps1`, `scripts/`)`**:
+  - Verified the patched `claude` binary with `--version` before install/`codesign` and rolled back from the pristine `.bak` on failure, wired the injected `cur_pid_<pid>.txt` write through a PID temp + `rename`, and made the resolver's `.ensure-ccide-core.lock` owner-PID scoped (released before a long-running session starts).
+  - Restored every `*.ccide.bak` on uninstall (Yazi, Lazygit, `theme.toml`, `init.lua`), removed managed blocks only when a backup is absent, bounded `glow`/`delta`/`git log` to `5–10 s` timeouts, and re-assembled coalesced multi-key bursts plus split `ESC` sequences in `pty-hscroll-bridge.py`.
+- **CI & Release Policy for `0.x.y` Patches (`.github/workflows/{ci,release}.yml`)**:
+  - Detect `0.X.0` vs `0.x.y` from `Cargo.toml`: patch releases still run the MSRV/clippy/patch-anchor gate but skip the 6-OS build matrix, while `release.yml` skips binary compilation and tags `v0.9.1` on `main` without publishing archives. Added a `pwsh` parser gate for `install.ps1`/`scripts/ccide.ps1`.
+
+---
+
 ## [0.9.0] - 2026-11-14
 
 ### Added
@@ -141,7 +173,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shared Cross-Platform Hardware Oscilloscope & Quadrant Model Logos (`src/telemetry/`, `src/tui/logo.rs`)**:
   - Single-instance `500 ms` `/tmp/.cc-ide/hw_telemetry_v1.bin` binary snapshot shared across all open tabs (`< 2 µs` read) rendering sub-pixel `CPU`, `GPU` (`IOKit AGX` / Linux `sysfs` & `nvidia-smi`), `MEM`, and `NET` curves alongside dynamic 2×2 Quadrant vector model logos (`CLAUDE`, `GEMINI`, `DEEPSEEK`, `OPENAI`, `GROK`).
 
-[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.5.0...v0.7.0
 [0.5.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.4.0...v0.5.0

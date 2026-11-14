@@ -39,7 +39,7 @@ FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 
 
 def strip_ansi(s: str) -> str:
-    return ANSI_CSI_RE.sub("", s)
+    return ANSI_CSI_RE.sub("", ANSI_OSC_RE.sub("", s))
 
 
 def find_glow() -> str | None:

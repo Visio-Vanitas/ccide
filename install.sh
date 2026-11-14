@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${0:A:h}"
-PLUGIN_VERSION="0.9.0"
+PLUGIN_VERSION="0.9.1"
 HOME_DIR="$HOME"
 CLAUDE_DIR="$HOME_DIR/.claude"
 CACHE_DIR="$HOME_DIR/.cache/cc-ide"
@@ -151,6 +151,19 @@ if [[ "$MODE" == "--uninstall" ]]; then
   rm -f "/tmp/.cc-ide/iterm_daemon.sock" "/tmp/.cc-ide/iterm_daemon.pid"
   rm -f "$HOME_DIR/Library/Application Support/iTerm2/Scripts/AutoLaunch/ccide_daemon.py" 2>/dev/null || true
   rm -rf "$HOME_DIR/.config/yazi/plugins/hscroll.yazi" 2>/dev/null || true
+  rm -f "$HOME_DIR/.config/cc-ide/ccide.tmTheme" 2>/dev/null || true
+
+  for cfg_p in \
+    "$HOME_DIR/.config/yazi/yazi.toml" \
+    "$HOME_DIR/.config/yazi/keymap.toml" \
+    "$HOME_DIR/.config/yazi/theme.toml" \
+    "$HOME_DIR/.config/yazi/init.lua" \
+    "$HOME_DIR/Library/Application Support/lazygit/config.yml" \
+    "$HOME_DIR/.config/lazygit/config.yml"; do
+    if [[ -f "${cfg_p}.ccide.bak" ]]; then
+      mv -f "${cfg_p}.ccide.bak" "$cfg_p"
+    fi
+  done
 
   "$PYTHON_BIN" -I - "$HOME_DIR" <<'PYEOF'
 import json, os, re, sys
@@ -170,7 +183,7 @@ cc_ssh = os.path.join(home_dir, ".ssh", "ccide_config")
 if os.path.exists(cc_ssh):
     os.remove(cc_ssh)
 
-# 2. Strip cc-ide managed blocks from Yazi configs
+# 2. Strip cc-ide managed blocks from Yazi configs (when no .ccide.bak was present)
 yazi_dir = os.path.join(home_dir, ".config", "yazi")
 for fname, pat in (
     ("yazi.toml", r"\n?# Managed by cc-ide:[^\n]*\n(?:.*\n)*?(?=\Z|\n\[(?!\[plugin\.prepend_previewers\]\]))"),
@@ -182,9 +195,14 @@ for fname, pat in (
     if os.path.isfile(fp):
         with open(fp, "r", encoding="utf-8") as f:
             src = f.read()
-        cleaned = re.sub(pat, "", src).rstrip()
-        with open(fp, "w", encoding="utf-8") as f:
-            f.write((cleaned + "\n") if cleaned else "")
+        cleaned_sub = re.sub(pat, "", src)
+        if cleaned_sub != src:
+            cleaned = cleaned_sub.rstrip()
+            if not cleaned:
+                os.remove(fp)
+            else:
+                with open(fp, "w", encoding="utf-8") as f:
+                    f.write(cleaned + "\n")
 
 # 3. Clean Claude Code plugin & statusLine entries
 claude_dir = os.path.join(home_dir, ".claude")
@@ -291,7 +309,7 @@ if [[ "$OPT_COMPANION" == "1" ]]; then
   backup_once "$HOME_DIR/Library/Application Support/lazygit/config.yml"
   backup_once "$HOME_DIR/.config/lazygit/config.yml"
 
-  if [[ ! -f "$YAZI_TOML" ]] || ! grep -q "mouse_events" "$YAZI_TOML"; then
+  if [[ ! -f "$YAZI_TOML" ]]; then
     cat <<'EOF' > "$YAZI_TOML"
 [mgr]
 mouse_events = ["click", "scroll", "touch", "move", "drag"]
@@ -337,6 +355,11 @@ elif "[mgr]" in clean_yazi:
         "[mgr]",
         '[mgr]\nmouse_events   = ["click", "scroll", "touch", "move", "drag"]',
         1,
+    )
+else:
+    clean_yazi = (
+        '[mgr]\nmouse_events   = ["click", "scroll", "touch", "move", "drag"]\n\n'
+        + clean_yazi.lstrip()
     )
 
 previewer_block = (

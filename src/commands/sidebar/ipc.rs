@@ -9,45 +9,41 @@ use crate::platform::{cache_dir, ipc_dir, ipc_path};
 use crate::session::transcript::{
     get_main_session_file_ops, get_session_subagents, JsonlTracker, SubagentItem,
 };
-use crate::session::{emit_yazi_reveal_at, is_valid_model_name, load_config_models, ConfigModels};
+use crate::session::{
+    emit_yazi_reveal_at, is_valid_model_name, load_config_models, ConfigModels, SessionBinding,
+};
 use std::collections::HashMap;
 use std::time::Instant;
 
 /// Returns `true` if a view-switch request (`req_pid_<pid>.json` / `req_<sid>.json`) was
-/// written within the last `2.5s` and has not yet been unlinked by Claude Code.
+/// written within the last `1.5s` and has not yet been unlinked by Claude Code.
 pub fn has_pending_switch_request(claude_pid: u32, session_id: &str) -> bool {
     let cand = if claude_pid > 1 {
-        ipc_path(&format!("req_pid_{}.json", claude_pid))
+        ipc_path(&format!("req_pid_{claude_pid}.json"))
     } else if !session_id.is_empty() {
-        ipc_path(&format!("req_{}.json", session_id))
+        ipc_path(&format!("req_{session_id}.json"))
     } else {
         return false;
     };
-    if let Ok(meta) = fs::metadata(&cand) {
-        if let Ok(mt) = meta.modified() {
-            return SystemTime::now()
-                .duration_since(mt)
-                .unwrap_or(Duration::ZERO)
-                < Duration::from_millis(1500);
-        }
-    }
-    false
+    fs::metadata(&cand)
+        .and_then(|m| m.modified())
+        .ok()
+        .map(|mt| {
+            SystemTime::now().duration_since(mt).unwrap_or_default() < Duration::from_millis(1500)
+        })
+        .unwrap_or(false)
 }
 
-pub fn spawn_center_focus_restore(
-    home: &str,
-    tab_yazi_id: &str,
-    session_id: &str,
-    view_id: &str,
-    footer_rank: usize,
-) {
-    let h = home.to_string();
-    let y = tab_yazi_id.to_string();
-    let s = session_id.to_string();
-    let v = view_id.to_string();
+pub fn spawn_center_focus_restore(home: &str, yid: &str, sid: &str, view: &str, rank: usize) {
+    let (h, y, s, v) = (
+        home.to_string(),
+        yid.to_string(),
+        sid.to_string(),
+        view.to_string(),
+    );
     let _ = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(18));
-        focus_center_after_view_switch(&h, &y, &s, &v, footer_rank);
+        focus_center_after_view_switch(&h, &y, &s, &v, rank);
     });
 }
 
@@ -57,46 +53,36 @@ pub fn read_pushed_claude_state(
 ) -> Option<(String, Option<(SystemTime, String)>)> {
     let mut cands = Vec::with_capacity(2);
     if claude_pid > 1 {
-        cands.push(ipc_path(&format!("cur_pid_{}.txt", claude_pid)));
+        cands.push(ipc_path(&format!("cur_pid_{claude_pid}.txt")));
     }
     if !session_id.is_empty() {
-        cands.push(ipc_path(&format!("cur_{}.txt", session_id)));
+        cands.push(ipc_path(&format!("cur_{session_id}.txt")));
     }
     for path in cands {
         if let (Ok(meta), Ok(txt)) = (fs::metadata(&path), fs::read_to_string(&path)) {
             let mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let mut lines = txt.lines();
             let view = lines.next().unwrap_or("main").trim();
-            let norm_view = if view.is_empty() { "main" } else { view }.to_string();
-            let raw_model = lines.next().unwrap_or("").trim();
-            let valid_model = if is_valid_model_name(raw_model) {
-                Some((mt, raw_model.to_string()))
-            } else {
-                None
-            };
-            return Some((norm_view, valid_model));
+            let norm = if view.is_empty() { "main" } else { view }.to_string();
+            let rm = lines.next().unwrap_or("").trim();
+            let valid = is_valid_model_name(rm).then(|| (mt, rm.to_string()));
+            return Some((norm, valid));
         }
     }
     None
 }
 
-pub fn trigger_yazi_reveal(
-    home: &str,
-    tab_yazi_id: &str,
-    target_cwd: &str,
-    file_path: &str,
-    line: usize,
-    span: usize,
-) {
-    emit_yazi_reveal_at(home, tab_yazi_id, target_cwd, file_path, line, span);
+pub fn trigger_yazi_reveal(home: &str, yid: &str, cwd: &str, fp: &str, ln: usize, sp: usize) {
+    emit_yazi_reveal_at(home, yid, cwd, fp, ln, sp);
 }
 
-pub fn write_active_view_state(home: &str, tab_yazi_id: &str, view_id: &str) {
-    if tab_yazi_id.is_empty() {
-        return;
+pub fn write_active_view_state(home: &str, yid: &str, view: &str) {
+    if !yid.is_empty() {
+        let _ = fs::write(
+            cache_dir(home).join(format!("active_view_{yid}.txt")),
+            if view.is_empty() { "main" } else { view },
+        );
     }
-    let p = cache_dir(home).join(format!("active_view_{}.txt", tab_yazi_id));
-    let _ = fs::write(p, if view_id.is_empty() { "main" } else { view_id });
 }
 
 pub fn register_sidebar_tab(
@@ -147,43 +133,37 @@ pub fn trigger_native_view_switch(
     write_active_view_state(home, tab_yazi_id, view_id);
     if !session_id.is_empty() || claude_pid > 1 {
         let _ = fs::create_dir_all(ipc_dir());
-        let safe_desc = desc
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace(['\n', '\r', '\t'], " ");
-        let safe_type = raw_type
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace(['\n', '\r', '\t'], " ");
+        let esc = |s: &str| {
+            s.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace(['\n', '\r', '\t'], " ")
+        };
+        let (st, sd) = (esc(raw_type), esc(desc));
         let payload = format!(
             "{{\"id\":\"{}\",\"type\":\"{}\",\"desc\":\"{}\",\"done\":{}}}",
             view_id,
-            if safe_type.is_empty() {
+            if st.is_empty() {
                 "general-purpose"
             } else {
-                &safe_type
+                &st
             },
-            if safe_desc.is_empty() {
-                "subagent"
-            } else {
-                &safe_desc
-            },
-            if done { "true" } else { "false" }
+            if sd.is_empty() { "subagent" } else { &sd },
+            done
         );
         if claude_pid > 1 {
-            let pid_req = ipc_path(&format!("req_pid_{}.json", claude_pid));
-            let pid_tmp = ipc_path(&format!("req_pid_{}.json.tmp", claude_pid));
+            let (pid_req, pid_tmp) = (
+                ipc_path(&format!("req_pid_{claude_pid}.json")),
+                ipc_path(&format!("req_pid_{claude_pid}.json.tmp")),
+            );
             if fs::write(&pid_tmp, &payload).is_ok() && fs::rename(&pid_tmp, &pid_req).is_err() {
                 let _ = fs::write(&pid_req, &payload);
                 let _ = fs::remove_file(&pid_tmp);
             }
             wake_pid(claude_pid);
         } else if !session_id.is_empty() {
-            let req_path = ipc_path(&format!("req_{}.json", session_id));
-            let _ = fs::write(&req_path, &payload);
+            let _ = fs::write(ipc_path(&format!("req_{session_id}.json")), &payload);
         }
     }
-
     spawn_center_focus_restore(home, tab_yazi_id, session_id, view_id, footer_rank);
 }
 
@@ -193,23 +173,45 @@ pub fn update_isolated_session_binding(
     target_cwd: &str,
     shell_pid_arg: u32,
     my_pid_str: &str,
-    c_sid: &mut String,
-    c_pid: &mut u32,
+    cur: &mut SessionBinding,
 ) -> bool {
-    let (sid, cpid) =
-        crate::session::resolve_isolated_session_id(home, tab_yazi_id, target_cwd, shell_pid_arg);
-    if sid.is_empty() {
+    let rm_if_mine = |p: std::path::PathBuf| {
+        if fs::read_to_string(&p)
+            .map(|s| s.trim() == my_pid_str)
+            .unwrap_or(false)
+        {
+            let _ = fs::remove_file(&p);
+        }
+    };
+    let b = crate::session::resolve_isolated_session_binding(
+        home,
+        tab_yazi_id,
+        target_cwd,
+        shell_pid_arg,
+    );
+    if b.session_id.is_empty() {
+        if cur.ui_pid > 1 && !crate::ffi::is_pid_alive(cur.ui_pid) {
+            rm_if_mine(ipc_path(&format!("sb_pid_{}.pid", cur.ui_pid)));
+            cur.ui_pid = 0;
+        }
         return false;
     }
-    let changed = sid != *c_sid || cpid != *c_pid;
-    if sid != *c_sid {
-        let _ = fs::write(ipc_path(&format!("sb_{sid}.pid")), my_pid_str);
+    let changed = b != *cur;
+    if b.session_id != cur.session_id {
+        if !cur.session_id.is_empty() {
+            rm_if_mine(ipc_path(&format!("sb_{}.pid", cur.session_id)));
+        }
+        let _ = fs::write(ipc_path(&format!("sb_{}.pid", b.session_id)), my_pid_str);
     }
-    if cpid > 1 && cpid != *c_pid {
-        let _ = fs::write(ipc_path(&format!("sb_pid_{cpid}.pid")), my_pid_str);
+    if b.ui_pid != cur.ui_pid {
+        if cur.ui_pid > 1 {
+            rm_if_mine(ipc_path(&format!("sb_pid_{}.pid", cur.ui_pid)));
+        }
+        if b.ui_pid > 1 {
+            let _ = fs::write(ipc_path(&format!("sb_pid_{}.pid", b.ui_pid)), my_pid_str);
+        }
     }
-    *c_sid = sid;
-    *c_pid = cpid;
+    *cur = b;
     changed
 }
 

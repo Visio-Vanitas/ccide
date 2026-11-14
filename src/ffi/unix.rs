@@ -20,9 +20,14 @@ pub const SIGUSR2: c_int = 31;
 pub const SIGUSR2: c_int = 12;
 
 #[cfg(target_os = "macos")]
-pub const TIOCGWINSZ: u64 = 0x40087468;
+pub type NfdsT = std::ffi::c_uint;
 #[cfg(not(target_os = "macos"))]
-pub const TIOCGWINSZ: u64 = 0x5413;
+pub type NfdsT = std::ffi::c_ulong;
+
+#[cfg(target_os = "macos")]
+pub const TIOCGWINSZ: std::ffi::c_ulong = 0x40087468;
+#[cfg(not(target_os = "macos"))]
+pub const TIOCGWINSZ: std::ffi::c_ulong = 0x5413;
 
 #[repr(C)]
 pub struct Winsize {
@@ -95,10 +100,10 @@ pub struct PollFd {
 
 #[cfg_attr(target_os = "macos", link(name = "System"))]
 extern "C" {
-    pub fn ioctl(fd: c_int, request: u64, ...) -> c_int;
+    pub fn ioctl(fd: c_int, request: std::ffi::c_ulong, ...) -> c_int;
     pub fn tcgetattr(fd: c_int, termios_p: *mut Termios) -> c_int;
     pub fn tcsetattr(fd: c_int, optional_actions: c_int, termios_p: *const Termios) -> c_int;
-    pub fn poll(fds: *mut PollFd, nfds: u32, timeout: c_int) -> c_int;
+    pub fn poll(fds: *mut PollFd, nfds: NfdsT, timeout: c_int) -> c_int;
     pub fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     pub fn signal(sig: c_int, handler: extern "C" fn(c_int)) -> usize;
     pub fn kill(pid: c_int, sig: c_int) -> c_int;
@@ -147,7 +152,7 @@ impl ConsoleRawSession {
             events: 1,
             revents: 0,
         };
-        let ready = unsafe { poll(&mut pfd, 1, timeout_ms as c_int) };
+        let ready = unsafe { poll(&mut pfd, 1 as NfdsT, timeout_ms as c_int) };
         if ready > 0 {
             if (pfd.revents & (0x0008 | 0x0010 | 0x0020)) != 0 {
                 RUNNING.store(false, Ordering::SeqCst);
@@ -164,7 +169,7 @@ impl ConsoleRawSession {
                     // Reassemble split escape sequences already sitting in the TTY buffer.
                     while total < buf.len() && ends_with_incomplete_esc(&buf[..total]) {
                         pfd.revents = 0;
-                        let more = unsafe { poll(&mut pfd, 1, 2) };
+                        let more = unsafe { poll(&mut pfd, 1 as NfdsT, 2) };
                         if more <= 0 || (pfd.revents & 1) == 0 {
                             break;
                         }
@@ -240,7 +245,7 @@ pub fn query_terminal_winsize() -> Option<(usize, usize, f64, f64)> {
 }
 
 pub fn is_pid_alive(pid: u32) -> bool {
-    if pid == 0 {
+    if pid == 0 || pid > i32::MAX as u32 {
         return false;
     }
     unsafe { kill(pid as c_int, 0) == 0 }
@@ -265,7 +270,7 @@ pub fn get_ppid_of(pid: u32) -> Option<u32> {
 }
 
 pub fn wake_pid(pid: u32) {
-    if pid > 1 {
+    if pid > 1 && pid <= i32::MAX as u32 {
         unsafe {
             let _ = kill(pid as c_int, SIGUSR2);
         }

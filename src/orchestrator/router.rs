@@ -31,12 +31,9 @@ pub(crate) fn json_esc(s: &str) -> String {
 fn normalize_effort(raw: &str) -> Option<String> {
     let low = raw.trim().to_ascii_lowercase();
     if low == "med" {
-        return Some("medium".to_string());
+        return Some("medium".into());
     }
-    EFFORT_TIERS
-        .iter()
-        .find(|&&e| e == low)
-        .map(|&e| e.to_string())
+    EFFORT_TIERS.iter().find(|&&e| e == low).map(|&e| e.into())
 }
 
 fn fuzzy_match_model(raw: &str, pool: &[String]) -> Option<String> {
@@ -48,40 +45,35 @@ fn fuzzy_match_model(raw: &str, pool: &[String]) -> Option<String> {
         return Some(m.clone());
     }
     let ql = q.to_ascii_lowercase();
-    let expanded = match ql.as_str() {
+    let exp = match ql.as_str() {
         "ds" => "deepseek",
         "gem" => "gemini",
         _ => ql.as_str(),
     };
-    if let Some(m) = pool
-        .iter()
-        .find(|m| m.to_ascii_lowercase().contains(expanded))
-    {
-        return Some(m.clone());
-    }
-    is_valid_model_name(q).then(|| q.to_string())
+    pool.iter()
+        .find(|m| m.to_ascii_lowercase().contains(exp))
+        .cloned()
+        .or_else(|| is_valid_model_name(q).then(|| q.to_string()))
 }
 
 /// Parses leading `[@model:effort]`, `[@model]`, or `[@:effort]` from `desc`.
 pub fn parse_inline_tag(desc: &str, pool: &[String]) -> (Option<String>, Option<String>, String) {
-    let Some(rest) = desc.trim_start().strip_prefix("[@") else {
+    let Some((body, tail)) = desc
+        .trim_start()
+        .strip_prefix("[@")
+        .and_then(|r| r.split_once(']'))
+    else {
         return (None, None, desc.to_string());
     };
-    let Some(close) = rest.find(']') else {
-        return (None, None, desc.to_string());
-    };
-    let body = rest[..close].trim();
-    let stripped = rest[close + 1..].trim_start().to_string();
-    let (m_raw, e_raw) = body
+    let (mr, er) = body
+        .trim()
         .split_once(':')
-        .map_or((body, ""), |(m, e)| (m.trim(), e.trim()));
-    let model = (!m_raw.is_empty())
-        .then(|| fuzzy_match_model(m_raw, pool))
+        .map_or((body.trim(), ""), |(m, e)| (m.trim(), e.trim()));
+    let model = (!mr.is_empty())
+        .then(|| fuzzy_match_model(mr, pool))
         .flatten();
-    let effort = (!e_raw.is_empty())
-        .then(|| normalize_effort(e_raw))
-        .flatten();
-    (model, effort, stripped)
+    let effort = (!er.is_empty()).then(|| normalize_effort(er)).flatten();
+    (model, effort, tail.trim_start().to_string())
 }
 
 pub fn classify_agent_role(subagent_type: &str, desc: &str, prompt: &str) -> RoleKind {
@@ -91,7 +83,7 @@ pub fn classify_agent_role(subagent_type: &str, desc: &str, prompt: &str) -> Rol
     if subagent_type.eq_ignore_ascii_case("Explore") {
         return RoleKind::Scout;
     }
-    let combined = format!("{} {}", desc, prompt);
+    let combined = format!("{desc} {prompt}");
     let low = combined.to_ascii_lowercase();
     let has = |kws: &[&str]| kws.iter().any(|k| low.contains(k) || combined.contains(k));
     if has(&["plan", "architect", "design", "方案", "设计", "架构"]) {
@@ -124,7 +116,17 @@ pub fn pick_slot_model(slot: &RoleSlot, session_id: &str, role: RoleKind) -> Str
         .and_then(|s| s.trim().parse::<usize>().ok())
         .unwrap_or(0);
     let _ = fs::create_dir_all(ipc_dir());
-    let _ = fs::write(&path, ((idx + 1) % slot.models.len()).to_string());
+    let tmp = ipc_path(&format!(
+        "orch_rr_{}_{}.tmp.{}",
+        sid,
+        role.key(),
+        std::process::id()
+    ));
+    let next_val = ((idx + 1) % slot.models.len()).to_string();
+    if fs::write(&tmp, &next_val).is_ok() && fs::rename(&tmp, &path).is_err() {
+        let _ = fs::write(&path, &next_val);
+        let _ = fs::remove_file(&tmp);
+    }
     slot.models[idx % slot.models.len()].clone()
 }
 
@@ -163,6 +165,7 @@ fn route_agent(tool_in: &str, session_id: &str, home: &str) -> Option<String> {
 
     let is_gp = sub_type.is_empty() || sub_type == "general-purpose";
     let is_ro = matches!(sub_type.as_str(), "Explore" | "Plan");
+    let is_existing_shim = sub_type.starts_with("ccide-gp--") || sub_type.starts_with("ccide-ro--");
     let use_shim = !target_model.eq_ignore_ascii_case("inherit") && (is_gp || is_ro);
     let final_sub_type = if use_shim {
         let shim = if is_ro {
@@ -171,11 +174,16 @@ fn route_agent(tool_in: &str, session_id: &str, home: &str) -> Option<String> {
             gp_shim_name(&target_model)
         };
         if !Path::new(home)
-            .join(".claude/agents")
+            .join(".claude")
+            .join("agents")
             .join(format!("{}.md", shim))
             .is_file()
         {
-            sync_agent_shims(home, &cfg.model_pool);
+            let mut pool = cfg.model_pool.clone();
+            if !pool.iter().any(|m| m.eq_ignore_ascii_case(&target_model)) {
+                pool.push(target_model.clone());
+            }
+            sync_agent_shims(home, &pool);
         }
         shim
     } else {
@@ -186,12 +194,13 @@ fn route_agent(tool_in: &str, session_id: &str, home: &str) -> Option<String> {
         "\"subagent_type\":\"{}\"",
         json_esc(&final_sub_type)
     )];
-    if !use_shim {
-        push_opt_str(
-            &mut fields,
-            "model",
-            extract_json_str(tool_in, "model").as_deref(),
-        );
+    if !use_shim && !is_existing_shim {
+        let m_cand = if matches!(target_model.as_str(), "sonnet" | "opus" | "haiku" | "fable") {
+            Some(target_model.clone())
+        } else {
+            extract_json_str(tool_in, "model")
+        };
+        push_opt_str(&mut fields, "model", m_cand.as_deref());
     }
     if matches!(
         target_effort.as_str(),
@@ -241,34 +250,22 @@ mod tests {
             "deepseek-v4.1-flash[1M]".into(),
             "kimi-k3".into(),
         ];
-        assert_eq!(
-            parse_inline_tag("[@kimi-k3:high] Audit FFI", &pool),
-            (
-                Some("kimi-k3".into()),
-                Some("high".into()),
-                "Audit FFI".into()
-            )
+        let chk = |inp, em: Option<&str>, ee: Option<&str>, ed: &str| {
+            assert_eq!(
+                parse_inline_tag(inp, &pool),
+                (em.map(String::from), ee.map(String::from), ed.to_string())
+            );
+        };
+        let (hy, ds) = ("gemini-4-hydrogen[1M]", "deepseek-v4.1-flash[1M]");
+        chk(
+            "[@kimi-k3:high] Audit",
+            Some("kimi-k3"),
+            Some("high"),
+            "Audit",
         );
-        assert_eq!(
-            parse_inline_tag("[@hydrogen:low] Scan", &pool),
-            (
-                Some("gemini-4-hydrogen[1M]".into()),
-                Some("low".into()),
-                "Scan".into()
-            )
-        );
-        assert_eq!(
-            parse_inline_tag("[@ds:med] Search", &pool),
-            (
-                Some("deepseek-v4.1-flash[1M]".into()),
-                Some("medium".into()),
-                "Search".into()
-            )
-        );
-        assert_eq!(
-            parse_inline_tag("[@:xhigh] Deep", &pool),
-            (None, Some("xhigh".into()), "Deep".into())
-        );
+        chk("[@hydrogen:low] Scan", Some(hy), Some("low"), "Scan");
+        chk("[@ds:med] Search", Some(ds), Some("medium"), "Search");
+        chk("[@:xhigh] Deep", None, Some("xhigh"), "Deep");
     }
 
     #[test]

@@ -134,11 +134,10 @@ pub fn get_ppid_of(pid: u32) -> Option<u32> {
     unsafe {
         let mut buf = [0u32; 34]; // 136 bytes = sizeof(proc_bsdinfo), pbi_ppid at index 4
         let ret = proc_pidinfo(pid as c_int, 3, 0, buf.as_mut_ptr() as *mut c_void, 136);
-        if ret <= 0 {
-            None
-        } else {
-            Some(buf[4])
+        if ret < 20 {
+            return None;
         }
+        Some(buf[4])
     }
 }
 
@@ -168,6 +167,7 @@ pub fn sysctl_string(name: &str) -> Option<String> {
         {
             return None;
         }
+        buf.truncate(len);
         if buf.last() == Some(&0) {
             buf.pop();
         }

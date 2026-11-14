@@ -2,11 +2,21 @@
 
 use std::fs;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
 
 use crate::ffi::getloadavg;
 use crate::platform::ipc_path;
 use crate::telemetry::SharedTelemetrySnapshot;
+
+static NVIDIA_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+struct NvidiaFlightGuard;
+impl Drop for NvidiaFlightGuard {
+    fn drop(&mut self) {
+        NVIDIA_IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
 
 pub fn detect_hw_info() -> (String, usize, f64) {
     let mut brand = "LINUX".to_string();
@@ -143,9 +153,10 @@ pub fn sample_metrics(
                 }
             }
         }
+        let dt = dt_s.max(1e-3);
         if snap.prev_net_rx > 0 || snap.prev_net_tx > 0 {
-            snap.net_rx_bps = (rx_b.saturating_sub(snap.prev_net_rx) as f64) / dt_s;
-            snap.net_tx_bps = (tx_b.saturating_sub(snap.prev_net_tx) as f64) / dt_s;
+            snap.net_rx_bps = (rx_b.saturating_sub(snap.prev_net_rx) as f64) / dt;
+            snap.net_tx_bps = (tx_b.saturating_sub(snap.prev_net_tx) as f64) / dt;
         }
         snap.prev_net_rx = rx_b;
         snap.prev_net_tx = tx_b;
@@ -176,21 +187,35 @@ pub fn sample_metrics(
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| now_ms.saturating_sub(d.as_millis() as u64) > 1500)
             .unwrap_or(true);
-        if need_spawn {
-            if let Ok(out_file) = fs::File::create(&nv_cache) {
-                if let Ok(mut child) = Command::new("nvidia-smi")
-                    .args([
-                        "--query-gpu=utilization.gpu,memory.used",
-                        "--format=csv,noheader,nounits",
-                    ])
-                    .stdout(Stdio::from(out_file))
-                    .stderr(Stdio::null())
-                    .spawn()
-                {
-                    let _ = std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                }
+        if need_spawn
+            && NVIDIA_IN_FLIGHT
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            let _guard = NvidiaFlightGuard;
+            if let Ok(child) = Command::new("nvidia-smi")
+                .args([
+                    "--query-gpu=utilization.gpu,memory.used",
+                    "--format=csv,noheader,nounits",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                let nv_tmp = ipc_path(&format!("nvidia_stat.txt.tmp.{}", std::process::id()));
+                let _ = std::thread::Builder::new().spawn(move || {
+                    let _guard = _guard;
+                    if let Ok(out) = child.wait_with_output() {
+                        if out.status.success()
+                            && !out.stdout.is_empty()
+                            && fs::write(&nv_tmp, &out.stdout).is_ok()
+                            && fs::rename(&nv_tmp, &nv_cache).is_err()
+                        {
+                            let _ = fs::remove_file(&nv_tmp);
+                        }
+                    }
+                });
             }
         }
     }

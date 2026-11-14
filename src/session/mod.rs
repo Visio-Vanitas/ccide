@@ -47,8 +47,15 @@ fn ancestor_distance(mut pid: u32, target_ancestor: u32) -> Option<usize> {
     None
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionBinding {
+    pub session_id: String,
+    pub ui_pid: u32,
+    pub data_pid: u32,
+}
+
 /// Strips terminal job suffixes (` (claude)`, ` (node)`) and leading spinner/status glyphs
-/// (`✳ `, `◐ `, `● `) from a Center pane title to recover Claude Code's session `name`.
+/// (`✳ `, `◐ `, `● `) from a Center pane title while preserving ASCII punctuation (`[v0.9]`).
 pub fn clean_claude_pane_title(raw: &str) -> Option<String> {
     let mut s = raw.trim();
     if s.ends_with(')') {
@@ -60,7 +67,7 @@ pub fn clean_claude_pane_title(raw: &str) -> Option<String> {
         }
     }
     let cleaned = s
-        .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '/')
+        .trim_start_matches(|c: char| c.is_whitespace() || (!c.is_ascii() && !c.is_alphanumeric()))
         .trim();
     if cleaned.is_empty()
         || cleaned.eq_ignore_ascii_case("claude")
@@ -71,55 +78,99 @@ pub fn clean_claude_pane_title(raw: &str) -> Option<String> {
     Some(cleaned.to_string())
 }
 
+fn query_tmux_pane_title_bounded(tmux_bin: &std::path::Path, center_pane: &str) -> Option<String> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut child = Command::new(tmux_bin)
+        .args([
+            "-L",
+            "ccide",
+            "display-message",
+            "-p",
+            "-t",
+            center_pane,
+            "#{pane_title}",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_millis(150);
+    loop {
+        if let Ok(Some(st)) = child.try_wait() {
+            if !st.success() {
+                return None;
+            }
+            let mut out = String::new();
+            use std::io::Read;
+            if let Some(mut so) = child.stdout.take() {
+                let _ = so.read_to_string(&mut out);
+            }
+            return clean_claude_pane_title(&out);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn read_tab_pane_title(home: &str, tab_yazi_id: &str, query_tmux: bool) -> Option<String> {
     if tab_yazi_id.is_empty() {
         return None;
     }
-    if let Ok(raw) = fs::read_to_string(ipc_path(&format!("tab_title_{tab_yazi_id}.txt"))) {
-        if let Some(t) = clean_claude_pane_title(&raw) {
-            return Some(t);
+    let spec =
+        fs::read_to_string(ipc_path(&format!("panes_{tab_yazi_id}.txt"))).unwrap_or_default();
+    if query_tmux {
+        if let Some(rest) = spec.trim().strip_prefix("tmux:") {
+            let center_pane = rest.split(':').next().unwrap_or("");
+            if !center_pane.is_empty() {
+                if let Some(tmux) = find_executable("tmux", home) {
+                    return query_tmux_pane_title_bounded(&tmux, center_pane);
+                }
+            }
         }
     }
-    if query_tmux {
-        if let Ok(spec) = fs::read_to_string(ipc_path(&format!("panes_{tab_yazi_id}.txt"))) {
-            if let Some(rest) = spec.trim().strip_prefix("tmux:") {
-                let center_pane = rest.split(':').next().unwrap_or("");
-                if !center_pane.is_empty() {
-                    if let Some(tmux) = find_executable("tmux", home) {
-                        if let Ok(out) = std::process::Command::new(tmux)
-                            .args([
-                                "-L",
-                                "ccide",
-                                "display-message",
-                                "-p",
-                                "-t",
-                                center_pane,
-                                "#{pane_title}",
-                            ])
-                            .output()
-                        {
-                            if out.status.success() {
-                                return clean_claude_pane_title(&String::from_utf8_lossy(
-                                    &out.stdout,
-                                ));
-                            }
-                        }
-                    }
-                }
+    if !spec.trim().starts_with("tmux:") {
+        if let Ok(raw) = fs::read_to_string(ipc_path(&format!("tab_title_{tab_yazi_id}.txt"))) {
+            if let Some(t) = clean_claude_pane_title(&raw) {
+                return Some(t);
             }
         }
     }
     None
 }
 
-/// Strictly resolves the `(sessionId, claude_pid)` belonging ONLY to this tab's Claude process,
-/// including FleetView (`/subtask`) tabs attached to `bg` sessions under `claude.exe daemon`.
-pub fn resolve_isolated_session_id(
+fn is_claimed_by_live_sibling(cdir: &std::path::Path, session_id: &str, my_yid: &str) -> bool {
+    if session_id.is_empty() {
+        return false;
+    }
+    let Ok(raw) = fs::read_to_string(cdir.join(format!("session_{session_id}.yazi"))) else {
+        return false;
+    };
+    let other_yid = raw.trim();
+    if other_yid.is_empty() || other_yid == my_yid {
+        return false;
+    }
+    let Ok(reg) = fs::read_to_string(ipc_path(&format!("sidebar_tab_{other_yid}.json"))) else {
+        return false;
+    };
+    let pid = extract_json_u64(&reg, "pid").unwrap_or(0) as u32;
+    is_pid_alive(pid)
+}
+
+/// Strictly resolves `SessionBinding { session_id, ui_pid, data_pid }` for this tab's Claude
+/// process, preserving the interactive viewer `ui_pid` (`e.pid`) for `SIGUSR2` view-switching
+/// while tracking the attached `bg` session's `session_id` and `data_pid` under FleetView.
+pub fn resolve_isolated_session_binding(
     home: &str,
     tab_yazi_id: &str,
     target_cwd: &str,
     shell_pid_arg: u32,
-) -> (String, u32) {
+) -> SessionBinding {
     let cdir = cache_dir(home);
     let shell_pid = if shell_pid_arg > 0 {
         shell_pid_arg
@@ -217,13 +268,36 @@ pub fn resolve_isolated_session_id(
                 if !(e.parked_job_id.is_empty() && matches_title(e, &title)) {
                     if let Some(bg_same_cwd) = alive_entries
                         .iter()
-                        .find(|c| c.kind == "bg" && c.cwd == e.cwd && matches_title(c, &title))
+                        .find(|c| {
+                            c.kind == "bg"
+                                && c.cwd == e.cwd
+                                && matches_title(c, &title)
+                                && !is_claimed_by_live_sibling(&cdir, &c.session_id, tab_yazi_id)
+                        })
+                        .or_else(|| {
+                            alive_entries.iter().find(|c| {
+                                c.kind == "bg" && c.cwd == e.cwd && matches_title(c, &title)
+                            })
+                        })
                     {
                         chosen = bg_same_cwd;
                     } else if is_viewer {
                         if let Some(bg_any) = alive_entries
                             .iter()
-                            .find(|c| c.kind == "bg" && matches_title(c, &title))
+                            .find(|c| {
+                                c.kind == "bg"
+                                    && matches_title(c, &title)
+                                    && !is_claimed_by_live_sibling(
+                                        &cdir,
+                                        &c.session_id,
+                                        tab_yazi_id,
+                                    )
+                            })
+                            .or_else(|| {
+                                alive_entries
+                                    .iter()
+                                    .find(|c| c.kind == "bg" && matches_title(c, &title))
+                            })
                         {
                             chosen = bg_any;
                         }
@@ -231,10 +305,11 @@ pub fn resolve_isolated_session_id(
                 }
             }
             if chosen.pid == e.pid && is_viewer {
-                if let Some(bg_fb) = alive_entries
-                    .iter()
-                    .find(|c| c.kind == "bg" && c.cwd == e.cwd)
-                {
+                if let Some(bg_fb) = alive_entries.iter().find(|c| {
+                    c.kind == "bg"
+                        && c.cwd == e.cwd
+                        && !is_claimed_by_live_sibling(&cdir, &c.session_id, tab_yazi_id)
+                }) {
                     chosen = bg_fb;
                 }
             }
@@ -244,21 +319,29 @@ pub fn resolve_isolated_session_id(
                     tab_yazi_id,
                 );
             }
-            return (chosen.session_id.clone(), chosen.pid);
+            return SessionBinding {
+                session_id: chosen.session_id.clone(),
+                ui_pid: e.pid,
+                data_pid: chosen.pid,
+            };
         }
 
-        // If this tab's Center shell is alive locally, never fall back to `cwd` matching
-        // while `claude` is still booting, or we would steal a sibling tab's active session!
         if is_pid_alive(shell_pid) {
             if let Some(title) = read_tab_pane_title(home, tab_yazi_id, false) {
-                if let Some(bg) = alive_entries
-                    .iter()
-                    .find(|c| c.kind == "bg" && c.cwd == canon_target && matches_title(c, &title))
-                {
-                    return (bg.session_id.clone(), bg.pid);
+                if let Some(bg) = alive_entries.iter().find(|c| {
+                    c.kind == "bg"
+                        && c.cwd == canon_target
+                        && matches_title(c, &title)
+                        && !is_claimed_by_live_sibling(&cdir, &c.session_id, tab_yazi_id)
+                }) {
+                    return SessionBinding {
+                        session_id: bg.session_id.clone(),
+                        ui_pid: bg.pid,
+                        data_pid: bg.pid,
+                    };
                 }
             }
-            return (String::new(), 0);
+            return SessionBinding::default();
         }
     }
 
@@ -269,7 +352,11 @@ pub fn resolve_isolated_session_id(
                     fs::read_to_string(cdir.join(format!("session_{}.yazi", e.session_id)))
                 {
                     if bound_yid.trim() == tab_yazi_id {
-                        return (e.session_id.clone(), e.pid);
+                        return SessionBinding {
+                            session_id: e.session_id.clone(),
+                            ui_pid: e.pid,
+                            data_pid: e.pid,
+                        };
                     }
                 }
             }
@@ -277,18 +364,35 @@ pub fn resolve_isolated_session_id(
     }
 
     for e in &alive_entries {
-        if e.cwd == canon_target && e.parked_job_id.is_empty() {
+        if e.cwd == canon_target
+            && e.parked_job_id.is_empty()
+            && !is_claimed_by_live_sibling(&cdir, &e.session_id, tab_yazi_id)
+        {
             if !tab_yazi_id.is_empty() {
                 let _ = fs::write(
                     cdir.join(format!("session_{}.yazi", e.session_id)),
                     tab_yazi_id,
                 );
             }
-            return (e.session_id.clone(), e.pid);
+            return SessionBinding {
+                session_id: e.session_id.clone(),
+                ui_pid: e.pid,
+                data_pid: e.pid,
+            };
         }
     }
 
-    (String::new(), 0)
+    SessionBinding::default()
+}
+
+pub fn resolve_isolated_session_id(
+    home: &str,
+    tab_yazi_id: &str,
+    target_cwd: &str,
+    shell_pid_arg: u32,
+) -> (String, u32) {
+    let b = resolve_isolated_session_binding(home, tab_yazi_id, target_cwd, shell_pid_arg);
+    (b.session_id, b.ui_pid)
 }
 
 /// Normalizes `file_path` so if its canonical realpath lies under `canonicalize(target_cwd)`,
@@ -478,6 +582,10 @@ mod tests {
         assert_eq!(
             clean_claude_pane_title("◐ 并发优化测试 (claude.exe)"),
             Some("并发优化测试".to_string())
+        );
+        assert_eq!(
+            clean_claude_pane_title("✳ [v0.10] .github fix (claude)"),
+            Some("[v0.10] .github fix".to_string())
         );
         assert_eq!(clean_claude_pane_title("Claude Code (claude)"), None);
         assert_eq!(clean_claude_pane_title("claude"), None);

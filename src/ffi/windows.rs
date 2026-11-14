@@ -219,8 +219,8 @@ pub fn query_terminal_winsize() -> Option<(usize, usize, f64, f64)> {
         }
         let mut info: ConsoleScreenBufferInfo = std::mem::zeroed();
         if GetConsoleScreenBufferInfo(h_out, &mut info) != 0 {
-            let cols = (info.window.right - info.window.left + 1).max(1) as usize;
-            let rows = (info.window.bottom - info.window.top + 1).max(1) as usize;
+            let cols = (info.window.right as i32 - info.window.left as i32 + 1).max(1) as usize;
+            let rows = (info.window.bottom as i32 - info.window.top as i32 + 1).max(1) as usize;
             return Some((rows, cols, 14.0, 32.0));
         }
         None

@@ -12,8 +12,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check-version:
+    name: Check Minor (0.X.0) vs Patch (0.x.y) Release Policy
+    runs-on: ubuntu-latest
+    outputs:
+      is_minor: ${{ steps.ver.outputs.is_minor }}
+      base_ver: ${{ steps.ver.outputs.base_ver }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Inspect Cargo.toml Version & Tag Patch Updates on main
+        id: ver
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          BASE_VER="$(grep '^version =' Cargo.toml | head -n 1 | cut -d '"' -f 2)"
+          echo "base_ver=${BASE_VER}" >> "$GITHUB_OUTPUT"
+          if [[ "${BASE_VER}" == *.0 ]]; then
+            echo "is_minor=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_minor=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Patch version v${BASE_VER} (0.x.y): skipping 6-platform release binary compilation per SemVer policy (prebuilt archives compile only on 0.X.0 minor milestones)."
+            if [ "${REF_NAME}" = "main" ]; then
+              TAG="v${BASE_VER}"
+              if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+                git tag "${TAG}"
+                git push origin "refs/tags/${TAG}"
+              fi
+            fi
+          fi
+
   verify-gate:
     name: Pre-Release Verification Gate
+    needs: [check-version]
+    if: needs.check-version.outputs.is_minor == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -48,6 +80,8 @@ jobs:
 
   build-artifacts:
     name: Package (${{ matrix.target }})
+    needs: [check-version]
+    if: needs.check-version.outputs.is_minor == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true

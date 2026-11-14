@@ -5,10 +5,7 @@ function stripAnsi(s: string): string {
 }
 
 function splitArgs(raw: string): string[] {
-  return raw
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
+  return raw.trim().split(/\s+/).filter(Boolean)
 }
 
 async function resolveIpcDir($: EngineInterface): Promise<string> {
@@ -16,9 +13,7 @@ async function resolveIpcDir($: EngineInterface): Promise<string> {
   if (custom) return custom
   const winTmp = (await $.env.get('TEMP')) || (await $.env.get('TMP'))
   const userProfile = await $.env.get('USERPROFILE')
-  if (winTmp && userProfile) {
-    return `${winTmp.replace(/[\\/]+$/, '')}/.cc-ide`
-  }
+  if (winTmp && userProfile) return `${winTmp.replace(/[\\/]+$/, '')}/.cc-ide`
   return '/tmp/.cc-ide'
 }
 
@@ -31,19 +26,14 @@ async function runCore(
   resolverPath: string,
   subArgs: readonly string[],
 ): Promise<{ code: number; out: string }> {
-  const res = await $.process.run(['node', resolverPath, ...subArgs], {
-    timeoutMs: 15000,
-  })
-  const combined = [stripAnsi(res.stdout), stripAnsi(res.stderr)]
-    .filter(Boolean)
-    .join('\n')
-  return { code: res.exitCode, out: combined }
+  const res = await $.process.run(['node', resolverPath, ...subArgs], { timeoutMs: 15000 })
+  const out = [stripAnsi(res.stdout), stripAnsi(res.stderr)].filter(Boolean).join('\n')
+  return { code: res.exitCode, out }
 }
 
-async function syncSessionModel(
-  $: EngineInterface,
-  overrideModel?: string,
-): Promise<void> {
+const lastModels = new Map<string, string>()
+
+async function syncSessionModel($: EngineInterface, overrideModel?: string): Promise<void> {
   try {
     const [sid, curModel, home, ipcDir] = await Promise.all([
       $.session.id(),
@@ -52,39 +42,39 @@ async function syncSessionModel(
       resolveIpcDir($),
     ])
     const m = (curModel || '').trim()
-    if (!sid || !m || m.startsWith('<')) return
-    const writes: Promise<unknown>[] = [
-      $.fs.write(`${ipcDir}/mod_model_${sid}.txt`, `${m}\n`),
-    ]
-    if (home) {
-      writes.push(
-        $.fs.write(`${home}/.cache/cc-ide/status/model_${sid}.cache`, `${m}\n`),
-      )
-    }
+    if (!sid || !m || m.startsWith('<') || lastModels.get(sid) === m) return
+    lastModels.set(sid, m)
+    const writes: Promise<unknown>[] = [$.fs.write(`${ipcDir}/mod_model_${sid}.txt`, `${m}\n`)]
+    if (home) writes.push($.fs.write(`${home}/.cache/cc-ide/status/model_${sid}.cache`, `${m}\n`))
     await Promise.all(writes)
-    const entries = await $.fs.list(ipcDir).catch(() => [])
-    const pidFiles = [
-      `sb_${sid}.pid`,
-      ...entries
-        .map(ent => ent.name)
-        .filter(n => n.startsWith('sb_yazi_') && n.endsWith('.pid')),
-    ]
     const resolver = `${$.plugin.root}/scripts/ensure-ccide-core.mjs`
-    for (const pf of pidFiles) {
-      const pidTxt = await $.fs.read(`${ipcDir}/${pf}`).catch(() => '')
-      const pid = pidTxt.trim()
-      if (/^\d+$/.test(pid) && Number(pid) > 1) {
-        await $.process
-          .run(['node', resolver, 'wake-pid', pid], { timeoutMs: 2000 })
-          .catch(() => undefined)
-      }
-    }
+    const sidPid = (await $.fs.read(`${ipcDir}/sb_${sid}.pid`).catch(() => '')).trim()
+    const rawPids = sidPid
+      ? [sidPid]
+      : await $.fs
+          .list(ipcDir)
+          .catch(() => [])
+          .then(ents =>
+            Promise.all(
+              ents
+                .map(ent => ent.name)
+                .filter(n => n.startsWith('sb_yazi_') && n.endsWith('.pid'))
+                .map(n => $.fs.read(`${ipcDir}/${n}`).catch(() => '')),
+            ),
+          )
+    const pids = rawPids.map(t => t.trim()).filter(p => /^\d+$/.test(p) && Number(p) > 1)
+    await Promise.all(
+      pids.map(pid =>
+        $.process.run(['node', resolver, 'wake-pid', pid], { timeoutMs: 2000 }).catch(() => undefined),
+      ),
+    )
   } catch {
     // Non-fatal telemetry sync
   }
 }
 
 const perfBuffers = new Map<string, string[]>()
+const perfQueues = new Map<string, Promise<void>>()
 
 async function appendPerfSample(
   $: EngineInterface,
@@ -93,22 +83,22 @@ async function appendPerfSample(
   try {
     const [sid, ipcDir] = await Promise.all([$.session.id(), resolveIpcDir($)])
     if (!sid) return
-    const pfPath = `${ipcDir}/pf_sid_${sid}.jsonl`
-    let lines = perfBuffers.get(sid)
-    if (!lines) {
-      const existing = await $.fs.read(pfPath).catch(() => '')
-      lines = existing
-        .split('\n')
-        .map(s => s.trim())
-        .filter(Boolean)
-      perfBuffers.set(sid, lines)
-    }
-    lines.push(JSON.stringify(sample))
-    if (lines.length > 512) {
-      lines = lines.slice(-256)
-      perfBuffers.set(sid, lines)
-    }
-    await $.fs.write(pfPath, `${lines.join('\n')}\n`)
+    const prev = perfQueues.get(sid) ?? Promise.resolve()
+    const next = prev
+      .then(async () => {
+        const pfPath = `${ipcDir}/pf_sid_${sid}.jsonl`
+        let lines = perfBuffers.get(sid)
+        if (!lines) {
+          const existing = await $.fs.read(pfPath).catch(() => '')
+          lines = existing.split('\n').map(s => s.trim()).filter(Boolean)
+          perfBuffers.set(sid, lines)
+        }
+        lines.push(JSON.stringify(sample))
+        await $.fs.write(pfPath, `${lines.join('\n')}\n`)
+      })
+      .catch(() => undefined)
+    perfQueues.set(sid, next)
+    await next
   } catch {
     // Non-fatal perf stream write
   }
@@ -163,9 +153,6 @@ export const register: Register = on => {
   // Official streaming hook replacing Binary Patch #7 (`export_api_perf_metrics`):
   // records monotonic `ttftMs`, `firstContentMs`, and `durMs` for Main + Subagent steps.
   on('turn.step', async function* ($, e, next) {
-    if (!e.agentId && e.model) {
-      void syncSessionModel($, e.model)
-    }
     const t0 = await $.clock.now()
     let ttftMs = 0
     let firstContentMs = 0
