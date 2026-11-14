@@ -11,7 +11,7 @@ pub mod windows;
 
 use std::sync::atomic::AtomicBool;
 
-use crate::platform::ipc_path;
+use crate::platform::{ipc_dir, ipc_path};
 
 pub static RUNNING: AtomicBool = AtomicBool::new(true);
 pub static DIRTY_EVENT: AtomicBool = AtomicBool::new(true);
@@ -28,7 +28,10 @@ pub use macos::get_ppid_of;
 
 /// Wakes the sidebar process registered for `session_id` or `yazi_id` in `< 0.05ms`
 /// (`SIGUSR2` on macOS/Linux; `Local\ccide_wake_<pid>` Win32 Named Event on Windows).
+/// Falls back to waking live `sb_yazi_*.pid` instances when a brand-new or FleetView `bg`
+/// session has not yet been bound by its tab's sidebar.
 pub fn notify_sidebar(session_id: &str, yazi_id: &str) {
+    let mut woke_any = false;
     for (id, prefix) in [(session_id, "sb_"), (yazi_id, "sb_yazi_")] {
         if id.is_empty() {
             continue;
@@ -38,8 +41,28 @@ pub fn notify_sidebar(session_id: &str, yazi_id: &str) {
             if let Ok(pid) = txt.trim().parse::<u32>() {
                 if is_pid_alive(pid) {
                     wake_pid(pid);
+                    woke_any = true;
                 } else {
                     let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
+    }
+    if !woke_any {
+        if let Ok(rd) = std::fs::read_dir(ipc_dir()) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if fname.starts_with("sb_yazi_") && fname.ends_with(".pid") {
+                    if let Ok(txt) = std::fs::read_to_string(&p) {
+                        if let Ok(pid) = txt.trim().parse::<u32>() {
+                            if is_pid_alive(pid) {
+                                wake_pid(pid);
+                            } else {
+                                let _ = std::fs::remove_file(&p);
+                            }
+                        }
+                    }
                 }
             }
         }

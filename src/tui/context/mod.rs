@@ -226,7 +226,7 @@ impl SessionContextAnalyzer {
             all_paths.extend(subs.into_iter().map(|sp| (sp, true)));
         }
 
-        self.perf_tracker.update(claude_pid);
+        self.perf_tracker.update(session_id, claude_pid);
         let agg = aggregate_session_model_costs(
             all_paths,
             &mut self.trackers,

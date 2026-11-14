@@ -206,31 +206,4 @@ def apply_all_structural_patches(
             ),
         )
 
-    # 7. Export exact monotonic stream `ttftMs` & `durationMs` per API turn (`pf_<pid>.jsonl`, standalone)
-    re_perf = re.compile(
-        rb'("tengu_api_success",\{model:[A-Za-z0-9_$]+\(([A-Za-z0-9_$]+)\),'
-        rb".{40,560}?outputTokens:([A-Za-z0-9_$]+)\.output_tokens,)"
-        rb"cachedInputTokens:\3\.cache_read_input_tokens\?\?0,"
-        rb"uncachedInputTokens:\3\.cache_creation_input_tokens\?\?0,"
-        rb"cache_creation_5m_input_tokens:\3\.cache_creation\?\.ephemeral_5m_input_tokens\?\?0,"
-        rb"cache_creation_1h_input_tokens:\3\.cache_creation\?\.ephemeral_1h_input_tokens\?\?0,"
-        rb"(.{0,140}?durationMs:([A-Za-z0-9_$]+),durationMsIncludingRetries:[A-Za-z0-9_$]+,attempt:[A-Za-z0-9_$]+,"
-        rb"ttftMs:([A-Za-z0-9_$]+)\?\?void 0,firstContentMs:([A-Za-z0-9_$]+)\?\?void 0)"
-    )
-    record(
-        "export_api_perf_metrics", False,
-        *apply_regex_patch_in_regions(
-            buf, layout, re_perf,
-            lambda m: (
-                m.group(1)
-                + b'...(()=>{try{let p=process,r=import.meta.require,d=p.env.CCIDE_IPC_DIR||(p.platform>"w"?r("os").tmpdir():"/tmp")+"/.cc-ide";'
-                + b'r("fs").appendFileSync(`${d}/pf_${process.pid}.jsonl`,JSON.stringify({m:'
-                + m.group(2) + b",o:" + m.group(3) + b".output_tokens,d:" + m.group(5)
-                + b",t:" + m.group(6) + b"??" + m.group(7) + b"})+`\\n`)}catch{}})(),"
-                + m.group(4)
-            ),
-            "Export exact monotonic stream TPS & TTFT metrics",
-        ),
-    )
-
     return results, patched_offsets
