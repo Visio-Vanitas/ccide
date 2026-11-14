@@ -2,11 +2,13 @@
 """Local HTTP/SSE Workflow API Server (stdlib ThreadingHTTPServer, <= 280 lines)."""
 
 import argparse
+import hmac
 import json
 import os
 import sys
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ccide_workflow_runner as runner  # type: ignore[import-not-found]  # noqa: E402
@@ -43,7 +45,7 @@ def _format_event_text(ev: dict) -> str:
 
 
 class WorkflowHandler(BaseHTTPRequestHandler):
-    server_version = "ccide-workflow-server/0.9.0"
+    server_version = "ccide-workflow-server/0.9.1"
 
     def log_message(self, format: str, *args):  # noqa: A002
         if os.environ.get("CCIDE_WORKFLOW_SERVER_QUIET") != "1":
@@ -54,9 +56,19 @@ class WorkflowHandler(BaseHTTPRequestHandler):
         if not tok:
             return True
         auth = self.headers.get("Authorization") or ""
-        if auth == f"Bearer {tok}":
+        if hmac.compare_digest(auth, f"Bearer {tok}"):
             return True
         self._send_json(401, {"error": "unauthorized"})
+        return False
+
+    def _check_origin(self) -> bool:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        host = (urlparse(origin).hostname or "").lower()
+        if host in ("localhost", "127.0.0.1", "::1"):
+            return True
+        self._send_json(403, {"error": "forbidden origin"})
         return False
 
     def _read_json(self) -> dict:
@@ -86,7 +98,7 @@ class WorkflowHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_GET(self):
-        if not self._check_auth():
+        if not self._check_origin() or not self._check_auth():
             return
         path = self.path.split("?", 1)[0]
         if path == "/health":
@@ -97,13 +109,20 @@ class WorkflowHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": f"unknown path: {path}"})
 
     def do_POST(self):
-        if not self._check_auth():
+        if not self._check_origin() or not self._check_auth():
+            return
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            self._send_json(415, {"error": "Content-Type must be application/json"})
             return
         path = self.path.split("?", 1)[0]
         try:
             body = self._read_json()
         except Exception as exc:
             self._send_json(400, {"error": f"invalid json: {exc}"})
+            return
+        if not isinstance(body, dict):
+            self._send_json(400, {"error": "json body must be an object"})
             return
 
         if path == "/v1/workflows/run":
@@ -120,6 +139,11 @@ class WorkflowHandler(BaseHTTPRequestHandler):
         script = body.get("script")
         if not wf and not script:
             self._send_json(400, {"error": "workflow or script is required"})
+            return
+        try:
+            runner.resolve_workflow_source(wf, cwd=body.get("cwd"), inline_script=script)
+        except FileNotFoundError as exc:
+            self._send_json(404, {"error": str(exc)})
             return
         gen = runner.execute_workflow_stream(
             workflow=wf,
@@ -160,6 +184,11 @@ class WorkflowHandler(BaseHTTPRequestHandler):
             wf_args.update(body["metadata"])
         if prompt:
             wf_args["prompt"] = prompt
+        try:
+            runner.resolve_workflow_source(wf_name, cwd=wf_args.get("cwd"))
+        except FileNotFoundError as exc:
+            self._send_json(404, {"error": str(exc)})
+            return None
         gen = runner.execute_workflow_stream(
             workflow=wf_name,
             args=wf_args,

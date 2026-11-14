@@ -6,27 +6,23 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use crate::commands::workspace::ghostty_script::{
-    build_ghostty_open_applescript, compute_ghostty_split_deltas, escape_applescript_str, rsz,
+    build_ghostty_open_applescript, compute_ghostty_equalized_deltas, escape_applescript_str,
 };
-use crate::platform::{current_engine_exe, find_executable, ipc_dir, ipc_path};
+use crate::platform::{current_engine_exe, ipc_dir, ipc_path};
 
 pub fn is_ghostty_env() -> bool {
-    env::var("TERM_PROGRAM")
-        .unwrap_or_default()
-        .trim()
-        .eq_ignore_ascii_case("ghostty")
-        || !env::var("GHOSTTY_RESOURCES_DIR")
-            .unwrap_or_default()
-            .trim()
-            .is_empty()
+    let tp = env::var("TERM_PROGRAM").unwrap_or_default();
+    let gr = env::var("GHOSTTY_RESOURCES_DIR").unwrap_or_default();
+    tp.trim().eq_ignore_ascii_case("ghostty") || !gr.trim().is_empty()
 }
 
 fn osascript_bin() -> PathBuf {
     let v = env::var("CCIDE_OSASCRIPT_BIN").unwrap_or_default();
-    PathBuf::from(if v.trim().is_empty() {
+    let s = v.trim();
+    PathBuf::from(if s.is_empty() {
         "/usr/bin/osascript"
     } else {
-        v.trim()
+        s
     })
 }
 
@@ -62,8 +58,26 @@ pub fn parse_ghostty_version_ok(raw: &str) -> bool {
     false
 }
 
+fn ghostty_app_stamp(home: &str) -> String {
+    for p in [
+        "/Applications/Ghostty.app/Contents/Info.plist".to_string(),
+        format!("{home}/Applications/Ghostty.app/Contents/Info.plist"),
+    ] {
+        if let Some(secs) = fs::metadata(&p)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+        {
+            return secs.to_string();
+        }
+    }
+    "1".to_string()
+}
+
 pub fn probe_ghostty_native_capable(home: &str) -> bool {
-    if env::var("SSH_CONNECTION").is_ok()
+    if cfg!(target_os = "linux")
+        || env::var("SSH_CONNECTION").is_ok()
         || env::var("SSH_TTY").is_ok()
         || !env::var("TMUX").unwrap_or_default().is_empty()
     {
@@ -83,41 +97,36 @@ pub fn probe_ghostty_native_capable(home: &str) -> bool {
                 .map(|d| d.as_secs() < 3600)
                 .unwrap_or(false);
         if fresh {
-            return fs::read_to_string(&cache)
-                .map(|s| s.trim() == "1")
-                .unwrap_or(false);
+            let want = ghostty_app_stamp(home);
+            if fs::read_to_string(&cache)
+                .map(|s| s.trim() == want)
+                .unwrap_or(false)
+            {
+                return true;
+            }
         }
         let ok = run_osa("tell application \"Ghostty\" to get version", true)
             .map(|s| parse_ghostty_version_ok(&s))
             .unwrap_or(false);
         if !mock {
-            let _ = fs::write(&cache, if ok { "1" } else { "0" });
+            if ok {
+                let _ = fs::write(&cache, ghostty_app_stamp(home));
+            } else {
+                let _ = fs::remove_file(&cache);
+            }
         }
         return ok;
-    }
-    if cfg!(target_os = "linux") {
-        if let Some(bin) = find_executable("ghostty", home) {
-            return Command::new(bin)
-                .arg("+help")
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).contains("+split"))
-                .unwrap_or(false);
-        }
     }
     false
 }
 
 fn query_tty_pixel_width() -> usize {
-    if let Ok(px) = env::var("CCIDE_GHOSTTY_WIDTH_PX")
-        .unwrap_or_default()
-        .trim()
-        .parse::<usize>()
+    if let Some(px) = env::var("CCIDE_GHOSTTY_WIDTH_PX")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&p| p > 0)
     {
-        if px > 0 {
-            return px;
-        }
+        return px;
     }
     #[cfg(unix)]
     {
@@ -159,6 +168,7 @@ pub fn run_ghostty_open(
     if let Ok(prev) = fs::read_to_string(&panes_file) {
         close_ghostty_panes(&prev);
     }
+    let total_px = query_tty_pixel_width();
     let eng = current_engine_exe(home);
     let sc = build_ghostty_open_applescript(
         eng.to_str().unwrap_or("ccide-core"),
@@ -171,10 +181,17 @@ pub fn run_ghostty_open(
         git_root,
         show_right,
         shell_pid,
-        query_tty_pixel_width(),
+        total_px,
     );
-    let spec = run_osa(&sc, true).filter(|s| s.starts_with("ghostty:"))?;
+    let Some(spec) = run_osa(&sc, true).filter(|s| s.starts_with("ghostty:")) else {
+        let _ = fs::remove_file(ipc_path("ghostty_cap.cache"));
+        return None;
+    };
     let _ = fs::write(&panes_file, &spec);
+    let _ = fs::write(
+        ipc_path(&format!("ghostty_w_{yazi_id}.txt")),
+        format!("{total_px} {}", usize::from(show_right)),
+    );
     Some(spec)
 }
 
@@ -220,28 +237,64 @@ pub fn close_ghostty_panes(spec: &str) {
 }
 
 pub fn rebalance_ghostty_panes(left_pct: usize) {
-    let (dx_l, dx_r) = compute_ghostty_split_deltas(query_tty_pixel_width(), left_pct);
-    let (dl, dr) = (rsz(dx_l, "left", "right"), rsz(dx_r, "right", "left"));
-    let mut sc = String::from("tell application \"Ghostty\"\ntry\nperform action \"equalize_splits\" on focused terminal of selected tab of front window\nend try\n");
+    let fallback_w = query_tty_pixel_width();
+    let mut sc = String::from("tell application \"Ghostty\"\n");
+    let mut any = false;
     if let Ok(rd) = fs::read_dir(ipc_dir()) {
         for e in rd.flatten() {
-            if !e.file_name().to_string_lossy().starts_with("panes_") {
+            let fname = e.file_name();
+            let Some(yid) = fname
+                .to_string_lossy()
+                .strip_prefix("panes_")
+                .and_then(|s| s.strip_suffix(".txt"))
+                .map(str::to_string)
+            else {
                 continue;
-            }
+            };
             if let Some(rest) = fs::read_to_string(e.path())
                 .ok()
                 .and_then(|t| t.trim().strip_prefix("ghostty:").map(str::to_string))
             {
-                let (cid, sides) = rest.split_once(':').unwrap_or((&rest, ""));
-                if let Some(lid) = sides.split(',').find(|s| !s.is_empty()) {
+                let (cid, sides_raw) = rest.split_once(':').unwrap_or((&rest, ""));
+                let sides: Vec<&str> = sides_raw.split(',').filter(|s| !s.is_empty()).collect();
+                let Some(lid) = sides.first().copied() else {
+                    continue;
+                };
+                if cid.is_empty() {
+                    continue;
+                }
+                let raw_w = fs::read_to_string(ipc_path(&format!("ghostty_w_{yid}.txt")))
+                    .unwrap_or_default();
+                let mut parts = raw_w.split_whitespace();
+                let w = parts
+                    .next()
+                    .and_then(|p| p.parse::<usize>().ok())
+                    .filter(|&w| w > 0)
+                    .unwrap_or(fallback_w);
+                let has_right = parts.next().map(|p| p == "1").unwrap_or(sides.len() >= 2);
+                let (dl, dr) = compute_ghostty_equalized_deltas(w, left_pct, has_right);
+                any = true;
+                let (esc_cid, esc_lid) = (escape_applescript_str(cid), escape_applescript_str(lid));
+                sc.push_str(&format!(
+                    "try\nperform action \"equalize_splits\" on (first terminal whose id is \"{esc_cid}\")\n"
+                ));
+                if dl.1 > 0 {
                     sc.push_str(&format!(
-                        "try\nperform action \"resize_split:{},{}\" on (first terminal whose id is \"{}\")\nperform action \"resize_split:{},{}\" on (first terminal whose id is \"{}\")\nend try\n",
-                        dl.0, dl.1, escape_applescript_str(lid), dr.0, dr.1, escape_applescript_str(cid)
+                        "perform action \"resize_split:{},{}\" on (first terminal whose id is \"{esc_lid}\")\n",
+                        dl.0, dl.1
                     ));
                 }
+                if let Some((dir, px)) = dr.filter(|d| d.1 > 0) {
+                    sc.push_str(&format!(
+                        "perform action \"resize_split:{dir},{px}\" on (first terminal whose id is \"{esc_cid}\")\n"
+                    ));
+                }
+                sc.push_str("end try\n");
             }
         }
     }
-    sc.push_str("end tell");
-    let _ = run_osa(&sc, false);
+    if any {
+        sc.push_str("end tell");
+        let _ = run_osa(&sc, false);
+    }
 }

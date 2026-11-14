@@ -27,6 +27,13 @@ function Resolve-PyExe {
     return "python"
 }
 
+function Assert-CoreBin {
+    if (-not (Test-Path $CoreBin)) {
+        Write-Error "ccide-core binary not found ($CoreBin); run install.ps1 first."
+        exit 1
+    }
+}
+
 $i = 0
 while ($i -lt $args.Count) {
     $arg = [string]$args[$i]
@@ -35,25 +42,35 @@ while ($i -lt $args.Count) {
         "^--no-right$"             { $ShowRight = "0"; $i++; continue }
         "^--wezterm$"              { $Backend = "wezterm"; $i++; continue }
         "^--wt$"                   { $Backend = "wt"; $i++; continue }
-        "^--backend$"              { $Backend = [string]$args[$i + 1]; $i += 2; continue }
-        "^--width$"                { $LeftPct = [string]$args[$i + 1]; $i += 2; continue }
+        "^(--backend)$"            {
+            if ($i + 1 -lt $args.Count) { $Backend = [string]$args[$i + 1]; $i += 2 } else { $i++ }
+            continue
+        }
+        "^(--width)$"              {
+            if ($i + 1 -lt $args.Count) { $LeftPct = [string]$args[$i + 1]; $i += 2 } else { $i++ }
+            continue
+        }
         "^--keep-panes$"           { $KeepPanes = $true; $i++; continue }
         "^(--clear-subagents|--clear-done)$" {
+            Assert-CoreBin
             $sid = if ($i + 1 -lt $args.Count) { [string]$args[$i + 1] } else { "" }
             & $CoreBin workspace clear-subagents $sid
             exit $LASTEXITCODE
         }
         "^(--theme|--palette)$" {
+            Assert-CoreBin
             $th = if ($i + 1 -lt $args.Count) { [string]$args[$i + 1] } else { "list" }
             & $CoreBin workspace theme $th
             exit $LASTEXITCODE
         }
         "^(doctor|--doctor)$" {
+            Assert-CoreBin
             $rest = if ($i + 1 -lt $args.Count) { $args[($i + 1)..($args.Count - 1)] } else { @() }
             & $CoreBin doctor $RepoRoot @rest
             exit $LASTEXITCODE
         }
         "^(setup|--setup)$" {
+            Assert-CoreBin
             & $CoreBin setup $RepoRoot
             exit $LASTEXITCODE
         }
@@ -90,6 +107,7 @@ while ($i -lt $args.Count) {
             exit $LASTEXITCODE
         }
         "^orchestrator$" {
+            Assert-CoreBin
             $rest = if ($i + 1 -lt $args.Count) { $args[($i + 1)..($args.Count - 1)] } else { @() }
             & $CoreBin orchestrator @rest
             exit $LASTEXITCODE
@@ -125,8 +143,9 @@ Commands & Maintenance:
     }
 }
 
-# If launched from plain `cmd.exe` / console outside WT or WezTerm, bootstrap inside `wt.exe` automatically!
-if (-not $env:WEZTERM_PANE -and -not $env:WT_SESSION -and -not $env:CLAUDECODE) {
+# If launched from plain `cmd.exe` / console outside WT or WezTerm, bootstrap inside `wt.exe`
+# automatically — unless the user explicitly requested the `wezterm` backend.
+if ($Backend -ne "wezterm" -and -not $env:WEZTERM_PANE -and -not $env:WT_SESSION -and -not $env:CLAUDECODE) {
     $WtCmd = Get-Command wt.exe -ErrorAction SilentlyContinue
     if ($WtCmd) {
         $SelfPs1 = $MyInvocation.MyCommand.Definition
@@ -135,8 +154,12 @@ if (-not $env:WEZTERM_PANE -and -not $env:WT_SESSION -and -not $env:CLAUDECODE) 
             $PwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
             $SelfShell = if ($PwshCmd) { $PwshCmd.Source } else { "powershell.exe" }
         }
-        & $WtCmd.Source -d $TargetDir $SelfShell -NoExit -ExecutionPolicy Bypass -File $SelfPs1 @args
-        exit 0
+        # `wt.exe` parses `;` as a subcommand separator, so escape it inside paths.
+        $WtDir = $TargetDir.Replace(";", "\;")
+        $WtSelf = $SelfPs1.Replace(";", "\;")
+        & $WtCmd.Source -d $WtDir $SelfShell -ExecutionPolicy Bypass -File $WtSelf @args
+        $WtExit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
+        exit $WtExit
     }
 }
 
@@ -158,12 +181,24 @@ if (Test-Path $CoreBin) {
     $PaneSpec = (& $CoreBin workspace open $TargetDir $YaziId $ShowGit $ShowMon $LeftPct $GitRootArg $ShowRight $Backend 2>$null | Select-Object -First 1)
 }
 
+function Resolve-ClaudeExe {
+    # Prefer a real `claude.exe` (patchable Bun standalone) over a `claude` shell shim.
+    $Direct = Get-Command claude.exe -CommandType Application -ErrorAction SilentlyContinue
+    if ($Direct) { return $Direct.Source }
+    $ClaudeCmd = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $ClaudeCmd) { return $null }
+    $Sibling = Join-Path (Split-Path -Parent $ClaudeCmd.Source) "bin\claude.exe"
+    if (Test-Path $Sibling) { return $Sibling }
+    return $ClaudeCmd.Source
+}
+
 function Invoke-AutoEnsureClaudePatched {
-    $ClaudeCmd = Get-Command claude -ErrorAction SilentlyContinue
-    if (-not $ClaudeCmd) { return }
-    $TargetExe = Join-Path (Split-Path -Parent $ClaudeCmd.Source) "bin\claude.exe"
-    if (-not (Test-Path $TargetExe)) { $TargetExe = $ClaudeCmd.Source }
+    $TargetExe = Resolve-ClaudeExe
+    if (-not $TargetExe) { return }
+    $TargetExe = [string]$TargetExe
     if (-not (Test-Path $TargetExe)) { return }
+    # Only the Bun standalone executable is patchable; `claude` shell/cmd shims are skipped.
+    if (-not $TargetExe.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)) { return }
 
     $CacheDir = Join-Path $HomeDir ".cache\cc-ide"
     New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
@@ -190,10 +225,15 @@ function Invoke-AutoEnsureClaudePatched {
 }
 Invoke-AutoEnsureClaudePatched
 
+$ClaudeExit = 0
 try {
-    & claude --dangerously-skip-permissions @ClaudeArgs
+    $ClaudeExe = Resolve-ClaudeExe
+    $ClaudeInvoke = if ($ClaudeExe) { $ClaudeExe } else { "claude" }
+    & $ClaudeInvoke --dangerously-skip-permissions @ClaudeArgs
+    $ClaudeExit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
 } finally {
     if (-not $KeepPanes -and $PaneSpec -and (Test-Path $CoreBin)) {
         & $CoreBin workspace close $PaneSpec $YaziId 2>$null | Out-Null
     }
 }
+exit $ClaudeExit

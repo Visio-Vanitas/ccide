@@ -66,9 +66,8 @@ pub fn reload_companion_panes(home: &str) {
                 .stderr(Stdio::null())
                 .spawn()
             {
-                let _ = thread::spawn(move || {
-                    let _ = ch.wait();
-                });
+                // Reap immediately so short-lived CLI invocations never leave zombies behind
+                let _ = ch.wait();
             }
         }
         let restore_list: Vec<(String, String, usize, usize)> = yids
@@ -76,13 +75,23 @@ pub fn reload_companion_panes(home: &str) {
             .filter_map(|(yid, sv)| sv.map(|(p, ln, sp)| (yid, p, ln, sp)))
             .collect();
         if !restore_list.is_empty() {
+            // Join the restore thread (bounded `< ~350ms` total) so a short-lived `ccide --theme`
+            // process never exits before Yazi's revealed file & line range are written back.
             let home_owned = home.to_string();
-            let _ = thread::spawn(move || {
-                thread::sleep(Duration::from_millis(240));
+            let handle = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(180));
+                let mut pending: Vec<(String, String, usize, usize)> = Vec::new();
                 for (yid, path, ln, sp) in restore_list {
+                    emit_yazi_reveal_at(&home_owned, &yid, ".", &path, ln, sp);
+                    pending.push((yid, path, ln, sp));
+                }
+                // Second bounded retry for panes still booting after the `quit` round-trip
+                thread::sleep(Duration::from_millis(140));
+                for (yid, path, ln, sp) in pending {
                     emit_yazi_reveal_at(&home_owned, &yid, ".", &path, ln, sp);
                 }
             });
+            let _ = handle.join();
         }
     }
 

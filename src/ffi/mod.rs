@@ -74,7 +74,7 @@ pub fn is_descendant_of(mut pid: u32, ancestor_pid: u32) -> bool {
     if ancestor_pid == 0 {
         return false;
     }
-    for _ in 0..16 {
+    for _ in 0..=32 {
         if pid == ancestor_pid {
             return true;
         }

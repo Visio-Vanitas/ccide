@@ -135,9 +135,10 @@ def apply_all_structural_patches(
                 + enter_fn.encode("ascii") + b'(q.id,c.Qt)}}catch{}};'
                 + b'w?fs.watch(d,(_,f)=>f==`req_pid_${p}.json`&&g.__cc_h()).unref():process.on("SIGUSR2",g.__cc_h)}w&&g.__cc_h();'
                 + b"let st=`${" + lt_v + b'??"main"}\\n\\n${Object.keys(' + te_v
-                + b").length}`;if(g.__cc_s!==st){g.__cc_s=st;fs.writeFileSync(`${d}/cur_pid_${p}.txt`,st);"
+                + b").length}`;if(g.__cc_s!==st){g.__cc_s=st;"
+                + b"let cf=`${d}/cur_pid_${p}.tmp`;fs.writeFileSync(cf,st);fs.renameSync(cf,`${d}/cur_pid_${p}.txt`);"
                 + b'let sp=`${d}/sb_pid_${p}.pid`;if(fs.existsSync(sp)){let k=+fs.readFileSync(sp,"utf8");'
-                + b'k>1&&(w?r("child_process").spawn("ccide-core",["wake-pid",""+k],{stdio:"ignore",windowsHide:!0}).unref():process.kill(k,"SIGUSR2"))}}}catch{}'
+                + b'k>1&&(w?r("child_process").spawn("ccide-core",["wake-pid",""+k],{stdio:"ignore",windowsHide:!0}).on("error",()=>{}).unref():process.kill(k,"SIGUSR2"))}}}catch{}'
             )
 
         record("sigusr2_view_switch_hook", True, *apply_regex_patch_in_regions(buf, layout, re_jn, build_jn, f"Event-driven view-switch hook ({enter_fn}/{exit_fn}/{adopt_fn})"))

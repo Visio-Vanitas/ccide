@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
     --wezterm) BACKEND="wezterm"; shift ;;
     --backend)
       BACKEND="${2:-auto}"
-      shift 2
+      if [[ $# -ge 2 ]]; then shift 2; else shift; fi
       ;;
     --clear-subagents|--clear-done)
       shift
@@ -116,7 +116,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --width)
       LEFT_PCT="${2:-30}"
-      shift 2
+      if [[ $# -ge 2 ]]; then shift 2; else shift; fi
       ;;
     --keep-panes)
       KEEP_PANES=1
@@ -186,7 +186,7 @@ if [[ -z "${TMUX:-}" && ( "$BACKEND" == "tmux" || ( "$BACKEND" == "auto" && "$NA
     SESSION_NAME="ccide-${PWD:t}-$$"
     QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
     exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-      "export CCIDE_BACKEND=tmux; exec ${(q)0} --tmux ${QUOTED_ORIG}"
+      "export CCIDE_BACKEND=tmux; exec ${(q)0} ${QUOTED_ORIG} --tmux"
   fi
 fi
 
@@ -216,12 +216,12 @@ if [[ -x "$CCIDE_CORE_BIN" ]]; then
     "$TARGET_DIR" "$YAZI_CLIENT_ID" "$SHOW_GIT" "$SHOW_MON" "$LEFT_PCT" "$GIT_ROOT" "$SHOW_RIGHT" "$BACKEND" || true)"
 fi
 
-# If SSH OSC 1337 timed out and we are not yet in tmux, bootstrap `tmux -L ccide` automatically
-if [[ -z "$PANE_SPEC" && -z "${TMUX:-}" && -n "${SSH_CONNECTION:-}" && -z "${CLAUDECODE:-}" ]] && command -v tmux >/dev/null 2>&1; then
+# If native split / SSH OSC 1337 failed or timed out and we are not yet in tmux, bootstrap `tmux -L ccide` automatically
+if [[ -z "$PANE_SPEC" && -z "${TMUX:-}" && "$BACKEND" == "auto" && -z "${CLAUDECODE:-}" ]] && command -v tmux >/dev/null 2>&1; then
   SESSION_NAME="ccide-${PWD:t}-$$"
   QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
   exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-    "export CCIDE_BACKEND=tmux; exec ${(q)0} --tmux ${QUOTED_ORIG}"
+    "export CCIDE_BACKEND=tmux; exec ${(q)0} ${QUOTED_ORIG} --tmux"
 fi
 
 if [[ -n "${CLAUDECODE:-}" ]]; then

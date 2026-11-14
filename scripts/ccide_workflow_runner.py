@@ -57,15 +57,17 @@ def resolve_roles(cfg: dict, preset: str | None = None, role_overrides=None):
         for r in ("scout", "coder", "reviewer", "plan", "workflow")
     }
     items = [f"{k}={v}" for k, v in role_overrides.items()] if isinstance(role_overrides, dict) else list(role_overrides or [])
+    valid_efforts = {"low", "med", "medium", "high", "xhigh", "max", "inherit"}
     for spec in items:
         if "=" not in spec:
             continue
         r_name, val = (x.strip() for x in spec.split("=", 1))
         if ":" in val:
             m_val, e_val = val.rsplit(":", 1)
-            roles[r_name] = {"models": [m_val.strip()], "effort": e_val.strip()}
-        else:
-            roles[r_name] = {"models": [val], "effort": (roles.get(r_name) or {}).get("effort", "medium")}
+            if e_val.strip().lower() in valid_efforts:
+                roles[r_name] = {"models": [m_val.strip()], "effort": e_val.strip()}
+                continue
+        roles[r_name] = {"models": [val], "effort": (roles.get(r_name) or {}).get("effort", "medium")}
     return preset_name, roles, list(cfg.get("model_pool") or [])
 
 
@@ -137,17 +139,21 @@ def build_catalog(cwd: str | None = None, repo_root: str = _DEFAULT_REPO_ROOT) -
 def resolve_workflow_source(target: str | None = None, cwd: str | None = None, file_path: str | None = None, inline_script: str | None = None, repo_root: str = _DEFAULT_REPO_ROOT):
     if inline_script is not None:
         return "<inline>", inline_script
-    cand = file_path or target
-    if cand and os.path.isfile(cand):
-        with open(cand, encoding="utf-8") as f:
-            return os.path.abspath(cand), f.read()
+    if file_path:
+        if os.path.isfile(file_path):
+            with open(file_path, encoding="utf-8") as f:
+                return os.path.abspath(file_path), f.read()
+        raise FileNotFoundError(f"Workflow not found: {file_path}")
     name = (target or "").removesuffix(".js")
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise FileNotFoundError(f"Workflow not found: {target}")
     for d in workflow_search_dirs(cwd, repo_root):
-        p = os.path.join(d, f"{name}.js")
-        if os.path.isfile(p):
+        real_d = os.path.realpath(d)
+        p = os.path.realpath(os.path.join(real_d, f"{name}.js"))
+        if os.path.commonpath([real_d, p]) == real_d and os.path.isfile(p):
             with open(p, encoding="utf-8") as f:
                 return p, f.read()
-    raise FileNotFoundError(f"Workflow not found: {cand}")
+    raise FileNotFoundError(f"Workflow not found: {target}")
 
 
 def _extract_stream_events(obj: dict):
@@ -194,10 +200,11 @@ def execute_workflow_stream(workflow=None, script=None, file_path=None, args=Non
         disp_model = dispatcher_model or (resolved_roles.get("workflow") or {}).get("models", ["claude-sonnet-4-6"])[0]
         if disp_model == "inherit":
             disp_model = "claude-sonnet-4-6"
-        claude_bin = os.environ.get("CCIDE_CLAUDE_BIN") or shutil.which("claude") or "claude"
+        claude_bin = os.environ.get("CCIDE_CLAUDE_BIN") or shutil.which("claude") or (shutil.which("claude.cmd") or shutil.which("claude.bat") if os.name == "nt" else None) or "claude"
         cmd = [claude_bin, "-p", "ultracode: Invoke the Workflow tool once now and return its output.", "--model", disp_model, "--effort", "low", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"]
-        with subprocess.Popen(cmd, cwd=cwd or os.getcwd(), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1) as proc:
-            run_id, transcript_dir, final_result = None, None, None
+        proc = subprocess.Popen(cmd, cwd=cwd or os.getcwd(), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        run_id, transcript_dir, final_result, rc = None, None, None, 1
+        try:
             assert proc.stdout is not None
             for line in proc.stdout:
                 s = line.strip()
@@ -218,10 +225,25 @@ def execute_workflow_stream(workflow=None, script=None, file_path=None, args=Non
                             final_result = ev["data"]["result"]
                     yield ev
             rc = proc.wait()
+        finally:
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
         journal = []
         if transcript_dir and os.path.isfile(os.path.join(transcript_dir, "journal.jsonl")):
             with open(os.path.join(transcript_dir, "journal.jsonl"), encoding="utf-8") as jf:
-                journal = [json.loads(jl) for jl in jf if jl.strip()]
+                for jl in jf:
+                    if jl.strip():
+                        try:
+                            journal.append(json.loads(jl))
+                        except Exception:
+                            pass
         yield {"event": "workflow_result", "data": {"ok": rc == 0, "run_id": run_id, "transcript_dir": transcript_dir, "journal": journal, "result": final_result}}
     finally:
         if os.path.exists(dispatch_path):

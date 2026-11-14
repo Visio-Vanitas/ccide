@@ -189,6 +189,10 @@ pub fn run(args: &[String]) {
                         .status();
                 }
             }
+            if !yazi_id.is_empty() {
+                let _ = fs::remove_file(ipc_path(&format!("panes_{yazi_id}.txt")));
+                let _ = fs::remove_file(ipc_path(&format!("ghostty_w_{yazi_id}.txt")));
+            }
         }
         "rebalance" => {
             if env::var("TMUX").map(|s| !s.is_empty()).unwrap_or(false) {
@@ -199,7 +203,7 @@ pub fn run(args: &[String]) {
                     .status();
                 return;
             }
-            if is_ghostty_env() {
+            if is_ghostty_env() && ghostty::probe_ghostty_native_capable(&home) {
                 rebalance_ghostty_panes(30);
                 return;
             }
