@@ -1,13 +1,4 @@
-//! Per-Model Monotonic Stream `TPS` & `TTFT` (First-Token Latency) Tracker (`src/tui/context/perf.rs`).
-//!
-//! Combines two telemetry sources per canonical `model_short`:
-//! 1. **Exact Monotonic Stream Metrics (`<ipc_dir>/pf_<claude_pid>.jsonl`)**:
-//!    Emitted by `export_api_perf_metrics` inside Claude Code with hardware-monotonic
-//!    `ttftMs` (`t`), `firstContentMs` (`f`), `durationMs` (`d`), and `output_tokens` (`o`).
-//!    Computes pure generation `TPS = sum(o) * 1000 / sum(max(1, d - ttft))` and mean `TTFT`.
-//! 2. **Zero-Patch `.jsonl` Millisecond Fallback**:
-//!    Computes end-to-end `TPS` from `api-request` -> `assistant` ISO-8601 millisecond deltas
-//!    on pre-patch/historical transcripts when exact stream samples are not yet present.
+//! Per-Model Monotonic Stream (`pf_<pid>.jsonl`) & `.jsonl` Fallback `TPS` / `TTFT` Tracker.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -89,7 +80,11 @@ impl PerfStreamTracker {
         if f.read_to_end(&mut raw).is_err() {
             return;
         }
-        for line in String::from_utf8_lossy(&raw).lines() {
+        let Some(nl_pos) = raw.iter().rposition(|&b| b == b'\n') else {
+            return;
+        };
+        let consumed = (nl_pos + 1) as u64;
+        for line in String::from_utf8_lossy(&raw[..=nl_pos]).lines() {
             let Some(m) = extract_json_str(line, "m") else {
                 continue;
             };
@@ -107,7 +102,7 @@ impl PerfStreamTracker {
                 });
             }
         }
-        self.offset = len;
+        self.offset += consumed;
     }
 }
 
@@ -119,6 +114,8 @@ pub struct ModelPerfAccum {
     ttft_cnt: u64,
     fb_out_tok: u64,
     fb_dur_ms: u64,
+    fb_ttft_sum_ms: u64,
+    fb_ttft_cnt: u64,
 }
 
 impl ModelPerfAccum {
@@ -133,17 +130,41 @@ impl ModelPerfAccum {
             self.ttft_cnt = self.ttft_cnt.saturating_add(1);
         }
         let gen_ms = s.dur_ms.saturating_sub(eff_ttft);
-        let span_ms = if gen_ms >= 20 { gen_ms } else { s.dur_ms };
+        // Guard buffered proxies (`gen_ms < 250ms` or `> 800 tok/s` burst) -> fall back to `dur_ms`
+        let span_ms = if gen_ms >= 250 && (s.out_tok.saturating_mul(1_000) / gen_ms) <= 800 {
+            gen_ms
+        } else {
+            s.dur_ms
+        };
         if s.out_tok > 0 && (20..=600_000).contains(&span_ms) {
             self.exact_out_tok = self.exact_out_tok.saturating_add(s.out_tok);
             self.exact_gen_ms = self.exact_gen_ms.saturating_add(span_ms);
         }
     }
 
-    pub fn record_fallback(&mut self, out_tok: u64, dur_ms: u64) {
+    pub fn record_fallback(
+        &mut self,
+        out_tok: u64,
+        first_ms: u64,
+        dur_ms: u64,
+        first_bytes: u64,
+        total_bytes: u64,
+    ) {
         if out_tok > 0 && (50..=600_000).contains(&dur_ms) {
             self.fb_out_tok = self.fb_out_tok.saturating_add(out_tok);
             self.fb_dur_ms = self.fb_dur_ms.saturating_add(dur_ms);
+        }
+        if (20..=300_000).contains(&first_ms) {
+            let tail_ms = dur_ms.saturating_sub(first_ms);
+            let tail_b = total_bytes.saturating_sub(first_bytes);
+            let est = if tail_ms >= 200 && tail_b >= 64 {
+                let b1_ms = ((first_bytes as f64) * (tail_ms as f64) / (tail_b as f64)) as u64;
+                first_ms.saturating_sub(b1_ms).max(50)
+            } else {
+                first_ms
+            };
+            self.fb_ttft_sum_ms = self.fb_ttft_sum_ms.saturating_add(est);
+            self.fb_ttft_cnt = self.fb_ttft_cnt.saturating_add(1);
         }
     }
 
@@ -155,7 +176,10 @@ impl ModelPerfAccum {
         } else {
             None
         };
-        let ttft_ms = (self.ttft_cnt > 0).then(|| self.ttft_sum_ms / self.ttft_cnt);
+        let ttft_ms = self
+            .ttft_sum_ms
+            .checked_div(self.ttft_cnt)
+            .or_else(|| self.fb_ttft_sum_ms.checked_div(self.fb_ttft_cnt));
         (tps, ttft_ms)
     }
 }
@@ -262,14 +286,14 @@ mod tests {
                     && !r.text.contains('⚡'))
         );
         let (c2, _) = build_cost_panel(&snap, 42, 14, 0, 2, false, &pal);
-        assert!(c2
-            .rows
-            .iter()
-            .any(|r| r.text.contains("10t · I") && !r.text.contains("TPS")));
+        assert!(c2.rows.iter().any(|r| r.text.contains("50.00k")
+            && r.text.contains("900.0k")
+            && r.text.contains("8.00k")
+            && !r.text.contains("TPS")));
         let (c1, _) = build_cost_panel(&snap, 42, 14, 0, 1, false, &pal);
         assert!(c1
             .rows
             .iter()
-            .all(|r| !r.text.contains("10t · I") && !r.text.contains("TPS")));
+            .all(|r| !r.text.contains("50.00k") && !r.text.contains("TPS")));
     }
 }

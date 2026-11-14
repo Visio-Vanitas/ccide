@@ -96,7 +96,11 @@ pub fn is_internal_or_temp_path(abs_path: &str, home: &str) -> bool {
     if !home_norm.is_empty() {
         let claude_proj = format!("{}/.claude/projects/", home_norm);
         let cc_cache = format!("{}/.cache/cc-ide/", home_norm);
-        if norm.starts_with(&claude_proj) || norm.starts_with(&cc_cache) {
+        let home_lib = format!("{}/.lib/", home_norm);
+        if norm.starts_with(&claude_proj)
+            || norm.starts_with(&cc_cache)
+            || norm.starts_with(&home_lib)
+        {
             return true;
         }
     }
@@ -104,7 +108,6 @@ pub fn is_internal_or_temp_path(abs_path: &str, home: &str) -> bool {
         || norm.starts_with("/private/tmp/")
         || norm.contains("/.cache/cc-ide/")
         || norm.contains("/.claude/projects/")
-        || norm.contains("/.lib/")
         || norm.contains("/tmp/claude-")
     {
         return true;
@@ -219,6 +222,11 @@ mod tests {
         assert!(!is_internal_or_temp_path(
             r"C:\Users\dev\repo\src\main.rs",
             r"C:\Users\dev"
+        ));
+        assert!(!is_internal_or_temp_path("/repo/.lib/foo.rs", "/Users/dev"));
+        assert!(is_internal_or_temp_path(
+            "/Users/dev/.lib/foo.rs",
+            "/Users/dev"
         ));
     }
 }

@@ -43,12 +43,17 @@ pub fn focus_center_after_view_switch(
     if let Some(rest) = spec.strip_prefix("tmux:") {
         let center_pane = rest.split(':').next().unwrap_or("");
         if !center_pane.is_empty() {
-            let _ = Command::new("tmux")
+            if let Ok(mut child) = Command::new("tmux")
                 .args(["select-pane", "-t", center_pane])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .spawn();
+                .spawn()
+            {
+                let _ = std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
             return;
         }
     }
@@ -89,7 +94,7 @@ pub fn focus_center_after_view_switch(
     let ws = format!("{}/.claude/scripts/iterm2_workspace.py", home);
     if Path::new(&py).exists() && Path::new(&ws).exists() {
         let rank_s = footer_rank.to_string();
-        let _ = Command::new(&py)
+        if let Ok(mut child) = Command::new(&py)
             .args([
                 ws.as_str(),
                 "switch-subagent",
@@ -101,7 +106,12 @@ pub fn focus_center_after_view_switch(
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn();
+            .spawn()
+        {
+            let _ = std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
     }
 }
 

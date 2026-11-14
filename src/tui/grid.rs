@@ -67,10 +67,13 @@ pub fn format_top_border(
         &pal.border
     };
     let badge_col = if focused { &pal.text } else { &pal.dim };
-    let t_clean = format!(" {} ", title.trim());
-    let t_w = display_width(&t_clean);
     let inner = cols.saturating_sub(2);
-    let max_badge_inner = inner.saturating_sub(t_w + 5);
+    if inner < 4 {
+        return format!("{border}╭{}╮{RESET}", "─".repeat(inner));
+    }
+    let raw_t = title.trim();
+    let raw_t_w = display_width(raw_t);
+    let max_badge_inner = inner.saturating_sub(raw_t_w + 2 + 5);
     let b_clean = if badge.trim().is_empty() || max_badge_inner < 4 {
         String::new()
     } else {
@@ -78,6 +81,13 @@ pub fn format_top_border(
         format!(" {} ", fit)
     };
     let b_w = display_width(&b_clean);
+    let t_fit = if inner < raw_t_w + 4 + b_w {
+        trunc_to_width(raw_t, inner.saturating_sub(b_w + 4).max(1))
+    } else {
+        raw_t.to_string()
+    };
+    let t_clean = format!(" {} ", t_fit);
+    let t_w = display_width(&t_clean);
     let dashes = inner.saturating_sub(1 + t_w + b_w + if b_w > 0 { 1 } else { 0 });
     if b_w > 0 {
         format!(

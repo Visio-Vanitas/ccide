@@ -6,6 +6,7 @@
 
 use std::ptr;
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 
 use crate::ffi::win_sys::*;
 use crate::ffi::{DIRTY_EVENT, RUNNING};
@@ -33,6 +34,7 @@ pub struct ConsoleRawSession {
     orig_out_mode: u32,
     has_in: bool,
     has_out: bool,
+    pending: Mutex<Vec<u8>>,
 }
 
 impl ConsoleRawSession {
@@ -82,11 +84,22 @@ impl ConsoleRawSession {
                 orig_out_mode,
                 has_in,
                 has_out,
+                pending: Mutex::new(Vec::new()),
             }
         }
     }
 
     pub fn poll_stdin(&self, buf: &mut [u8], timeout_ms: i32) -> Option<usize> {
+        if !buf.is_empty() {
+            if let Ok(mut q) = self.pending.lock() {
+                if !q.is_empty() {
+                    let n = q.len().min(buf.len());
+                    buf[..n].copy_from_slice(&q[..n]);
+                    q.drain(..n);
+                    return Some(n);
+                }
+            }
+        }
         unsafe {
             let t_ms = if timeout_ms < 0 {
                 u32::MAX
@@ -140,6 +153,9 @@ impl ConsoleRawSession {
                             }
                         } else if rec.event_type == 0x0002 {
                             let me = rec.event.mouse;
+                            if me.event_flags == 0x0001 && me.button_state == 0 {
+                                continue;
+                            }
                             let col = (me.mouse_pos.x.max(0) as usize) + 1;
                             let row = (me.mouse_pos.y.max(0) as usize) + 1;
                             if (me.event_flags & 0x0004) != 0 {
@@ -160,9 +176,14 @@ impl ConsoleRawSession {
                         }
                     }
                     let bytes = out.as_bytes();
-                    if !bytes.is_empty() {
+                    if !bytes.is_empty() && !buf.is_empty() {
                         let copy_n = bytes.len().min(buf.len());
                         buf[..copy_n].copy_from_slice(&bytes[..copy_n]);
+                        if bytes.len() > copy_n {
+                            if let Ok(mut q) = self.pending.lock() {
+                                q.extend_from_slice(&bytes[copy_n..]);
+                            }
+                        }
                         return Some(copy_n);
                     }
                 }

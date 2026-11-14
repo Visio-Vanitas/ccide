@@ -57,16 +57,25 @@ pub fn strip_jsonc(raw: &str) -> String {
     while i < n {
         if in_str {
             if bytes[i] == b'\\' && i + 1 < n {
-                out.push(bytes[i] as char);
-                out.push(bytes[i + 1] as char);
-                i += 2;
+                if let Some(bs) = raw[i..].chars().next() {
+                    out.push(bs);
+                    i += bs.len_utf8();
+                }
+                if let Some(ch) = raw[i..].chars().next() {
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
                 continue;
             }
             if bytes[i] == b'"' {
                 in_str = false;
             }
-            out.push(bytes[i] as char);
-            i += 1;
+            if let Some(ch) = raw[i..].chars().next() {
+                out.push(ch);
+                i += ch.len_utf8();
+            } else {
+                i += 1;
+            }
         } else if bytes[i] == b'"' {
             in_str = true;
             out.push('"');
@@ -82,8 +91,10 @@ pub fn strip_jsonc(raw: &str) -> String {
                 i += 1;
             }
             i = (i + 2).min(n);
+        } else if let Some(ch) = raw[i..].chars().next() {
+            out.push(ch);
+            i += ch.len_utf8();
         } else {
-            out.push(bytes[i] as char);
             i += 1;
         }
     }
@@ -147,7 +158,7 @@ pub fn parse_section_into(section_obj: &str, dst: &mut HashMap<String, ModelRate
                                     depth -= 1;
                                     if depth == 0 {
                                         if let Some(rate) =
-                                            parse_rate_obj(&section_obj[obj_start..=j])
+                                            parse_rate_obj(&section_obj[obj_start..=j], &key)
                                         {
                                             dst.insert(key, rate);
                                         }
@@ -168,7 +179,7 @@ pub fn parse_section_into(section_obj: &str, dst: &mut HashMap<String, ModelRate
     }
 }
 
-fn parse_rate_obj(obj: &str) -> Option<ModelRate> {
+fn parse_rate_obj(obj: &str, key: &str) -> Option<ModelRate> {
     let input = extract_json_f64(obj, "input")?;
     let output = extract_json_f64(obj, "output")?;
     let cw5 = extract_json_f64(obj, "cache_write_5m")
@@ -177,7 +188,8 @@ fn parse_rate_obj(obj: &str) -> Option<ModelRate> {
     let cw1h = extract_json_f64(obj, "cache_write_1h").unwrap_or(cw5);
     let cr = extract_json_f64(obj, "cache_read").unwrap_or(input * 0.1);
     let above_tokens = extract_json_u64(obj, "above_tokens").filter(|&v| v > 0);
-    let request_wide_tier = obj.contains("haiku-5-5") || above_tokens == Some(100_000);
+    let request_wide_tier = key.contains("haiku-5-5")
+        || crate::json::extract_json_bool(obj, "request_wide_tier") == Some(true);
     Some(ModelRate {
         input,
         output,

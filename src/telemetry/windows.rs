@@ -212,7 +212,7 @@ pub fn sample_metrics(
     if need_spawn {
         if let Some(nvsmi) = find_executable("nvidia-smi", &user_home_dir()) {
             if let Ok(out_file) = fs::File::create(&nv_cache) {
-                let _ = Command::new(nvsmi)
+                if let Ok(mut child) = Command::new(nvsmi)
                     .args([
                         "--query-gpu=utilization.gpu,memory.used",
                         "--format=csv,noheader,nounits",
@@ -220,7 +220,12 @@ pub fn sample_metrics(
                     .stdin(Stdio::null())
                     .stdout(Stdio::from(out_file))
                     .stderr(Stdio::null())
-                    .spawn();
+                    .spawn()
+                {
+                    let _ = std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
             }
         }
     }

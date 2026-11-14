@@ -114,7 +114,16 @@ pub fn compact_model_for_width(name: &str, max_cols: usize) -> String {
     let avail = max_cols - 1;
     let tail_cols = (avail / 2).max(3);
     let head_cols = avail - tail_cols;
-    let head_end = floor_char_boundary(&compact_cand, head_cols);
+    let mut head_end = 0usize;
+    let mut head_acc = 0usize;
+    for (idx, ch) in compact_cand.char_indices() {
+        let cw = crate::tui::width::char_display_width(ch);
+        if head_acc + cw > head_cols {
+            break;
+        }
+        head_acc += cw;
+        head_end = idx + ch.len_utf8();
+    }
     let mut tail_start = compact_cand.len();
     let mut acc = 0usize;
     for (idx, ch) in compact_cand.char_indices().rev() {

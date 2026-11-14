@@ -20,12 +20,16 @@ pub struct TurnRecord {
     pub cc_1h_tok: u64,
     pub cr_tok: u64,
     pub out_tok: u64,
+    pub first_ms: u64,
     pub dur_ms: u64,
+    pub first_bytes: u64,
+    pub total_bytes: u64,
     pub fast_mode: bool,
     pub us_geo: bool,
     pub web_search_reqs: u64,
 }
 
+#[derive(Default)]
 pub struct TranscriptCtxTracker {
     pub offset: u64,
     pub shapes: HashMap<String, (u64, u64)>,
@@ -44,35 +48,13 @@ pub struct TranscriptCtxTracker {
     pub cr_tok: u64,
 }
 
-impl TranscriptCtxTracker {
-    pub fn new() -> Self {
-        Self {
-            offset: 0,
-            shapes: HashMap::new(),
-            blobs: HashMap::new(),
-            live_hashes: Vec::new(),
-            active_shape: (0, 0),
-            has_api_requests: false,
-            fb_weights: BlobWeights::default(),
-            turns_by_id: HashMap::new(),
-            anon_seq: 0,
-            first_ts_s: None,
-            last_ts_s: None,
-            last_req_ts_ms: None,
-            in_tok: 0,
-            cc_tok: 0,
-            cr_tok: 0,
-        }
-    }
-}
-
 pub fn update_transcript_ctx_tracker(jpath: &Path, is_sub: bool, tr: &mut TranscriptCtxTracker) {
     let Ok(meta) = fs::metadata(jpath) else {
         return;
     };
     let len = meta.len();
     if len < tr.offset {
-        *tr = TranscriptCtxTracker::new();
+        *tr = TranscriptCtxTracker::default();
     }
     if len == tr.offset {
         return;
@@ -87,7 +69,11 @@ pub fn update_transcript_ctx_tracker(jpath: &Path, is_sub: bool, tr: &mut Transc
     if f.read_to_end(&mut raw).is_err() {
         return;
     }
-    for line in String::from_utf8_lossy(&raw).lines() {
+    let Some(nl_pos) = raw.iter().rposition(|&b| b == b'\n') else {
+        return;
+    };
+    let consumed = (nl_pos + 1) as u64;
+    for line in String::from_utf8_lossy(&raw[..=nl_pos]).lines() {
         if line.contains("\"api-request-shape\"") {
             if let (Some(sh_hash), Some(sh_obj)) = (
                 extract_json_str(line, "shapeHash"),
@@ -149,6 +135,14 @@ pub fn update_transcript_ctx_tracker(jpath: &Path, is_sub: bool, tr: &mut Transc
             if !tr.has_api_requests {
                 tr.fb_weights.add_assign(classify_message_bytes(msg_obj));
             }
+            if extract_json_str(msg_obj, "role").as_deref() == Some("user") {
+                if let Some(ms) =
+                    extract_json_str(line, "timestamp").and_then(|s| parse_iso8601_ms(&s))
+                {
+                    tr.last_req_ts_ms = Some(ms);
+                }
+                continue;
+            }
             let msg_model = extract_json_str(msg_obj, "model").unwrap_or_default();
             if msg_model == "<synthetic>" {
                 continue;
@@ -203,7 +197,10 @@ pub fn update_transcript_ctx_tracker(jpath: &Path, is_sub: bool, tr: &mut Transc
                                 cc_1h_tok: i_1h,
                                 cr_tok: i_cr,
                                 out_tok: i_out,
+                                first_ms: 0,
                                 dur_ms: 0,
+                                first_bytes: 0,
+                                total_bytes: 0,
                                 fast_mode: false,
                                 us_geo,
                                 web_search_reqs: 0,
@@ -244,6 +241,21 @@ pub fn update_transcript_ctx_tracker(jpath: &Path, is_sub: bool, tr: &mut Transc
                     (Some(t0), Some(t1)) if t1 > t0 => t1 - t0,
                     _ => 0,
                 };
+                let blk_b = extract_json_array_slice(msg_obj, "content")
+                    .map(|s| s.len() as u64)
+                    .unwrap_or(0);
+                let prev = tr.turns_by_id.get(&base_key);
+                let first_ms = prev
+                    .map(|p| p.first_ms)
+                    .filter(|&m| m > 0)
+                    .unwrap_or(dur_ms);
+                let first_bytes = prev
+                    .map(|p| p.first_bytes)
+                    .filter(|&b| b > 0)
+                    .unwrap_or(blk_b);
+                let total_bytes = prev
+                    .map(|p| p.total_bytes.saturating_add(blk_b))
+                    .unwrap_or(blk_b);
                 tr.turns_by_id.insert(
                     base_key,
                     TurnRecord {
@@ -253,7 +265,10 @@ pub fn update_transcript_ctx_tracker(jpath: &Path, is_sub: bool, tr: &mut Transc
                         cc_1h_tok: cc_1h,
                         cr_tok: cr_t,
                         out_tok: out_t,
+                        first_ms,
                         dur_ms,
+                        first_bytes,
+                        total_bytes,
                         fast_mode,
                         us_geo,
                         web_search_reqs: web_reqs,
@@ -262,5 +277,5 @@ pub fn update_transcript_ctx_tracker(jpath: &Path, is_sub: bool, tr: &mut Transc
             }
         }
     }
-    tr.offset = len;
+    tr.offset += consumed;
 }
