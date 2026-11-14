@@ -45,6 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       is_minor: ${{ steps.ver.outputs.is_minor }}
+      base_ver: ${{ steps.ver.outputs.base_ver }}
     steps:
       - uses: actions/checkout@v7
 
@@ -52,6 +53,7 @@ jobs:
         id: ver
         run: |
           BASE_VER="$(grep '^version =' Cargo.toml | head -n 1 | cut -d '"' -f 2)"
+          echo "base_ver=${BASE_VER}" >> "$GITHUB_OUTPUT"
           if [[ "${BASE_VER}" == *.0 ]]; then
             echo "is_minor=true" >> "$GITHUB_OUTPUT"
           else
@@ -101,11 +103,16 @@ jobs:
     steps:
       # `0.x.y` patches skip the six-target build & test matrix (binaries only ship on 0.X.0
       # milestones), but the job must still report success because branch protection requires
-      # these `Build & Test (<target>)` contexts.
+      # these `Build & Test (<target>)` contexts. Keep this POSIX-only (`shell: bash`) so it
+      # behaves identically on the Windows runners.
       - name: Patch Release — Skip 6-Target Build Matrix
         if: needs.rust-msrv-and-lint.outputs.is_minor != 'true'
+        shell: bash
+        env:
+          BASE_VER: ${{ needs.rust-msrv-and-lint.outputs.base_ver }}
+          TARGET: ${{ matrix.target }}
         run: |
-          echo "::notice::Patch release $(grep '^version =' Cargo.toml | head -n 1 | cut -d '\"' -f 2): skipping ${{ matrix.target }} build & test (0.X.0 milestones only)."
+          echo "::notice::Patch release v${BASE_VER}: skipping ${TARGET} build & test (0.X.0 milestones only)."
 
       - uses: actions/checkout@v7
         if: needs.rust-msrv-and-lint.outputs.is_minor == 'true'
