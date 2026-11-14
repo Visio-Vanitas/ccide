@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.8.0] - 2026-11-14
+
 ### Added
 - **Zero-Patch Subagent & Native `Workflow` Model/Effort Orchestrator (`src/orchestrator/`, `src/commands/pre_tool_hook.rs`, `src/commands/sidebar/orch_panel.rs`, `hooks/hooks.json`, `assets/orchestrator.json`, `skills/orchestrate/SKILL.md`)**:
   - Added `PreToolUse` model/effort routing across `Scout`, `Coder`, `Reviewer`, `Plan`, and `Workflow` roles via `~/.config/cc-ide/orchestrator.json`, an interactive Right Sidebar `ORCHESTRATOR` toggle panel, and `ccide orchestrator` (`status`, `preset`, `sync`).
@@ -117,7 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shared Cross-Platform Hardware Oscilloscope & Quadrant Model Logos (`src/telemetry/`, `src/tui/logo.rs`)**:
   - Single-instance `500 ms` `/tmp/.cc-ide/hw_telemetry_v1.bin` binary snapshot shared across all open tabs (`< 2 µs` read) rendering sub-pixel `CPU`, `GPU` (`IOKit AGX` / Linux `sysfs` & `nvidia-smi`), `MEM`, and `NET` curves alongside dynamic 2×2 Quadrant vector model logos (`CLAUDE`, `GEMINI`, `DEEPSEEK`, `OPENAI`, `GROK`).
 
-[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.5.0...v0.7.0
 [0.5.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.4.0-rc.1...v0.4.0

@@ -132,7 +132,7 @@ jobs:
           zsh -n install.sh
           zsh -n scripts/ccide
           zsh -n scripts/pane-runner.sh
-          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/git_smooth_graph.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py
+          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/git_smooth_graph.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py scripts/ccide_workflow_runner.py scripts/ccide_workflow_server.py
 
       - name: Validate Plugin & Marketplace JSON Manifests & Version Parity
         run: |
@@ -166,6 +166,10 @@ jobs:
           vw = load_jsonc("assets/viewer.json")
           assert vw.get("wrap") is False and vw.get("wrap_style") == "vi" and vw.get("sprite_mode") in ("auto", "ascii", "image")
           print("OK: assets/viewer.json")
+
+          orch = load_jsonc("assets/orchestrator.json")
+          assert "active_preset" in orch and "model_pool" in orch and "presets" in orch
+          print("OK: assets/orchestrator.json")
 
           pr = load_jsonc("assets/pricing.json")
           assert isinstance(pr.get("models"), dict) and len(pr["models"]) >= 30

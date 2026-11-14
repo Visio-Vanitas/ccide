@@ -43,7 +43,7 @@ def _format_event_text(ev: dict) -> str:
 
 
 class WorkflowHandler(BaseHTTPRequestHandler):
-    server_version = "ccide-workflow-server/0.7.0"
+    server_version = "ccide-workflow-server/0.8.0"
 
     def log_message(self, format: str, *args):  # noqa: A002
         if os.environ.get("CCIDE_WORKFLOW_SERVER_QUIET") != "1":
