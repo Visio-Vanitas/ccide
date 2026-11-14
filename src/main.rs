@@ -11,6 +11,7 @@
 mod commands;
 mod ffi;
 mod json;
+mod orchestrator;
 mod platform;
 mod session;
 mod telemetry;
@@ -35,6 +36,8 @@ fn main() {
             commands::sidebar::run(&target_dir, yazi_id, shell_pid);
         }
         "pane-runner" => commands::pane_runner::run(&args),
+        "pre-tool-hook" => commands::pre_tool_hook::run_pre_tool_hook(),
+        "orchestrator" => commands::pre_tool_hook::run_orchestrator_cli(&args),
         "yazi-hook" => commands::yazi_hook::run(),
         "statusline" => commands::statusline::run(),
         "workspace" => commands::workspace::run(&args),

@@ -122,7 +122,7 @@ pub fn extract_tool_line_target(
     (0, 0)
 }
 
-fn write_focus_marker(path_key: &str, line: usize, span: usize, now_s: u64) {
+fn write_focus_marker(path_key: &str, line: usize, span: usize, pending: bool, now_s: u64) {
     if path_key.is_empty() {
         return;
     }
@@ -136,7 +136,13 @@ fn write_focus_marker(path_key: &str, line: usize, span: usize, now_s: u64) {
         yazi_url_hash(path_key),
         std::process::id()
     ));
-    let body = format!("{}\n{}\n1\n{}\n", line, span.max(1), now_s);
+    let body = format!(
+        "{}\n{}\n{}\n{}\n",
+        line,
+        span.max(1),
+        u8::from(pending),
+        now_s
+    );
     if fs::write(&tmp, &body).is_ok() && fs::rename(&tmp, &fpath).is_err() {
         let _ = fs::write(&fpath, &body);
         let _ = fs::remove_file(&tmp);
@@ -162,11 +168,11 @@ pub fn emit_yazi_reveal_at(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    write_focus_marker(&mapped, line, span, now_s);
+    write_focus_marker(&mapped, line, span, true, now_s);
     if let Ok(canon) = clean_canonicalize(file_path) {
         let canon_s = canon.to_string_lossy();
         if canon_s != mapped {
-            write_focus_marker(&canon_s, line, span, now_s);
+            write_focus_marker(&canon_s, line, span, false, now_s);
         }
     }
 
@@ -174,6 +180,7 @@ pub fn emit_yazi_reveal_at(
         return;
     };
     let hscroll_plugin = yazi_config_dir(home).join("plugins/hscroll.yazi/main.lua");
+    let mut cmd = Command::new(ya_bin);
     if hscroll_plugin.exists() {
         let escaped = mapped.replace('\'', "'\\''");
         let plugin_arg = if line > 0 {
@@ -181,19 +188,17 @@ pub fn emit_yazi_reveal_at(
         } else {
             format!("reveal '{}'", escaped)
         };
-        let _ = Command::new(ya_bin)
-            .args(["emit-to", tab_yazi_id, "plugin", "hscroll", &plugin_arg])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+        cmd.args(["emit-to", tab_yazi_id, "plugin", "hscroll", &plugin_arg]);
     } else {
-        let _ = Command::new(ya_bin)
-            .args(["emit-to", tab_yazi_id, "reveal", &mapped])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+        cmd.args(["emit-to", tab_yazi_id, "reveal", &mapped]);
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Ok(mut c) = cmd.spawn() {
+        let _ = std::thread::spawn(move || {
+            let _ = c.wait();
+        });
     }
 }
 
@@ -207,12 +212,16 @@ pub fn emit_yazi_blur(home: &str, tab_yazi_id: &str) {
         return;
     }
     if let Some(ya_bin) = find_executable("ya", home) {
-        let _ = Command::new(ya_bin)
-            .args(["emit-to", tab_yazi_id, "plugin", "hscroll", "blur"])
+        let mut cmd = Command::new(ya_bin);
+        cmd.args(["emit-to", tab_yazi_id, "plugin", "hscroll", "blur"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+            .stderr(Stdio::null());
+        if let Ok(mut c) = cmd.spawn() {
+            let _ = std::thread::spawn(move || {
+                let _ = c.wait();
+            });
+        }
     }
 }
 

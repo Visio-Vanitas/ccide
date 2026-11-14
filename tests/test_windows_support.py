@@ -52,16 +52,20 @@ class CrossPlatformPackagingTests(unittest.TestCase):
             os.path.join(_REPO_ROOT, "src", "tui", "context"),
             os.path.join(_REPO_ROOT, "src", "ffi"),
             os.path.join(_REPO_ROOT, "src", "telemetry"),
+            os.path.join(_REPO_ROOT, "src", "orchestrator"),
         ]
         extra_files = [
             os.path.join(_REPO_ROOT, "src", "platform.rs"),
             os.path.join(_REPO_ROOT, "src", "tui", "layout.rs"),
             os.path.join(_REPO_ROOT, "src", "commands", "pane_runner.rs"),
+            os.path.join(_REPO_ROOT, "src", "commands", "pre_tool_hook.rs"),
             os.path.join(_REPO_ROOT, "scripts", "bun_pe.py"),
             os.path.join(_REPO_ROOT, "scripts", "cc_patch_rules.py"),
             os.path.join(_REPO_ROOT, "scripts", "cc_schema_inspector.py"),
             os.path.join(_REPO_ROOT, "scripts", "cc-maint.py"),
             os.path.join(_REPO_ROOT, "scripts", "patch_claude_binary.py"),
+            os.path.join(_REPO_ROOT, "scripts", "ccide_workflow_runner.py"),
+            os.path.join(_REPO_ROOT, "scripts", "ccide_workflow_server.py"),
         ]
         targets = list(extra_files)
         for d in checked_dirs:

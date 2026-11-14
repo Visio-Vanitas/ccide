@@ -144,7 +144,10 @@ def render_smooth_dag_rows(
             if x == col * 2:
                 row_chars.append(f"{commit_color}{node_glyph}{RESET}")
             else:
-                ch = MASK_GLYPH.get(masks[x], "│")
+                if masks[x] == (UP | DOWN | LEFT | RIGHT):
+                    ch = "─"
+                else:
+                    ch = MASK_GLYPH.get(masks[x], "│")
                 c_ansi = colors[x]
                 row_chars.append(f"{c_ansi}{ch}{RESET}" if (ch != " " and c_ansi) else ch)
 

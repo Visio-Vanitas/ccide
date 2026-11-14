@@ -18,6 +18,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import unicodedata
 
 if hasattr(signal, "SIGPIPE"):
@@ -61,14 +62,23 @@ def visible_width(s: str) -> int:
     return sum(char_cols(c) for c in strip_ansi(s))
 
 
+def get_ipc_dir() -> str:
+    return os.environ.get("CCIDE_IPC_DIR") or (
+        os.path.join(tempfile.gettempdir(), ".cc-ide") if os.name == "nt" else "/tmp/.cc-ide"
+    )
+
+
 def get_sid_str() -> str:
-    return os.environ.get("CCIDE_LG_SID", "").strip() or str(os.getsid(0))
+    return os.environ.get("CCIDE_LG_SID", "").strip() or str(
+        os.getsid(0) if hasattr(os, "getsid") else os.getppid()
+    )
 
 
 def write_full_lines_cache(sid_str: str, panel_w: int, full_lines: list[str]) -> None:
     try:
-        os.makedirs("/tmp/.cc-ide", exist_ok=True)
-        dst = f"/tmp/.cc-ide/lg_full_{sid_str}.json"
+        ipc_dir = get_ipc_dir()
+        os.makedirs(ipc_dir, exist_ok=True)
+        dst = os.path.join(ipc_dir, f"lg_full_{sid_str}.json")
         h = hashlib.blake2s(f"{panel_w}\0".encode("utf-8"), digest_size=12)
         for ln in full_lines:
             h.update(ln.encode("utf-8", errors="surrogatepass"))
@@ -230,8 +240,8 @@ def load_wrap_enabled(argv: list[str] | None = None) -> bool:
 def read_live_geom() -> tuple[int, int]:
     """Returns `(pane_cols, exact_main_inner_w)` from `pty-hscroll-bridge.py` if available."""
     try:
-        sid_str = os.environ.get("CCIDE_LG_SID", "").strip() or str(os.getsid(0))
-        geom_path = f"/tmp/.cc-ide/lg_geom_{sid_str}.txt"
+        sid_str = get_sid_str()
+        geom_path = os.path.join(get_ipc_dir(), f"lg_geom_{sid_str}.txt")
         if os.path.isfile(geom_path):
             with open(geom_path, "r", encoding="utf-8") as f:
                 parts = f.read().split()

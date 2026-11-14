@@ -16,6 +16,35 @@ pub fn fmt_tok_compact(tokens: u64) -> String {
     }
 }
 
+fn fmt_tok_sig(tokens: u64, sig_figs: usize) -> String {
+    if tokens < 1_000 {
+        return tokens.to_string();
+    }
+    let units: [(f64, char); 3] = [(1e3, 'k'), (1e6, 'M'), (1e9, 'B')];
+    let mut u_idx = usize::from(tokens >= 1_000_000) + usize::from(tokens >= 1_000_000_000);
+    let digits = |v: f64| 1 + usize::from(v >= 10.0) + usize::from(v >= 100.0);
+    loop {
+        let val = tokens as f64 / units[u_idx].0;
+        let dec = sig_figs.saturating_sub(digits(val));
+        let f = 10f64.powi(dec as i32);
+        let r = (val * f).round() / f;
+        if r >= 1000.0 && u_idx + 1 < units.len() {
+            u_idx += 1;
+            continue;
+        }
+        let prec = sig_figs.saturating_sub(digits(r));
+        return format!("{:.prec$}{}", r, units[u_idx].1, prec = prec);
+    }
+}
+
+pub fn fmt_tok_ir(tokens: u64) -> String {
+    fmt_tok_sig(tokens, 4)
+}
+
+pub fn fmt_tok_o(tokens: u64) -> String {
+    fmt_tok_sig(tokens, 3)
+}
+
 pub fn fmt_usd(v: f64) -> String {
     if v >= 100.0 {
         format!("${:.0}", v)

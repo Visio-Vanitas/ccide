@@ -176,9 +176,7 @@ pub fn aggregate_session_model_costs(
     }
 
     for (jp, file_is_sub) in all_paths {
-        let tr = trackers
-            .entry(jp.clone())
-            .or_insert_with(TranscriptCtxTracker::new);
+        let tr = trackers.entry(jp.clone()).or_default();
         update_transcript_ctx_tracker(&jp, file_is_sub, tr);
         if let Some(t0) = tr.first_ts_s {
             min_ts = Some(min_ts.map_or(t0, |cur| cur.min(t0)));
@@ -213,10 +211,13 @@ pub fn aggregate_session_model_costs(
             );
             cost_usd += act;
             uncached_usd += unc;
-            perf_map
-                .entry(short.clone())
-                .or_default()
-                .record_fallback(rec.out_tok, rec.dur_ms);
+            perf_map.entry(short.clone()).or_default().record_fallback(
+                rec.out_tok,
+                rec.first_ms,
+                rec.dur_ms,
+                rec.first_bytes,
+                rec.total_bytes,
+            );
             let entry = model_map.entry(short.clone()).or_insert(ModelCostEntry {
                 model_short: short,
                 family: fam,

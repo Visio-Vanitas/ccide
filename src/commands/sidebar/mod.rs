@@ -6,6 +6,7 @@ pub mod hit_mask;
 pub mod input;
 pub mod ipc;
 pub mod mouse_actions;
+pub mod orch_panel;
 pub mod subagents_panel;
 
 use std::collections::HashMap;
@@ -14,6 +15,7 @@ use std::io::Write;
 use std::sync::atomic::Ordering;
 
 use crate::ffi::{install_signal_handlers, ConsoleRawSession, DIRTY_EVENT, RUNNING};
+use crate::orchestrator::OrchestratorWatcher;
 use crate::platform::{cache_dir, ipc_dir, ipc_path, user_home_dir};
 use crate::session::transcript::SubagentItem;
 use crate::session::{
@@ -32,6 +34,7 @@ use ipc::{
     refresh_session_and_subagents, register_sidebar_tab, update_isolated_session_binding,
     write_active_view_state,
 };
+use orch_panel::build_orchestrator_panel;
 use subagents_panel::build_subagents_panel;
 
 pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
@@ -51,6 +54,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
 
     let mut logos = load_adaptive_logos(&home);
     let mut pal_watcher = PaletteWatcher::new(&home);
+    let mut orch_watcher = OrchestratorWatcher::new(&home);
     let mut telemetry = TelemetrySampler::new(48);
     let (mut sub_trackers, mut main_tracker, mut seen_sub_seq) =
         (HashMap::new(), HashMap::new(), HashMap::new());
@@ -96,12 +100,12 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         let has_running_sub = subagents.iter().any(|a| a.status == "running");
         let is_dirty = !fast_input_redraw && DIRTY_EVENT.swap(false, Ordering::SeqCst);
 
-        if !fast_input_redraw
-            && (is_dirty || tick % 2 == 0)
-            && (pal_watcher.reload_if_changed(&home) || logos.refresh_mode_if_changed(&home))
-        {
-            sel.cost_lines = logos.cost_lines;
-            prev_rows.clear();
+        if !fast_input_redraw && (is_dirty || tick % 2 == 0) {
+            if pal_watcher.reload_if_changed(&home) || logos.refresh_mode_if_changed(&home) {
+                sel.cost_lines = logos.cost_lines;
+                prev_rows.clear();
+            }
+            orch_watcher.reload_if_changed(&home);
         }
         let pal = &pal_watcher.palette;
 
@@ -162,21 +166,39 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         sel.sub_cursor = sel.sub_cursor.map(|c| c.min(subagents.len()));
 
         let sub_foc = sel.focus_zone == Some(FocusZone::Subagents);
-        let sub_out = build_subagents_panel(
-            geom.cols,
-            mid_h,
-            target_cwd,
-            &active_view_id,
-            sel.sub_cursor,
-            sub_foc,
-            &mut sel.sub_scroll,
-            &main_tool,
-            &main_file,
-            &subagents,
-            &cached_cfg,
-            tick,
-            pal,
-        );
+        let (mid_panel, running_cnt, viewport_h) = if sel.show_orchestrator {
+            let p = build_orchestrator_panel(
+                geom.cols,
+                mid_h,
+                &orch_watcher.cfg,
+                sel.orch_cursor,
+                sub_foc,
+                pal,
+            );
+            (
+                p,
+                subagents.iter().filter(|a| a.status == "running").count(),
+                mid_h.saturating_sub(2),
+            )
+        } else {
+            let o = build_subagents_panel(
+                geom.cols,
+                mid_h,
+                target_cwd,
+                &active_view_id,
+                sel.sub_cursor,
+                sub_foc,
+                &mut sel.sub_scroll,
+                &main_tool,
+                &main_file,
+                &subagents,
+                &cached_cfg,
+                &orch_watcher.cfg.active_preset,
+                tick,
+                pal,
+            );
+            (o.panel, o.running_cnt, o.viewport_h)
+        };
         if !fast_input_redraw || cached_ctx_snap.is_none() {
             telemetry.sample();
             let active_sub_m = active_sub
@@ -194,7 +216,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         }
         let ctx_snap = cached_ctx_snap.as_ref().expect("ctx_snap initialized");
 
-        let mut panels = vec![top_panel, sub_out.panel];
+        let mut panels = vec![top_panel, mid_panel];
         let (split_ctx_cost, ctx_box_h) = append_bottom_panels(
             &mut panels,
             &mut sel,
@@ -224,7 +246,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             fast_input_redraw = false;
             DIRTY_EVENT.store(true, Ordering::Relaxed);
             8
-        } else if sub_out.running_cnt > 0 {
+        } else if running_cnt > 0 {
             250
         } else {
             1000
@@ -242,7 +264,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 main_file: &main_file,
                 main_line,
                 main_span,
-                viewport_h: sub_out.viewport_h,
+                viewport_h,
                 cost_max_scroll,
                 hit_mask: SidebarGeomMask {
                     cols: geom.cols,
@@ -260,10 +282,13 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 &mut subagents,
                 &mut active_view_id,
                 &mut sel,
+                &mut orch_watcher.cfg,
             );
         }
         tick = tick.wrapping_add(1);
     }
+
+    bottom_panel::cleanup_sidebar_pid_files(tab_yazi_id, &c_sid, c_pid, &my_pid_str);
 
     let _ = stdout.write_all(
         b"\x1b_Ga=d,d=i,i=71,q=2\x1b\\\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1049l\x1b[?25h\x1b[0m\n",

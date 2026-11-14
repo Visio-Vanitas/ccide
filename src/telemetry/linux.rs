@@ -178,14 +178,19 @@ pub fn sample_metrics(
             .unwrap_or(true);
         if need_spawn {
             if let Ok(out_file) = fs::File::create(&nv_cache) {
-                let _ = Command::new("nvidia-smi")
+                if let Ok(mut child) = Command::new("nvidia-smi")
                     .args([
                         "--query-gpu=utilization.gpu,memory.used",
                         "--format=csv,noheader,nounits",
                     ])
                     .stdout(Stdio::from(out_file))
                     .stderr(Stdio::null())
-                    .spawn();
+                    .spawn()
+                {
+                    let _ = std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
             }
         }
     }

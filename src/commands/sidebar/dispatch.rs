@@ -11,6 +11,7 @@ use crate::commands::sidebar::mouse_actions::{
     apply_masked_action, dismiss_all_completed, dismiss_single_completed,
 };
 pub use crate::commands::sidebar::mouse_actions::{DispatchEnv, SidebarSelectState};
+use crate::orchestrator::{OrchestratorConfig, ALL_ROLES};
 use crate::session::transcript::SubagentItem;
 
 pub fn handle_input_batch(
@@ -20,6 +21,7 @@ pub fn handle_input_batch(
     subagents: &mut Vec<SubagentItem>,
     active_view_id: &mut String,
     sel: &mut SidebarSelectState,
+    orch_cfg: &mut OrchestratorConfig,
 ) {
     let (mut clear_all_done, mut restore_focus, mut switched_view) = (false, false, false);
     let m = &env.hit_mask;
@@ -36,6 +38,7 @@ pub fn handle_input_batch(
                 sel.pane_has_focus = false;
                 sel.focus_zone = None;
                 sel.sub_cursor = None;
+                sel.orch_cursor = None;
             }
             InputEvent::ToggleBottomPanel => {
                 sel.show_context = !sel.show_context;
@@ -46,8 +49,17 @@ pub fn handle_input_batch(
                     FocusZone::Telemetry
                 });
             }
+            InputEvent::ToggleOrchestrator => {
+                sel.show_orchestrator = !sel.show_orchestrator;
+                sel.sub_cursor = None;
+                sel.orch_cursor = None;
+                sel.focus_zone = Some(FocusZone::Subagents);
+            }
             InputEvent::Escape => {
-                if sel.sub_cursor.is_some() || sel.focus_zone.is_some() {
+                if sel.show_orchestrator {
+                    sel.show_orchestrator = false;
+                    sel.orch_cursor = None;
+                } else if sel.sub_cursor.is_some() || sel.focus_zone.is_some() {
                     sel.sub_cursor = None;
                     sel.focus_zone = None;
                 } else if active_view_id != "main" {
@@ -60,6 +72,10 @@ pub fn handle_input_batch(
             InputEvent::CursorUp => match sel.focus_zone {
                 Some(FocusZone::Cost) if sel.show_context => {
                     sel.cost_scroll = sel.cost_scroll.saturating_sub(1);
+                }
+                _ if sel.show_orchestrator => {
+                    sel.focus_zone = Some(FocusZone::Subagents);
+                    sel.orch_cursor = Some(sel.orch_cursor.unwrap_or(0).saturating_sub(1));
                 }
                 _ => {
                     sel.focus_zone = Some(FocusZone::Subagents);
@@ -79,6 +95,14 @@ pub fn handle_input_batch(
             InputEvent::CursorDown => match sel.focus_zone {
                 Some(FocusZone::Cost) if sel.show_context => {
                     sel.cost_scroll = (sel.cost_scroll + 1).min(env.cost_max_scroll);
+                }
+                _ if sel.show_orchestrator => {
+                    sel.focus_zone = Some(FocusZone::Subagents);
+                    sel.orch_cursor = Some(
+                        sel.orch_cursor
+                            .map(|c| (c + 1).min(ALL_ROLES.len()))
+                            .unwrap_or(0),
+                    );
                 }
                 _ => {
                     sel.focus_zone = Some(FocusZone::Subagents);
@@ -157,17 +181,38 @@ pub fn handle_input_batch(
                         (Some(FocusZone::Subagents), Some(max_idx), cur_max_scroll);
                 }
             },
+            InputEvent::CursorLeft | InputEvent::CursorRight => {
+                if sel.show_orchestrator && sel.focus_zone == Some(FocusZone::Subagents) {
+                    crate::commands::sidebar::orch_panel::step_orch_key(
+                        &mut sel.orch_cursor,
+                        orch_cfg,
+                        env.home,
+                        false,
+                        matches!(ev, InputEvent::CursorRight),
+                    );
+                }
+            }
             InputEvent::ActivateSelected => {
-                let target = sel
-                    .sub_cursor
-                    .unwrap_or_else(|| default_cursor_for_active(active_view_id, subagents));
-                (sel.sub_cursor, sel.focus_zone) = (Some(target), Some(FocusZone::Subagents));
-                if target == 0 {
-                    env.switch_to_main(active_view_id, &mut sel.last_click_instant);
-                    switched_view = true;
-                } else if let Some(ag) = subagents.get(target - 1) {
-                    env.switch_to_agent(ag, active_view_id, &mut sel.last_click_instant);
-                    switched_view = true;
+                if sel.show_orchestrator && sel.focus_zone == Some(FocusZone::Subagents) {
+                    crate::commands::sidebar::orch_panel::step_orch_key(
+                        &mut sel.orch_cursor,
+                        orch_cfg,
+                        env.home,
+                        true,
+                        true,
+                    );
+                } else {
+                    let target = sel
+                        .sub_cursor
+                        .unwrap_or_else(|| default_cursor_for_active(active_view_id, subagents));
+                    (sel.sub_cursor, sel.focus_zone) = (Some(target), Some(FocusZone::Subagents));
+                    if target == 0 {
+                        env.switch_to_main(active_view_id, &mut sel.last_click_instant);
+                        switched_view = true;
+                    } else if let Some(ag) = subagents.get(target - 1) {
+                        env.switch_to_agent(ag, active_view_id, &mut sel.last_click_instant);
+                        switched_view = true;
+                    }
                 }
             }
             InputEvent::DismissSelected => {
@@ -209,31 +254,21 @@ pub fn handle_input_batch(
                     }
                 }
             }
-            InputEvent::MouseDown { btn, col, row } => {
+            InputEvent::MouseDown { btn, col, row } | InputEvent::MouseUp { btn, col, row } => {
                 let z = m.classify(col, row, row_tag_map, subagents);
-                if let Some(act) = sel.pointer.on_mouse_down(btn, col, row, z) {
+                let act = if matches!(ev, InputEvent::MouseDown { .. }) {
+                    sel.pointer.on_mouse_down(btn, col, row, z)
+                } else {
+                    sel.pointer.on_mouse_up(btn, col, row, z)
+                };
+                if let Some(a) = act {
                     apply_masked_action(
-                        act,
+                        a,
                         env,
                         subagents,
                         active_view_id,
                         sel,
-                        &mut dismiss_idx,
-                        &mut clear_all_done,
-                        &mut restore_focus,
-                        &mut switched_view,
-                    );
-                }
-            }
-            InputEvent::MouseUp { btn, col, row } => {
-                let z = m.classify(col, row, row_tag_map, subagents);
-                if let Some(act) = sel.pointer.on_mouse_up(btn, col, row, z) {
-                    apply_masked_action(
-                        act,
-                        env,
-                        subagents,
-                        active_view_id,
-                        sel,
+                        orch_cfg,
                         &mut dismiss_idx,
                         &mut clear_all_done,
                         &mut restore_focus,

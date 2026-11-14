@@ -29,17 +29,18 @@ pub use macos::get_ppid_of;
 /// Wakes the sidebar process registered for `session_id` or `yazi_id` in `< 0.05ms`
 /// (`SIGUSR2` on macOS/Linux; `Local\ccide_wake_<pid>` Win32 Named Event on Windows).
 pub fn notify_sidebar(session_id: &str, yazi_id: &str) {
-    if !session_id.is_empty() {
-        if let Ok(txt) = std::fs::read_to_string(ipc_path(&format!("sb_{}.pid", session_id))) {
-            if let Ok(pid) = txt.trim().parse::<u32>() {
-                wake_pid(pid);
-            }
+    for (id, prefix) in [(session_id, "sb_"), (yazi_id, "sb_yazi_")] {
+        if id.is_empty() {
+            continue;
         }
-    }
-    if !yazi_id.is_empty() {
-        if let Ok(txt) = std::fs::read_to_string(ipc_path(&format!("sb_yazi_{}.pid", yazi_id))) {
+        let p = ipc_path(&format!("{}{}.pid", prefix, id));
+        if let Ok(txt) = std::fs::read_to_string(&p) {
             if let Ok(pid) = txt.trim().parse::<u32>() {
-                wake_pid(pid);
+                if is_pid_alive(pid) {
+                    wake_pid(pid);
+                } else {
+                    let _ = std::fs::remove_file(&p);
+                }
             }
         }
     }

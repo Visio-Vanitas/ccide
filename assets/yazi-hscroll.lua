@@ -326,7 +326,7 @@ local function slice_ansi_preserve_sgr(s, offset_cols, width_cols, initial_sgr)
 	return table.concat(out), st
 end
 
-local IS_WIN = (package.config:sub(1, 1) == "\\")
+local IS_WIN = (package.config:sub(1, 1) == "\\") or (ya and ya.target_family and ya.target_family() == "windows")
 
 local function ipc_dir()
 	local custom = os.getenv("CCIDE_IPC_DIR")
@@ -340,8 +340,47 @@ local function ipc_dir()
 	return "/tmp/.cc-ide"
 end
 
+local _ipc_dir_ensured = false
+local function ensure_ipc_dir()
+	if _ipc_dir_ensured then
+		return
+	end
+	_ipc_dir_ensured = true
+	local dir = ipc_dir()
+	if fs and fs.create and Url then
+		pcall(fs.create, "dir_all", Url(dir))
+	end
+	if IS_WIN then
+		os.execute('if not exist "' .. dir .. '" mkdir "' .. dir .. '" >NUL 2>&1')
+	else
+		os.execute('mkdir -p "' .. dir .. '" >/dev/null 2>&1')
+	end
+end
+
+local function open_ipc_write(path)
+	local f = io.open(path, "w")
+	if not f then
+		ensure_ipc_dir()
+		f = io.open(path, "w")
+	end
+	return f
+end
+
 local function ipc_file(name)
 	return ipc_dir() .. (IS_WIN and "\\" or "/") .. name
+end
+
+local function unique_tmp_path(p)
+	local tag = tostring({}):match("0x%x+") or tostring(math.random(100000, 999999))
+	return p .. ".tmp." .. tag
+end
+
+local function normalize_url_path(u)
+	local s = u or ""
+	if s:sub(1, 4) == "\\\\?\\" then
+		s = s:sub(5)
+	end
+	return (s:gsub("^file:///([A-Za-z]:)", "%1"):gsub("^file://", ""))
 end
 
 local function atomic_replace(tmp_p, dst_p)
@@ -353,7 +392,11 @@ local function atomic_replace(tmp_p, dst_p)
 end
 
 local function url_hash(s)
-	local norm = (s or ""):gsub("^\\\\\?\\", ""):gsub("\\", "/")
+	local norm = s or ""
+	if norm:sub(1, 4) == "\\\\?\\" then
+		norm = norm:sub(5)
+	end
+	norm = norm:gsub("\\", "/")
 	local h1 = 5381
 	local h2 = 52711
 	for i = 1, #norm do
@@ -383,8 +426,8 @@ local function write_url_bounds(url_str, max_x, at_bot)
 		return
 	end
 	local p = ipc_file("yb_" .. url_hash(url_str) .. ".txt")
-	local tmp = p .. ".tmp"
-	local f = io.open(tmp, "w")
+	local tmp = unique_tmp_path(p)
+	local f = open_ipc_write(tmp)
 	if not f then
 		return
 	end
@@ -411,8 +454,8 @@ local function write_url_px(url_str, px)
 		return
 	end
 	local p = ipc_file("yx_" .. url_hash(url_str) .. ".txt")
-	local tmp = p .. ".tmp"
-	local f = io.open(tmp, "w")
+	local tmp = unique_tmp_path(p)
+	local f = open_ipc_write(tmp)
 	if not f then
 		return
 	end
@@ -440,8 +483,8 @@ local function write_focus_file(key_str, line_no, span_no, pending)
 		os.remove(p)
 		return
 	end
-	local tmp = p .. ".tmp"
-	local f = io.open(tmp, "w")
+	local tmp = unique_tmp_path(p)
+	local f = open_ipc_write(tmp)
 	if not f then
 		return
 	end
@@ -483,21 +526,21 @@ local function read_focus_marker(url_str, path_str)
 	if ln > 0 then
 		return ln, sp, pend
 	end
-	local clean_u = (url_str or ""):gsub("^file://", "")
+	local clean_u = normalize_url_path(url_str)
 	if clean_u ~= url_str then
 		ln, sp, pend = read_single_focus(clean_u)
 		if ln > 0 then
 			return ln, sp, pend
 		end
 	end
-	if path_str and path_str ~= "" and path_str ~= url_str then
+	if path_str and path_str ~= "" and path_str ~= url_str and clean_u:gsub("\\", "/") ~= path_str:gsub("\\", "/") then
 		return read_single_focus(path_str)
 	end
 	return 0, 0, 0
 end
 
 local function consume_focus_pending(url_str, path_str)
-	for _, k in ipairs({ url_str, (url_str or ""):gsub("^file://", ""), path_str }) do
+	for _, k in ipairs({ url_str, normalize_url_path(url_str), path_str }) do
 		if k and k ~= "" then
 			local ln, sp, pend = read_single_focus(k)
 			if ln > 0 and pend == 1 then
@@ -566,9 +609,9 @@ local dispatch_sync = ya.sync(function(_, action, arg1, arg2, arg3)
 			if u ~= "" then
 				write_url_px(u, 0)
 			end
-			local clean_u = u:gsub("^file://", "")
+			local clean_u = normalize_url_path(u)
 			ya.emit("reveal", { target })
-			if clean_u == target or u == target then
+			if clean_u:gsub("\\", "/") == target:gsub("\\", "/") or u == target then
 				local tab = cx and (cx.active or cx.tab)
 				local h = tab and tab.current and tab.current.hovered
 				if h then
@@ -674,14 +717,14 @@ function M:setup()
 			_G.CCIDE_PREV_DIR_X = 0
 			if u ~= "" then
 				write_url_px(u, 0)
-				local hl_ln, _, pend = read_focus_marker(u, u:gsub("^file://", ""))
+				local hl_ln, _, pend = read_focus_marker(u, normalize_url_path(u))
 				if pend == 1 and hl_ln > 1 then
 					local tab = cx and (cx.active or cx.tab)
 					local h = tab and tab.current and tab.current.hovered
 					if h then
 						local prev_h = _G.CCIDE_PREV_AREA_H or 24
 						local desired = math.max(0, hl_ln - 1 - math.max(3, math.floor(prev_h / 4)))
-						consume_focus_pending(u, u:gsub("^file://", ""))
+						consume_focus_pending(u, normalize_url_path(u))
 						ya.emit("peek", { desired, only_if = h.url, force = true })
 					end
 				end
@@ -1101,8 +1144,8 @@ local function read_cached_block(cache_path, expected_key)
 end
 
 local function write_cached_block(cache_path, key, body)
-	local tmp = cache_path .. ".tmp"
-	local f = io.open(tmp, "w")
+	local tmp = unique_tmp_path(cache_path)
+	local f = open_ipc_write(tmp)
 	if not f then
 		return
 	end
@@ -1429,6 +1472,8 @@ function M:entry(job)
 		dispatch_sync("key_nav", a2, a3)
 	elseif a1 == "reveal" then
 		dispatch_sync("reveal", a2, a3, a4)
+	elseif a1 == "blur" then
+		dispatch_sync("blur")
 	elseif a1 == "reset" then
 		dispatch_sync("reset")
 	else

@@ -74,6 +74,26 @@ while ($i -lt $args.Count) {
             & $py -I $cm @rest
             exit $LASTEXITCODE
         }
+        "^workflow$" {
+            $py = Resolve-PyExe
+            if ($i + 1 -lt $args.Count -and [string]$args[$i + 1] -eq "serve") {
+                $srv = Join-Path $HomeDir ".claude\scripts\ccide_workflow_server.py"
+                if (-not (Test-Path $srv)) { $srv = Join-Path $ScriptDir "ccide_workflow_server.py" }
+                $rest = if ($i + 2 -lt $args.Count) { $args[($i + 2)..($args.Count - 1)] } else { @() }
+                & $py -I $srv @rest
+            } else {
+                $run = Join-Path $HomeDir ".claude\scripts\ccide_workflow_runner.py"
+                if (-not (Test-Path $run)) { $run = Join-Path $ScriptDir "ccide_workflow_runner.py" }
+                $rest = if ($i + 1 -lt $args.Count) { $args[($i + 1)..($args.Count - 1)] } else { @() }
+                & $py -I $run @rest
+            }
+            exit $LASTEXITCODE
+        }
+        "^orchestrator$" {
+            $rest = if ($i + 1 -lt $args.Count) { $args[($i + 1)..($args.Count - 1)] } else { @() }
+            & $CoreBin orchestrator @rest
+            exit $LASTEXITCODE
+        }
         "^(-h|--help)$" {
             @"
 Usage: ccide [options] [claude-args...]   (PowerShell & cmd.exe)
@@ -93,6 +113,8 @@ Commands & Maintenance:
   setup              Launch interactive TUI Setup & Live Theme Studio
   --sync-pricing     Sync pricing.json from LiteLLM & genai-prices
   --check-cc [...]   Run Cross-OS Claude Code symbol & schema maintenance workbench
+  workflow [...]     Run or serve native workflows (`list`, `run <name>`, `serve`)
+  orchestrator [...] Manage subagent/workflow model & effort presets (`status`, `preset`, `sync`)
 "@ | Write-Host
             exit 0
         }
@@ -108,7 +130,12 @@ if (-not $env:WEZTERM_PANE -and -not $env:WT_SESSION -and -not $env:CLAUDECODE) 
     $WtCmd = Get-Command wt.exe -ErrorAction SilentlyContinue
     if ($WtCmd) {
         $SelfPs1 = $MyInvocation.MyCommand.Definition
-        & $WtCmd.Source -d $TargetDir pwsh -NoExit -ExecutionPolicy Bypass -File $SelfPs1 @args
+        $SelfShell = (Get-Process -Id $PID -ErrorAction SilentlyContinue).Path
+        if (-not $SelfShell) {
+            $PwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+            $SelfShell = if ($PwshCmd) { $PwshCmd.Source } else { "powershell.exe" }
+        }
+        & $WtCmd.Source -d $TargetDir $SelfShell -NoExit -ExecutionPolicy Bypass -File $SelfPs1 @args
         exit 0
     }
 }
@@ -127,8 +154,41 @@ $env:CC_YAZI_ID = $YaziId
 
 $PaneSpec = ""
 if (Test-Path $CoreBin) {
-    $PaneSpec = (& $CoreBin workspace open $TargetDir $YaziId $ShowGit $ShowMon $LeftPct $GitRoot $ShowRight $Backend 2>$null | Select-Object -First 1)
+    $GitRootArg = if ($GitRoot) { $GitRoot } else { "-" }
+    $PaneSpec = (& $CoreBin workspace open $TargetDir $YaziId $ShowGit $ShowMon $LeftPct $GitRootArg $ShowRight $Backend 2>$null | Select-Object -First 1)
 }
+
+function Invoke-AutoEnsureClaudePatched {
+    $ClaudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if (-not $ClaudeCmd) { return }
+    $TargetExe = Join-Path (Split-Path -Parent $ClaudeCmd.Source) "bin\claude.exe"
+    if (-not (Test-Path $TargetExe)) { $TargetExe = $ClaudeCmd.Source }
+    if (-not (Test-Path $TargetExe)) { return }
+
+    $CacheDir = Join-Path $HomeDir ".cache\cc-ide"
+    New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
+    $StampFile = Join-Path $CacheDir "claude_bin.stamp"
+    $Fi = Get-Item -LiteralPath $TargetExe -ErrorAction SilentlyContinue
+    if (-not $Fi) { return }
+    $CurStamp = "$($Fi.Length):$($Fi.LastWriteTimeUtc.Ticks)"
+    if ((Test-Path $StampFile) -and ((Get-Content -LiteralPath $StampFile -Raw -ErrorAction SilentlyContinue).Trim() -eq $CurStamp)) {
+        return
+    }
+
+    $Patcher = Join-Path $HomeDir ".claude\scripts\patch_claude_binary.py"
+    if (-not (Test-Path $Patcher)) { $Patcher = Join-Path $ScriptDir "patch_claude_binary.py" }
+    $PyExe = Resolve-PyExe
+    if ((Test-Path $Patcher) -and (Get-Command $PyExe -ErrorAction SilentlyContinue)) {
+        & $PyExe -I $Patcher --binary $TargetExe *> $null
+        if ($LASTEXITCODE -eq 0) {
+            $FiAfter = Get-Item -LiteralPath $TargetExe -ErrorAction SilentlyContinue
+            if ($FiAfter) {
+                Set-Content -LiteralPath $StampFile -Value "$($FiAfter.Length):$($FiAfter.LastWriteTimeUtc.Ticks)" -NoNewline -Encoding ASCII
+            }
+        }
+    }
+}
+Invoke-AutoEnsureClaudePatched
 
 try {
     & claude --dangerously-skip-permissions @ClaudeArgs

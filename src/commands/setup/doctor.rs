@@ -168,6 +168,31 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         }),
     }
 
+    let settings_txt =
+        fs::read_to_string(Path::new(home).join(".claude/settings.json")).unwrap_or_default();
+    let locked_vars: Vec<&str> = [
+        "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+    ]
+    .into_iter()
+    .filter(|k| {
+        env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false)
+            || extract_json_str(&settings_txt, k)
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false)
+    })
+    .collect();
+    if !locked_vars.is_empty() {
+        items.push(DoctorItem {
+            status: CheckStatus::Warn,
+            label: "Orchestrator".to_string(),
+            detail: format!(
+                "{} set (locks Workflow per-agent model overrides)",
+                locked_vars.join(", ")
+            ),
+        });
+    }
+
     if cfg!(windows) {
         let wez = find_executable("wezterm", home);
         let wt = find_executable("wt", home);

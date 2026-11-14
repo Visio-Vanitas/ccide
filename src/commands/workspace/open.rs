@@ -15,7 +15,7 @@ use crate::commands::workspace::tmux::run_tmux_open;
 use crate::commands::workspace::wezterm::run_wezterm_open;
 use crate::commands::workspace::wt::run_wt_open;
 use crate::ffi::current_ppid;
-use crate::platform::{current_username, ipc_path};
+use crate::platform::{current_username, find_executable, ipc_path};
 
 pub fn handle_open(home: &str, cdir: &Path, args: &[String]) {
     let target_dir = args.get(3).map(|s| s.as_str()).unwrap_or(".");
@@ -29,7 +29,7 @@ pub fn handle_open(home: &str, cdir: &Path, args: &[String]) {
     let git_root = args
         .get(8)
         .map(|s| s.as_str())
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && *s != "-")
         .unwrap_or(target_dir);
     let show_right = args.get(9).map(|s| s == "1").unwrap_or(true);
     let requested = args
@@ -163,5 +163,24 @@ pub fn handle_open(home: &str, cdir: &Path, args: &[String]) {
         ) {
             println!("{}", spec);
         }
+    } else if requested == "auto" {
+        if find_executable("tmux", home).is_some() {
+            if let Some(spec) = run_tmux_open(
+                home, target_dir, yazi_id, show_git, show_mon, left_pct, git_root, show_right,
+                shell_pid,
+            ) {
+                println!("{}", spec);
+                return;
+            }
+        }
+        eprintln!(
+            "ccide-core: no supported terminal (iTerm2/WezTerm/WT) or tmux session active; \
+             run inside tmux or install tmux for 3-column tiling."
+        );
+    } else {
+        eprintln!(
+            "ccide-core: requested workspace backend '{}' is unavailable in this environment.",
+            requested
+        );
     }
 }

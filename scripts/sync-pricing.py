@@ -26,11 +26,21 @@ def strip_jsonc(raw: str) -> str:
 def extract_tier_val(field) -> tuple[float | None, int | None, float | None]:
     if isinstance(field, (int, float)):
         return float(field), None, None
-    if isinstance(field, dict) and "base" in field:
-        base = float(field["base"])
+    if isinstance(field, dict) and field.get("base") is not None:
+        try:
+            base = float(field["base"])
+        except (TypeError, ValueError):
+            return None, None, None
         tiers = field.get("tiers") or []
         if tiers and isinstance(tiers[0], dict):
-            return base, int(tiers[0].get("start", 200000)), float(tiers[0].get("price", base))
+            raw_start = tiers[0].get("start")
+            raw_price = tiers[0].get("price")
+            try:
+                start = int(raw_start) if raw_start is not None else 200000
+                price = float(raw_price) if raw_price is not None else base
+            except (TypeError, ValueError):
+                return base, None, None
+            return base, start, price
         return base, None, None
     return None, None, None
 
@@ -145,23 +155,27 @@ def main() -> int:
         pass
 
     # 2. pydantic/genai-prices (authoritative provider YAML compilation)
-    upstream = fetch_json(GENAI_PRICES_URL)
-    for prov in upstream:
-        if not isinstance(prov, dict) or prov.get("id") not in TARGET_PROVIDERS:
-            continue
-        for md in prov.get("models") or []:
-            if not isinstance(md, dict):
-                continue
-            mid = str(md.get("id") or "").strip().lower()
-            if not mid or any(x in mid for x in ("embed", "tts", "transcribe", "whisper")):
-                continue
-            conv = convert_genai_price(md.get("prices"))
-            if conv is not None:
-                existing = base_data["models"].get(mid, {})
-                if "cache_write_1h" in existing and "cache_write_1h" not in conv:
-                    conv["cache_write_1h"] = existing["cache_write_1h"]
-                base_data["models"][mid] = conv
-                synced += 1
+    try:
+        upstream = fetch_json(GENAI_PRICES_URL)
+        if isinstance(upstream, list):
+            for prov in upstream:
+                if not isinstance(prov, dict) or prov.get("id") not in TARGET_PROVIDERS:
+                    continue
+                for md in prov.get("models") or []:
+                    if not isinstance(md, dict):
+                        continue
+                    mid = str(md.get("id") or "").strip().lower()
+                    if not mid or mid in curated_keys or any(x in mid for x in ("embed", "tts", "transcribe", "whisper")):
+                        continue
+                    conv = convert_genai_price(md.get("prices"))
+                    if conv is not None:
+                        existing = base_data["models"].get(mid, {})
+                        if "cache_write_1h" in existing and "cache_write_1h" not in conv:
+                            conv["cache_write_1h"] = existing["cache_write_1h"]
+                        base_data["models"][mid] = conv
+                        synced += 1
+    except Exception:
+        pass
 
     os.makedirs(os.path.dirname(user_pricing), exist_ok=True)
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")

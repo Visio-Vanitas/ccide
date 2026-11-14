@@ -148,30 +148,40 @@ impl ConsoleRawSession {
             revents: 0,
         };
         let ready = unsafe { poll(&mut pfd, 1, timeout_ms as c_int) };
-        if ready > 0 && (pfd.revents & 1) != 0 {
-            let n = unsafe { read(self.stdin_fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
-            if n > 0 {
-                let mut total = n as usize;
-                // Reassemble split escape sequences already sitting in the TTY buffer.
-                while total < buf.len() && ends_with_incomplete_esc(&buf[..total]) {
-                    pfd.revents = 0;
-                    let more = unsafe { poll(&mut pfd, 1, 2) };
-                    if more <= 0 || (pfd.revents & 1) == 0 {
-                        break;
-                    }
-                    let extra = unsafe {
-                        read(
-                            self.stdin_fd,
-                            buf[total..].as_mut_ptr() as *mut c_void,
-                            buf.len() - total,
-                        )
-                    };
-                    if extra <= 0 {
-                        break;
-                    }
-                    total += extra as usize;
+        if ready > 0 {
+            if (pfd.revents & (0x0008 | 0x0010 | 0x0020)) != 0 {
+                RUNNING.store(false, Ordering::SeqCst);
+                return None;
+            }
+            if (pfd.revents & 1) != 0 {
+                let n = unsafe { read(self.stdin_fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
+                if n == 0 {
+                    RUNNING.store(false, Ordering::SeqCst);
+                    return None;
                 }
-                return Some(total);
+                if n > 0 {
+                    let mut total = n as usize;
+                    // Reassemble split escape sequences already sitting in the TTY buffer.
+                    while total < buf.len() && ends_with_incomplete_esc(&buf[..total]) {
+                        pfd.revents = 0;
+                        let more = unsafe { poll(&mut pfd, 1, 2) };
+                        if more <= 0 || (pfd.revents & 1) == 0 {
+                            break;
+                        }
+                        let extra = unsafe {
+                            read(
+                                self.stdin_fd,
+                                buf[total..].as_mut_ptr() as *mut c_void,
+                                buf.len() - total,
+                            )
+                        };
+                        if extra <= 0 {
+                            break;
+                        }
+                        total += extra as usize;
+                    }
+                    return Some(total);
+                }
             }
         }
         None

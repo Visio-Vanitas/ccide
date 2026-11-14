@@ -55,7 +55,7 @@ body:
       placeholder: |
         {
           "schema_version": 1,
-          "ccide_version": "0.7.0",
+          "ccide_version": "0.8.0",
           "os_arch": "darwin/aarch64",
           ...
         }

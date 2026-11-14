@@ -153,9 +153,14 @@ pub fn strip_jsonc_comments(src: &str) -> String {
         let b = bytes[i];
         if in_str {
             if b == b'\\' && i + 1 < len {
-                out.push(b as char);
-                out.push(bytes[i + 1] as char);
-                i += 2;
+                if let Some(bs) = src[i..].chars().next() {
+                    out.push(bs);
+                    i += bs.len_utf8();
+                }
+                if let Some(ch) = src[i..].chars().next() {
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
                 continue;
             }
             if b == b'"' {
@@ -967,5 +972,14 @@ mod tests {
             let p = Palette::from_json_str(&tpl);
             assert_eq!(p.preset, name);
         }
+    }
+
+    #[test]
+    fn strip_jsonc_handles_backslash_before_multibyte_utf8() {
+        let src = r#"{"note": "C:\用户", "preset": "nord"}"#;
+        let stripped = strip_jsonc_comments(src);
+        assert_eq!(stripped, src);
+        let p = Palette::from_json_str(src);
+        assert_eq!(p.preset, "nord");
     }
 }

@@ -7,7 +7,7 @@
 
 use crate::session::compact_model_for_width;
 use crate::tui::context::bar::{
-    compute_cache_hit_pct, fmt_share_pct, fmt_tok_compact, fmt_tps, fmt_ttft, fmt_usd,
+    compute_cache_hit_pct, fmt_share_pct, fmt_tok_ir, fmt_tok_o, fmt_tps, fmt_ttft, fmt_usd,
     fmt_usd_precise, model_family_color, render_multi_model_bar,
 };
 use crate::tui::context::{ContextSnapshot, TAG_CTX_TOGGLE};
@@ -147,13 +147,28 @@ pub fn build_cost_panel(
             });
 
             if density >= 2 {
-                let in_s = fmt_tok_compact(m.input_tokens);
-                let cr_s = fmt_tok_compact(m.cache_read_tokens);
-                let out_s = fmt_tok_compact(m.output_tokens);
-                let sub_left = format!(
+                let in_s = fmt_tok_ir(m.input_tokens);
+                let cr_s = fmt_tok_ir(m.cache_read_tokens);
+                let out_s = fmt_tok_o(m.output_tokens);
+                let usable_sub = box_inner_w.saturating_sub(4);
+                let full_sub = format!(
                     "{dim}{}t · I{RESET} {white}{in_s}{RESET} {dim}· R{RESET} {cyan}{cr_s}{RESET} {dim}· O{RESET} {mint}{out_s}{RESET}",
                     m.turns
                 );
+                let mid_sub = format!(
+                    "{dim}{}t{RESET} {dim}I{RESET} {white}{in_s}{RESET} {dim}R{RESET} {cyan}{cr_s}{RESET} {dim}O{RESET} {mint}{out_s}{RESET}",
+                    m.turns
+                );
+                let tight_sub = format!(
+                    "{dim}I{RESET} {white}{in_s}{RESET} {dim}R{RESET} {cyan}{cr_s}{RESET} {dim}O{RESET} {mint}{out_s}{RESET}"
+                );
+                let sub_left = if display_width(&full_sub) <= usable_sub {
+                    full_sub
+                } else if display_width(&mid_sub) <= usable_sub {
+                    mid_sub
+                } else {
+                    tight_sub
+                };
                 item_rows.push(BoxRow {
                     text: sub_fmt.split(&sub_left, "", 0),
                     bg: String::new(),

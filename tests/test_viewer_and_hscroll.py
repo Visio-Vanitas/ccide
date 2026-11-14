@@ -248,6 +248,27 @@ class TestViewerWrapAndHScroll(unittest.TestCase):
         plain_dag = [log_mod.strip_ansi(r[0]) for r in dag_rows]
         self.assertEqual(plain_dag, ["⏣─╮ ", "│ ○ ", "○─╯ "])
 
+        # Verify `assets/yazi-hscroll.lua` contains zero invalid Lua 5.4 string escape sequences (e.g. `\?`)
+        import re as _re
+
+        with open(os.path.join(REPO_ROOT, "assets", "yazi-hscroll.lua"), encoding="utf-8") as lf:
+            lua_src = lf.read()
+        for line_no, raw_ln in enumerate(lua_src.splitlines(), 1):
+            stripped = raw_ln.split("--", 1)[0]
+            for m in _re.finditer(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', stripped):
+                lit = m.group(0)[1:-1]
+                i = 0
+                while i < len(lit):
+                    if lit[i] == "\\" and i + 1 < len(lit):
+                        nxt = lit[i + 1]
+                        self.assertTrue(
+                            nxt in 'abfnrtv\\"\'\n\rzxu' or nxt.isdigit(),
+                            msg=f"Invalid Lua 5.4 escape \\{nxt} at yazi-hscroll.lua:{line_no}",
+                        )
+                        i += 2
+                    else:
+                        i += 1
+
     def test_write_all_handles_short_pty_writes_and_compound_delta_sgr(self) -> None:
         bridge = load_script_module("pty_hscroll_bridge_w", "scripts/pty-hscroll-bridge.py")
         r_fd, w_fd = os.pipe()

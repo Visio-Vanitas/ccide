@@ -215,6 +215,8 @@ pub fn run() {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let safe_sid = session_id.replace('\\', "\\\\").replace('"', "\\\"");
+    let safe_eff = effort.replace('\\', "\\\\").replace('"', "\\\"");
     let safe_cwd = cwd.replace('\\', "\\\\").replace('"', "\\\"");
     let safe_mod = model.replace('\\', "\\\\").replace('"', "\\\"");
     let safe_mid = model_id.replace('\\', "\\\\").replace('"', "\\\"");
@@ -226,7 +228,7 @@ pub fn run() {
         .unwrap_or_else(|| "null".to_string());
     let live_json = format!(
         "{{\"session_id\":\"{}\",\"model\":\"{}\",\"model_id\":\"{}\",\"mode\":\"{}\",\"win_tokens\":{},\"used_pct\":{},\"tokens_k\":{},\"compact_k\":{},\"cc_cost_usd\":{:.6},\"lines_add\":{},\"lines_del\":{},\"rl_5h_pct\":{},\"rl_7d_pct\":{},\"fast_mode\":{},\"effort\":\"{}\",\"cwd\":\"{}\",\"ts\":{}}}",
-        session_id,
+        safe_sid,
         safe_mod,
         safe_mid,
         mode_word,
@@ -240,7 +242,7 @@ pub fn run() {
         rl5_json,
         rl7_json,
         if fast_mode { "true" } else { "false" },
-        effort,
+        safe_eff,
         safe_cwd,
         now_s
     );

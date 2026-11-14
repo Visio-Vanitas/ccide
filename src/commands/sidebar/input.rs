@@ -17,6 +17,8 @@ pub enum InputEvent {
     WheelDown { row: usize },
     CursorUp,
     CursorDown,
+    CursorLeft,
+    CursorRight,
     PageUp,
     PageDown,
     Home,
@@ -25,6 +27,7 @@ pub enum InputEvent {
     DismissSelected,
     ClearAllDone,
     ToggleBottomPanel,
+    ToggleOrchestrator,
     FocusIn,
     FocusOut,
     Escape,
@@ -132,9 +135,10 @@ pub fn parse_input_events(input: &str) -> Vec<InputEvent> {
                     ("4", b'~') | ("8", b'~') | ("", b'F') => events.push(InputEvent::End),
                     (_, b'A') => events.push(InputEvent::CursorUp),
                     (_, b'B') => events.push(InputEvent::CursorDown),
+                    (_, b'C') => events.push(InputEvent::CursorRight),
+                    (_, b'D') => events.push(InputEvent::CursorLeft),
                     ("", b'I') => events.push(InputEvent::FocusIn),
                     ("", b'O') => events.push(InputEvent::FocusOut),
-                    // Horizontal arrows (`C`/`D`) are intentionally ignored.
                     _ => {}
                 }
                 i = j + 1;
@@ -145,6 +149,8 @@ pub fn parse_input_events(input: &str) -> Vec<InputEvent> {
                     match bytes[i + 2] {
                         b'A' => events.push(InputEvent::CursorUp),
                         b'B' => events.push(InputEvent::CursorDown),
+                        b'C' => events.push(InputEvent::CursorRight),
+                        b'D' => events.push(InputEvent::CursorLeft),
                         b'H' => events.push(InputEvent::Home),
                         b'F' => events.push(InputEvent::End),
                         _ => {}
@@ -161,10 +167,13 @@ pub fn parse_input_events(input: &str) -> Vec<InputEvent> {
         match bytes[i] {
             b'k' | b'K' => events.push(InputEvent::CursorUp),
             b'j' | b'J' => events.push(InputEvent::CursorDown),
+            b'h' | b'H' => events.push(InputEvent::CursorLeft),
+            b'l' | b'L' => events.push(InputEvent::CursorRight),
             b'\r' | b'\n' | b' ' => events.push(InputEvent::ActivateSelected),
             b'x' | b'X' | b'd' | b'D' | 0x7f | 0x08 => events.push(InputEvent::DismissSelected),
             b'c' | b'C' => events.push(InputEvent::ClearAllDone),
             b't' | b'T' | b'\t' => events.push(InputEvent::ToggleBottomPanel),
+            b'o' | b'O' => events.push(InputEvent::ToggleOrchestrator),
             b'g' => events.push(InputEvent::Home),
             b'G' => events.push(InputEvent::End),
             _ => {}
@@ -247,6 +256,8 @@ mod tests {
                 InputEvent::FocusIn,
                 InputEvent::CursorDown,
                 InputEvent::CursorDown,
+                InputEvent::CursorLeft,
+                InputEvent::CursorRight,
                 InputEvent::ActivateSelected,
                 InputEvent::DismissSelected,
                 InputEvent::ClearAllDone,

@@ -69,6 +69,8 @@ extern "C" {
         buffersize: c_int,
     ) -> c_int;
     pub fn mach_host_self() -> c_uint;
+    pub static mach_task_self_: c_uint;
+    pub fn mach_port_deallocate(task: c_uint, name: c_uint) -> c_int;
     pub fn host_page_size(host: c_uint, out_page_size: *mut usize) -> c_int;
     pub fn host_statistics(
         host: c_uint,

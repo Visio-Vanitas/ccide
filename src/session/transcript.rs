@@ -142,6 +142,8 @@ pub fn update_jsonl_tracker(
     let len = meta.len();
     if len < tracker.offset {
         tracker.offset = 0;
+        tracker.seq = 0;
+        tracker.done_from_tail = false;
     }
     if len == tracker.offset {
         return;
@@ -152,7 +154,11 @@ pub fn update_jsonl_tracker(
     let _ = f.seek(SeekFrom::Start(tracker.offset));
     let mut raw_bytes = Vec::new();
     if f.read_to_end(&mut raw_bytes).is_ok() {
-        let buf = String::from_utf8_lossy(&raw_bytes);
+        let Some(nl_pos) = raw_bytes.iter().rposition(|&b| b == b'\n') else {
+            return;
+        };
+        let consumed = (nl_pos + 1) as u64;
+        let buf = String::from_utf8_lossy(&raw_bytes[..=nl_pos]);
         for line in buf.lines() {
             if let Some(pos) = line.find("Set model to ") {
                 let rest = &line[pos + 13..];
@@ -179,12 +185,31 @@ pub fn update_jsonl_tracker(
                 || line.contains("\"stop_reason\":\"refusal\"")
                 || line.contains("\"stop_reason\":\"max_tokens\"")
                 || line.contains("\"stop_reason\":\"model_context_window_exceeded\"")
+                || line.contains("\"isAbortedMidStream\":true")
+                || line.contains("[Request interrupted by user")
             {
                 tracker.done_from_tail = true;
+            } else if line.contains("\"type\":\"api-request\"")
+                || line.contains("\"role\":\"user\"")
+            {
+                tracker.done_from_tail = false;
             }
         }
-        tracker.offset = len;
+        tracker.offset += consumed;
     }
+}
+
+fn find_session_jsonl(home: &str, session_id: &str) -> Option<PathBuf> {
+    let pdir = format!("{}/.claude/projects", home);
+    if let Ok(rd) = fs::read_dir(&pdir) {
+        for entry in rd.flatten() {
+            let cand = entry.path().join(format!("{}.jsonl", session_id));
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
 }
 
 pub fn get_main_session_file_ops(
@@ -209,17 +234,7 @@ pub fn get_main_session_file_ops(
         let tr = main_tracker
             .entry(session_id.to_string())
             .or_insert_with(|| {
-                let mut jp = None;
-                let pdir = format!("{}/.claude/projects", home);
-                if let Ok(rd) = fs::read_dir(&pdir) {
-                    for entry in rd.flatten() {
-                        let cand = entry.path().join(format!("{}.jsonl", session_id));
-                        if cand.is_file() {
-                            jp = Some(cand);
-                            break;
-                        }
-                    }
-                }
+                let jp = find_session_jsonl(home, session_id);
                 let sz = jp
                     .as_ref()
                     .and_then(|p| fs::metadata(p).ok())
@@ -237,6 +252,10 @@ pub fn get_main_session_file_ops(
                     done_from_tail: false,
                 }
             });
+        if tr.jpath.as_ref().map(|p| !p.is_file()).unwrap_or(true) {
+            tr.jpath = find_session_jsonl(home, session_id);
+            tr.offset = 0;
+        }
         if let Some(ref jp) = tr.jpath.clone() {
             if let Ok(m) = fs::metadata(jp).and_then(|m| m.modified()) {
                 jsonl_mtime = m;
