@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Zero-Patch Subagent & Native `Workflow` Model/Effort Orchestrator (`src/orchestrator/`, `src/commands/pre_tool_hook.rs`, `src/commands/sidebar/orch_panel.rs`, `hooks/hooks.json`, `assets/orchestrator.json`, `skills/orchestrate/SKILL.md`)**:
+  - Added `PreToolUse` model/effort routing across `Scout`, `Coder`, `Reviewer`, `Plan`, and `Workflow` roles via `~/.config/cc-ide/orchestrator.json`, an interactive Right Sidebar `ORCHESTRATOR` toggle panel, and `ccide orchestrator` (`status`, `preset`, `sync`).
+- **Native `Workflow` Templates, CLI Runner & Local HTTP/SSE Server (`assets/workflows/*.js`, `scripts/ccide_workflow_runner.py`, `scripts/ccide_workflow_server.py`)**:
+  - Added built-in workflow scripts (`ccide-consensus.js`, `ccide-implement.js`, `ccide-review.js`), `ccide workflow` (`list`, `run <name>`, `serve`), and a local HTTP/SSE API server.
+- **Official Claude Code Extension & Orchestration Reference (`docs/CLAUDE_CODE_INTERFACES.md`)**:
+  - Documented plugin/marketplace manifests, hooks, subagent/workflow schemas, and `sdk-tools.d.ts` interfaces verified against `@anthropic-ai/claude-code` `2.1.304` / `2.1.323`.
+
+### Fixed
+- **Full-Repo Audit & Hardening (`src/`, `scripts/`, `assets/yazi-hscroll.lua`, `install.sh`, `install.ps1`)**:
+  - Hardened partial-line `.jsonl` incremental offset reads, JSONC UTF-8 escape handling, macOS `IfMsghdr2` unaligned reads & IOKit/Mach resource cleanup, child-process zombie reaping, interrupted/`TaskStop` subagent status tracking, and `COST` `I`/`R` 4-sig-fig & `O` 3-sig-fig token formatting.
+  - Fixed Lua 5.4 string escape sequences & PTY input drain, iTerm2 per-pane wallpaper preservation, `ensure-ccide-core` lockfile + atomic staging, and Windows Lazygit companion config wiring.
+
 ---
 
 ## [0.7.0] - 2026-11-14
