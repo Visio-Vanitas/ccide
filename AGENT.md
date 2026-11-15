@@ -1,7 +1,7 @@
 # `cc-ide` (`ccide-core`) — Architecture & Agent Maintenance Guide
 
 ## 1. Overview
-`cc-ide` (v0.9.1) is a high-performance, cross-platform native engine for the 3-column Claude Code tiling workspace across **macOS**, **Linux**, and **Windows (`pwsh` / `cmd.exe`)**. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses zero external Cargo crates and no nightly features, and builds out of the box on LTS Linux distributions, macOS, and Windows MSVC:
+`cc-ide` (v0.9.2) is a high-performance, cross-platform native engine for the 3-column Claude Code tiling workspace across **macOS**, **Linux**, and **Windows (`pwsh` / `cmd.exe`)**. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses zero external Cargo crates and no nightly features, and builds out of the box on LTS Linux distributions, macOS, and Windows MSVC:
 - **Left Column (30%)**: `Yazi` File Tree (top, synced live on Claude Code `Read`/`Edit`/`Write`/`MultiEdit`/`NotebookEdit`/`LSP`/`Grep` ops — automatically revealing the file AND scrolling/highlighting the exact modified or inspected line range in preview via `assets/yazi-hscroll.lua` + `src/session/focus.rs`) + `Lazygit` Diff (bottom, unwrapped by default via `~/.config/cc-ide/viewer.json` with compact single-column `109│` line numbers via `scripts/lazygit-pager.sh`, full-stream zero-telemetry hash-free commit logs via `scripts/lazygit-log.py`, optional `vi`-style `↪` wrapping when `"wrap": true`, and hover-targeted content-bounds-clamped Magic Mouse scrolling via `scripts/pty-hscroll-bridge.py`), locked to zero terminal scrollback (`scrollback_lines = 0`).
 - **Center Column (54%)**: `Claude Code` Main Workspace (with native `viewing-agent` switching, untouched native `/btw` overlay, and clean bottom chrome).
 - **Right Column (16%)**: `ccide-core sidebar` 3-Tier Interactive TUI:
@@ -24,15 +24,15 @@ ccide/
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
 │       ├── ci.yml            # CI Gate: 1.70.0 MSRV, fmt/clippy, 6-target matrix, scripts & patcher tests
-│       ├── release.yml       # Release: gated preview RC (`v0.9.1-rc.<n>`) + immutable stable (`v0.9.1`); `0.x.y` patches tag only
+│       ├── release.yml       # Release: gated preview RC (`v0.X.0-rc.<n>`) + immutable stable (`v0.X.0`); `0.x.y` patches tag only on `main`
 │       ├── cc-compat-watch.yml # Daily 3-OS (`darwin`/`linux`/`win32`) npm Claude Code compatibility probe
 │       └── issue-pr-lifecycle.yml # Auto-triage labels, PR stage bridge & multi-hop `main` issue closer
 ├── Cargo.toml                # Rust Edition 2021, MSRV 1.70, fat LTO, stripped release profile
 ├── install.sh                # POSIX Interactive TUI & Headless Installer, Doctor & Uninstaller
 ├── install.ps1 / install.cmd # Native PowerShell & cmd.exe Windows Installer, Doctor & Uninstaller
 ├── .claude-plugin/
-│   ├── marketplace.json      # Official Claude Code Marketplace manifest ("cc-ide")
-│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.9.1)
+│   ├── marketplace.json      # Official Claude Code Marketplace manifest ("cc-ide" v0.9.2)
+│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.9.2)
 ├── hooks/
 │   ├── hooks.json            # Official Plugin Hooks (modules: ./register.ts + Pre/PostToolUse, Subagent*, PostModelSwitch, SessionStart)
 │   └── register.ts           # In-process mod: immediate slash commands (/palette, /rebalance-panes, /clear-agents, /orch, /ccide-doctor), turn.step TPS/TTFT & model sync
@@ -66,8 +66,7 @@ ccide/
 │   ├── lazygit-log.py        # Full-stream hash-free `[Author] [Smooth DAG] [Subject]` commit log for Lazygit
 │   ├── git_smooth_graph.py   # 4-direction bitmask Unicode box-drawing DAG commit tree renderer
 │   ├── pty-hscroll-bridge.py # Hover-targeted & content-bounds-clamped PTY Magic Mouse SGR 66/67 & focus bridge
-│   ├── md-render.py          # Yazi & Lazygit Markdown preview renderer (clean H1-H6 glyphs, no raw ###)
-│   └── cc_tui_lib.py         # Python TUI & quadrant logo generator library
+│   └── md-render.py          # Yazi & Lazygit Markdown preview renderer (clean H1-H6 glyphs, no raw ###)
 ├── assets/
 │   ├── sprites/              # Standalone transparent RGBA `.png` & `.ansi` model family sprites
 │   ├── workflows/            # Built-in Workflow JS templates (`ccide-consensus.js`, `ccide-implement.js`, `ccide-review.js`)
@@ -263,7 +262,7 @@ ccide doctor [--json]
 Installer side effects worth knowing:
 - **Stage 3a (`scripts/iterm-pyenv.py`)**: locates `iTerm.app` across `/Applications`, `~/Applications`, and `mdfind`; respects `PIP_INDEX_URL` / `pip config list` or concurrently probes `pypi.org`, TUNA, Aliyun, and USTC (cached 24h in `~/.cache/cc-ide/pypi_mirror.json`); provisions an isolated PEP 668-safe venv at `~/.local/share/cc-ide/pyenv` with `iterm2` installed and records `~/.cache/cc-ide/python_bin` (falling back cleanly to Tier 3 `tmux` with copy-pasteable commands when offline).
 - **Stage 3b (`scripts/iterm-preferences.py`)**: backs up `com.googlecode.iterm2.plist` + original key snapshot under `~/.config/cc-ide/backups/iterm2/`, idempotently applies `ShowPaneTitles=false`, `ShowPaneTitlesEvenIfOnlyOnePane=false`, `PerPaneBackgroundImage=false`, `DimInactiveSplitPanes=false`, and `EnableAPIServer=true` (leaving `SplitPaneDimmingAmount` untouched and clearing per-pane wallpapers via `LocalWriteOnlyProfile`), and supports exact rollback via `./install.sh --restore-iterm-preferences`.
-- **Scripts, SSH & Plugin Cache**: symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/` (and `ccide.cmd` + `ccide.ps1` on Windows via `install.ps1` / `install.cmd`), (re)writes `~/.ssh/ccide_config` + `Include` in `~/.ssh/config`, (re)starts `ccide_daemon.py`, and packages `cc-ide` into `~/.claude/plugins/cache/cc-ide/cc-ide/0.9.1/` (fetching prebuilt release binaries via `scripts/ensure-ccide-core.mjs` / `ensure-ccide-core.sh` when `cargo` is absent).
+- **Scripts, SSH & Plugin Cache**: symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/` (and `ccide.cmd` + `ccide.ps1` on Windows via `install.ps1` / `install.cmd`), (re)writes `~/.ssh/ccide_config` + `Include` in `~/.ssh/config`, (re)starts `ccide_daemon.py`, and packages `cc-ide` into `~/.claude/plugins/cache/cc-ide/cc-ide/0.9.2/` (fetching prebuilt release binaries via `scripts/ensure-ccide-core.mjs` / `ensure-ccide-core.sh` when `cargo` is absent).
 
 ---
 
@@ -275,8 +274,8 @@ Installer side effects worth knowing:
 
 ### 7.2 Promotion Flow (enforced by `.github/workflows/ci.yml`)
 1. **`dev`** — feature work; pushes and PRs run the full gate (no release).
-2. **`preview`** — a PR from `dev`; on merge, `ci.yml` runs a live 3-OS `cc-maint.py --fetch-npm latest` probe, and `release.yml` publishes a pre-release tag `v0.9.1-rc.<run_number>` (`prerelease: true`, `make_latest: false`).
-3. **`main`** — a PR from `preview` only; the `branch-flow-guard` job fails any PR whose `head_ref` is not `preview`. On merge, `release.yml` publishes the immutable stable tag `v0.9.1` (`make_latest: true`).
+2. **`preview`** — a PR from `dev`; on merge, `ci.yml` runs a live 3-OS `cc-maint.py --fetch-npm latest` probe, and for `0.X.0` minor milestones `release.yml` publishes a pre-release tag `v0.X.0-rc.<run_number>` (`prerelease: true`, `make_latest: false`; `0.x.y` patches skip RC releases).
+3. **`main`** — a PR from `preview` only; the `branch-flow-guard` job fails any PR whose `head_ref` is not `preview`. On merge, `release.yml` publishes the immutable stable tag `v0.X.0` (`make_latest: true`) for minor milestones, or creates lightweight tag `v0.x.y` for patch releases.
 
 **`0.X.0` minor milestones vs `0.x.y` patches.** `ci.yml` and `release.yml` both parse `Cargo.toml` to classify the version. `0.X.0` minor milestones run the full gate and publish all six release archives (`ccide-core-<triple>.tar.gz` for `aarch64`/`x86_64` × macOS/Linux/Windows MSVC) plus `SHA256SUMS.txt` — the same assets `scripts/ensure-ccide-core.mjs` resolves and verifies at install/hook time. `0.x.y` patch releases (`y > 0`) still run the MSRV/clippy/format/patcher gate but skip the 6-OS build matrix and binary upload entirely — the `build-matrix` job still runs and reports success with a skip notice, because branch protection requires every `Build & Test (<target>)` context; on `main` they only create the `v0.x.y` tag when it does not yet exist. A patch release therefore never republishes prebuilt binaries — clients keep the binaries from the last `0.X.0` milestone, which is why every patch must be source-compatible with that milestone's `ccide-core`.
 

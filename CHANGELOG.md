@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.2] - 2026-11-15
+
+### Fixed
+- **In-Process Mod (`hooks/register.ts`), Manifests & Skills Drift (`.claude-plugin/{plugin,marketplace}.json`, `skills/*/SKILL.md`)**:
+  - Aligned Windows IPC directory lookup in `register.ts` to `TMP || TEMP` (matching Win32 `GetTempPathW` / Rust `std::env::temp_dir()`), bounded `perfBuffers` to the last `256` lines and capped per-session caches at `64` entries for `O(1)` memory/I/O, made `/rebalance-panes` toast reflect the real exit code/support status, and made `syncSessionModel` parse leading numeric PIDs from future `pid:start_time` tokens.
+  - Added `"workflows": "./assets/workflows"` to `.claude-plugin/plugin.json`, added explicit `0.9.2` version fields to `.claude-plugin/marketplace.json` (checked via 5-way CI parity), and updated `skills/{ccide,clear,rebalance,theme}/SKILL.md` to invoke cross-OS `ensure-ccide-core.mjs` without stale `v0.5.0` or Unix-only references.
+- **Python `-I` Isolation, Windows Companion Config & Launcher Parity (`scripts/`, `install.ps1`, `install.sh`, `assets/yazi-hscroll.lua`, `src/commands/workspace/iterm.rs`)**:
+  - Added `import tempfile` (fixing Windows `NameError`) and `TMP`/`TEMP` alignment in `scripts/lazygit-log.py`, prepended script directory to `sys.path` in `scripts/cc_patch_rules.py` and `scripts/cc_schema_inspector.py` for standalone `python3 -I`, caught `OSError` in `ccide_workflow_runner.py` `discover_workflows()`, enforced `-I` across `pane-runner.sh`, `yazi-hscroll.lua`, and `iterm.rs`, and deleted dead `scripts/cc_tui_lib.py`.
+  - Added `yazi.toml` (`touch` mouse events + `hscroll` previewer) and `keymap.toml` setup to `install.ps1`, added `--mon`/`--no-mon` and `CLAUDECODE` session binding to `scripts/ccide.ps1`, added `--wt` and backend help flags to `scripts/ccide`, and updated `area:workspace` mapping to `src/commands/workspace/` in CI/triage helpers.
+
+---
+
 ## [0.9.1] - 2026-11-15
 
 ### Fixed
