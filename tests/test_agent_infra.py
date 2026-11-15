@@ -109,6 +109,84 @@ class IssueTemplateAndAgentInfraTests(unittest.TestCase):
             self.assertEqual(rep["over_budget_count"], 1)
             self.assertEqual(rep["over_budget"][0]["path"], "scripts/big.py")
 
+    def test_rust_layering_and_line_budget_invariants(self):
+        src_root = os.path.join(REPO_ROOT, "src")
+        non_command_modules = (
+            "ffi",
+            "telemetry",
+            "session",
+            "tui",
+            "orchestrator",
+            "json",
+            "budget",
+            "model_id",
+            "platform",
+        )
+
+        def iter_rs_files(base_path: str):
+            if os.path.isfile(base_path) and base_path.endswith(".rs"):
+                yield base_path
+            elif os.path.isdir(base_path):
+                for root, _, files in os.walk(base_path):
+                    for fn in sorted(files):
+                        if fn.endswith(".rs"):
+                            yield os.path.join(root, fn)
+
+        def read_non_comment_code(rs_file: str) -> str:
+            with open(rs_file, encoding="utf-8") as f:
+                return "\n".join(
+                    line for line in f if not line.lstrip().startswith("//")
+                )
+
+        for mod_name in non_command_modules:
+            for candidate in (
+                os.path.join(src_root, mod_name),
+                os.path.join(src_root, f"{mod_name}.rs"),
+            ):
+                for rs_file in iter_rs_files(candidate):
+                    rel = os.path.relpath(rs_file, REPO_ROOT)
+                    txt = read_non_comment_code(rs_file)
+                    self.assertNotIn(
+                        "crate::commands",
+                        txt,
+                        msg=f"Layering violation: {rel} must not depend on crate::commands",
+                    )
+
+        for rs_file in iter_rs_files(os.path.join(src_root, "session")):
+            rel = os.path.relpath(rs_file, REPO_ROOT)
+            txt = read_non_comment_code(rs_file)
+            self.assertNotIn(
+                "crate::orchestrator",
+                txt,
+                msg=f"Cycle violation: {rel} must not depend on crate::orchestrator",
+            )
+
+        for candidate in (
+            os.path.join(src_root, "orchestrator"),
+            os.path.join(src_root, "orchestrator.rs"),
+        ):
+            for rs_file in iter_rs_files(candidate):
+                rel = os.path.relpath(rs_file, REPO_ROOT)
+                txt = read_non_comment_code(rs_file)
+                self.assertNotIn(
+                    "crate::session",
+                    txt,
+                    msg=f"Cycle violation: {rel} must not depend on crate::session",
+                )
+
+        over_budget = []
+        for rs_file in iter_rs_files(src_root):
+            rel = os.path.relpath(rs_file, REPO_ROOT)
+            with open(rs_file, encoding="utf-8") as f:
+                line_count = sum(1 for _ in f)
+            if line_count > 300:
+                over_budget.append(f"{rel} ({line_count} lines)")
+        self.assertEqual(
+            over_budget,
+            [],
+            msg=f"Rust files exceeding 300-line budget: {', '.join(over_budget)}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -180,7 +180,7 @@ pub fn run_theme_command(home: &str, sub: &str) {
                 }
                 let _ = fs::write(&cfg_path, render_palette_template("default"));
             }
-            sync_syntax_artifacts(home, &Palette::load(home));
+            let _ = sync_syntax_artifacts(home, &Palette::load(home));
             println!("{}", cfg_path.display());
         }
         "reset" => {
@@ -188,13 +188,13 @@ pub fn run_theme_command(home: &str, sub: &str) {
                 let _ = fs::create_dir_all(parent);
             }
             let _ = fs::write(&cfg_path, render_palette_template("default"));
-            sync_syntax_artifacts(home, &Palette::load(home));
+            let _ = sync_syntax_artifacts(home, &Palette::load(home));
             wake_all_sidebars();
             crate::commands::workspace::reload::reload_companion_panes(home);
             println!("Reset palette to default -> {}", cfg_path.display());
         }
         "sync" => {
-            sync_syntax_artifacts(home, &Palette::load(home));
+            let _ = sync_syntax_artifacts(home, &Palette::load(home));
         }
         "list" | "" => {
             let active = Palette::load(home);
@@ -242,7 +242,7 @@ pub fn run_theme_command(home: &str, sub: &str) {
                 render_palette_template(&probe.preset)
             };
             let _ = fs::write(&cfg_path, updated);
-            sync_syntax_artifacts(home, &Palette::load(home));
+            let _ = sync_syntax_artifacts(home, &Palette::load(home));
             wake_all_sidebars();
             crate::commands::workspace::reload::reload_companion_panes(home);
             println!(

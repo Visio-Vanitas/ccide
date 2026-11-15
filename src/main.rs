@@ -8,9 +8,11 @@
 //! - `ccide-core workspace <open|close|rebalance|focus|switch-subagent|clear-subagents|theme> ...`
 //! - `ccide-core setup [project_root]` / `ccide-core doctor [--json] [project_root]`
 
+mod budget;
 mod commands;
 mod ffi;
 mod json;
+mod model_id;
 mod orchestrator;
 mod platform;
 mod session;

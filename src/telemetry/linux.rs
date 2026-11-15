@@ -1,12 +1,13 @@
 //! Linux `/proc` & `/sys` Hardware Telemetry Sampler (`x86_64` / `aarch64`).
 
 use std::fs;
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use crate::ffi::getloadavg;
-use crate::platform::ipc_path;
+use crate::platform::{atomic_write, ipc_path};
 use crate::telemetry::SharedTelemetrySnapshot;
 
 static NVIDIA_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
@@ -51,10 +52,12 @@ pub fn detect_hw_info() -> (String, usize, f64) {
     if let Ok(meminfo) = fs::read_to_string("/proc/meminfo") {
         for line in meminfo.lines() {
             if let Some(rest) = line.strip_prefix("MemTotal:") {
-                if let Some(kb_str) = rest.split_whitespace().next() {
-                    if let Ok(kb) = kb_str.parse::<u64>() {
-                        mem_gb = (kb as f64) / (1024.0 * 1024.0);
-                    }
+                if let Some(kb) = rest
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<u64>().ok())
+                {
+                    mem_gb = (kb as f64) / (1024.0 * 1024.0);
                 }
                 break;
             }
@@ -70,35 +73,33 @@ pub fn sample_metrics(
     now_ms: u64,
 ) {
     if let Ok(stat) = fs::read_to_string("/proc/stat") {
-        if let Some(first) = stat.lines().next() {
-            if first.starts_with("cpu ") {
-                let nums: Vec<u64> = first
-                    .split_whitespace()
-                    .skip(1)
-                    .filter_map(|x| x.parse::<u64>().ok())
-                    .collect();
-                if nums.len() >= 4 {
-                    let user = nums[0];
-                    let nice = nums[1];
-                    let sys = nums[2]
-                        + nums.get(5).copied().unwrap_or(0)
-                        + nums.get(6).copied().unwrap_or(0)
-                        + nums.get(7).copied().unwrap_or(0);
-                    let idle = nums[3] + nums.get(4).copied().unwrap_or(0);
-                    let t = [user as u32, sys as u32, idle as u32, nice as u32];
-                    if snap.prev_cpu_ticks != [0; 4] {
-                        let du = t[0].wrapping_sub(snap.prev_cpu_ticks[0]) as u64;
-                        let ds = t[1].wrapping_sub(snap.prev_cpu_ticks[1]) as u64;
-                        let di = t[2].wrapping_sub(snap.prev_cpu_ticks[2]) as u64;
-                        let dn = t[3].wrapping_sub(snap.prev_cpu_ticks[3]) as u64;
-                        let tot = du + ds + di + dn;
-                        if tot > 0 {
-                            snap.cpu_pct =
-                                (100.0 * ((du + ds + dn) as f64) / (tot as f64)).clamp(0.0, 100.0);
-                        }
+        if let Some(first) = stat.lines().next().filter(|l| l.starts_with("cpu ")) {
+            let nums: Vec<u64> = first
+                .split_whitespace()
+                .skip(1)
+                .filter_map(|x| x.parse::<u64>().ok())
+                .collect();
+            if nums.len() >= 4 {
+                let user = nums[0];
+                let nice = nums[1];
+                let sys = nums[2]
+                    + nums.get(5).copied().unwrap_or(0)
+                    + nums.get(6).copied().unwrap_or(0)
+                    + nums.get(7).copied().unwrap_or(0);
+                let idle = nums[3] + nums.get(4).copied().unwrap_or(0);
+                let t = [user as u32, sys as u32, idle as u32, nice as u32];
+                if snap.prev_cpu_ticks != [0; 4] {
+                    let du = t[0].wrapping_sub(snap.prev_cpu_ticks[0]) as u64;
+                    let ds = t[1].wrapping_sub(snap.prev_cpu_ticks[1]) as u64;
+                    let di = t[2].wrapping_sub(snap.prev_cpu_ticks[2]) as u64;
+                    let dn = t[3].wrapping_sub(snap.prev_cpu_ticks[3]) as u64;
+                    let tot = du + ds + di + dn;
+                    if tot > 0 {
+                        snap.cpu_pct =
+                            (100.0 * ((du + ds + dn) as f64) / (tot as f64)).clamp(0.0, 100.0);
                     }
-                    snap.prev_cpu_ticks = t;
                 }
+                snap.prev_cpu_ticks = t;
             }
         }
     }
@@ -192,8 +193,8 @@ pub fn sample_metrics(
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
         {
-            let _guard = NvidiaFlightGuard;
-            if let Ok(child) = Command::new("nvidia-smi")
+            let guard = NvidiaFlightGuard;
+            if let Ok(mut child) = Command::new("nvidia-smi")
                 .args([
                     "--query-gpu=utilization.gpu,memory.used",
                     "--format=csv,noheader,nounits",
@@ -203,16 +204,30 @@ pub fn sample_metrics(
                 .stderr(Stdio::null())
                 .spawn()
             {
-                let nv_tmp = ipc_path(&format!("nvidia_stat.txt.tmp.{}", std::process::id()));
                 let _ = std::thread::Builder::new().spawn(move || {
-                    let _guard = _guard;
-                    if let Ok(out) = child.wait_with_output() {
-                        if out.status.success()
-                            && !out.stdout.is_empty()
-                            && fs::write(&nv_tmp, &out.stdout).is_ok()
-                            && fs::rename(&nv_tmp, &nv_cache).is_err()
-                        {
-                            let _ = fs::remove_file(&nv_tmp);
+                    let _guard = guard;
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    loop {
+                        match child.try_wait() {
+                            Ok(Some(st)) => {
+                                if st.success() {
+                                    if let Some(mut out) = child.stdout.take() {
+                                        let mut buf = Vec::new();
+                                        if out.read_to_end(&mut buf).is_ok() && !buf.is_empty() {
+                                            let _ = atomic_write(&nv_cache, &buf);
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                            Ok(None) if Instant::now() < deadline => {
+                                std::thread::sleep(Duration::from_millis(50));
+                            }
+                            _ => {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                break;
+                            }
                         }
                     }
                 });

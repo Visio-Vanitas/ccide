@@ -2,7 +2,7 @@
 //!
 //! Powered by `crate::tui::layout::{Align, ColSpec, ColumnWidths, RowLayout}`.
 
-use crate::commands::statusline::CtxTier;
+use crate::budget::CtxTier;
 use crate::tui::context::bar::{fmt_tok_compact, render_segmented_spectrum_bar};
 use crate::tui::context::{ContextSnapshot, TAG_CTX_TOGGLE};
 use crate::tui::grid::{BoxRow, PanelSpec};

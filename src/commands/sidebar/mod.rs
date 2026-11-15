@@ -97,7 +97,11 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         let is_dirty = !fast_input_redraw && DIRTY_EVENT.swap(false, Ordering::SeqCst);
 
         if !fast_input_redraw && (is_dirty || tick % 2 == 0) {
-            if pal_watcher.reload_if_changed(&home) || logos.refresh_mode_if_changed(&home) {
+            let r = pal_watcher.reload_if_changed(&home);
+            if r.synced_leader {
+                crate::commands::workspace::actions::refresh_open_yazi_previews(&home);
+            }
+            if r.changed || logos.refresh_mode_if_changed(&home) {
                 sel.cost_lines = logos.cost_lines;
                 prev_rows.clear();
             }

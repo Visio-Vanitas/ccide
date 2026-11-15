@@ -4,8 +4,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::json::extract_json_str;
+use crate::model_id::is_valid_model_name;
 use crate::orchestrator::{OrchestratorConfig, PresetProfile, RoleSlot};
-use crate::session::is_valid_model_name;
 
 pub(crate) fn push_unique(pool: &mut Vec<String>, m: &str) {
     let t = m.trim();

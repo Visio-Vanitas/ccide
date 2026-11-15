@@ -12,12 +12,12 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub use presets::{StatuslinePalette, PRESET_NAMES};
-pub use syntax::{sync_syntax_artifacts, SyntaxPalette};
+pub use syntax::{sync_syntax_artifacts, SyncOutcome, SyntaxPalette};
 pub use template::{render_palette_template, strip_jsonc_comments, tint_ansi_logo_line};
 
 pub(crate) use presets::hex_nib;
 use presets::UiColorSpecs;
-pub(crate) use template::extract_color_field;
+pub(crate) use template::{ansi256_to_rgb, extract_color_field};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorSpec {
@@ -47,42 +47,6 @@ impl ColorSpec {
     pub fn to_hex_string(self) -> String {
         let (r, g, b) = self.to_rgb_approx();
         format!("#{r:02X}{g:02X}{b:02X}")
-    }
-}
-
-fn ansi256_to_rgb(n: u8) -> (u8, u8, u8) {
-    const BASE: [(u8, u8, u8); 8] = [
-        (0, 0, 0),
-        (205, 49, 49),
-        (13, 188, 121),
-        (229, 229, 16),
-        (36, 114, 200),
-        (188, 63, 188),
-        (17, 168, 205),
-        (229, 229, 229),
-    ];
-    const BRIGHT: [(u8, u8, u8); 8] = [
-        (102, 102, 102),
-        (241, 76, 76),
-        (35, 209, 139),
-        (245, 245, 67),
-        (59, 142, 234),
-        (214, 112, 214),
-        (41, 184, 219),
-        (255, 255, 255),
-    ];
-    match n {
-        0..=7 => BASE[n as usize],
-        8..=15 => BRIGHT[(n - 8) as usize],
-        16..=231 => {
-            let i = n - 16;
-            let c = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
-            (c(i / 36), c((i % 36) / 6), c(i % 6))
-        }
-        232..=255 => {
-            let v = 8 + (n - 232) * 10;
-            (v, v, v)
-        }
     }
 }
 
@@ -177,6 +141,12 @@ pub fn resolve_palette_path(home: &str) -> PathBuf {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaletteReload {
+    pub changed: bool,
+    pub synced_leader: bool,
+}
+
 /// Lightweight mtime-based hot-reload watcher for `ccide-core sidebar`.
 pub struct PaletteWatcher {
     path: PathBuf,
@@ -189,7 +159,7 @@ impl PaletteWatcher {
         let path = resolve_palette_path(home);
         let last_mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
         let palette = Palette::load(home);
-        sync_syntax_artifacts(home, &palette);
+        let _ = sync_syntax_artifacts(home, &palette);
         Self {
             path,
             last_mtime,
@@ -197,18 +167,20 @@ impl PaletteWatcher {
         }
     }
 
-    pub fn reload_if_changed(&mut self, home: &str) -> bool {
+    pub fn reload_if_changed(&mut self, home: &str) -> PaletteReload {
         let new_path = resolve_palette_path(home);
         let cur_mtime = fs::metadata(&new_path).and_then(|m| m.modified()).ok();
         if new_path == self.path && cur_mtime == self.last_mtime {
-            return false;
+            return PaletteReload::default();
         }
         self.path = new_path;
         self.last_mtime = cur_mtime;
         self.palette = Palette::load(home);
-        sync_syntax_artifacts(home, &self.palette);
-        crate::commands::workspace::actions::refresh_open_yazi_previews(home);
-        true
+        let synced_leader = sync_syntax_artifacts(home, &self.palette) == SyncOutcome::Synced;
+        PaletteReload {
+            changed: true,
+            synced_leader,
+        }
     }
 }
 
@@ -259,7 +231,14 @@ mod tests {
             (pal.syntax.keyword, pal.syntax.function),
             (ColorSpec::Rgb(255, 0, 170), ColorSpec::Rgb(136, 192, 208))
         );
-        sync_syntax_artifacts(dir.to_str().unwrap(), &pal);
+        assert_eq!(
+            sync_syntax_artifacts(dir.to_str().unwrap(), &pal),
+            SyncOutcome::Synced
+        );
+        assert_eq!(
+            sync_syntax_artifacts(dir.to_str().unwrap(), &pal),
+            SyncOutcome::Current
+        );
         let res = fs::read_to_string(dir.join("syntax_resolved.json")).unwrap();
         assert!(
             res.contains("\"keyword\": \"#FF00AA\"")

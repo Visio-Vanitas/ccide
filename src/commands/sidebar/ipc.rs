@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::commands::workspace::focus_center_after_view_switch;
 use crate::ffi::wake_pid;
+use crate::json::json_escape;
 use crate::platform::{cache_dir, ipc_dir, ipc_path};
 use crate::session::transcript::{
     get_main_session_file_ops, get_session_subagents, JsonlTracker, SubagentItem,
@@ -107,7 +108,7 @@ pub fn register_sidebar_tab(
             .and_then(|s| s.trim().parse::<u32>().ok())
             .unwrap_or(0)
     };
-    let safe_cwd = target_cwd.replace('\\', "\\\\").replace('"', "\\\"");
+    let safe_cwd = json_escape(target_cwd);
     let reg_json = format!(
         "{{\"pid\":{},\"yazi_id\":\"{}\",\"cwd\":\"{}\",\"shell_pid\":{}}}\n",
         my_pid_str, tab_yazi_id, safe_cwd, eff_shell
@@ -133,15 +134,11 @@ pub fn trigger_native_view_switch(
     write_active_view_state(home, tab_yazi_id, view_id);
     if !session_id.is_empty() || claude_pid > 1 {
         let _ = fs::create_dir_all(ipc_dir());
-        let esc = |s: &str| {
-            s.replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace(['\n', '\r', '\t'], " ")
-        };
-        let (st, sd) = (esc(raw_type), esc(desc));
+        let st = json_escape(&raw_type.replace(['\n', '\r', '\t'], " "));
+        let sd = json_escape(&desc.replace(['\n', '\r', '\t'], " "));
         let payload = format!(
             "{{\"id\":\"{}\",\"type\":\"{}\",\"desc\":\"{}\",\"done\":{}}}",
-            view_id,
+            json_escape(view_id),
             if st.is_empty() {
                 "general-purpose"
             } else {

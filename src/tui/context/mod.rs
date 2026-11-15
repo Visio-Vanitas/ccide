@@ -13,9 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::commands::statusline::{
-    compute_context_budget, load_compact_config, CompactConfig, ContextBudget,
-};
+use crate::budget::{compute_context_budget, load_compact_config, CompactConfig, ContextBudget};
 use crate::json::{extract_json_f64, extract_json_str, extract_json_u64};
 use crate::platform::{cache_dir, user_home_dir};
 use crate::tui::pricing::PricingCatalog;

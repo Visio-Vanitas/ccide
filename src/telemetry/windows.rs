@@ -2,11 +2,12 @@
 
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use crate::platform::{find_executable, ipc_path, user_home_dir};
+use crate::platform::{atomic_write, find_executable, ipc_path, user_home_dir};
 use crate::telemetry::SharedTelemetrySnapshot;
 
 static NVIDIA_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
@@ -179,8 +180,8 @@ pub fn sample_metrics(
             if GetIfTable(buf.as_mut_ptr(), &mut sz, 0) == 0 {
                 let count = u32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
                 let row_sz = std::mem::size_of::<MibIfRow>();
-                let mut rx = 0u64;
-                let mut tx = 0u64;
+                let mut rx32 = 0u32;
+                let mut tx32 = 0u32;
                 for i in 0..count {
                     let off = 4 + i * row_sz;
                     if off + row_sz > buf.len() {
@@ -188,17 +189,17 @@ pub fn sample_metrics(
                     }
                     let row = std::ptr::read_unaligned(buf.as_ptr().add(off) as *const MibIfRow);
                     if row.dw_type != 24 {
-                        rx = rx.saturating_add(u64::from(row.dw_in_octets));
-                        tx = tx.saturating_add(u64::from(row.dw_out_octets));
+                        rx32 = rx32.wrapping_add(row.dw_in_octets);
+                        tx32 = tx32.wrapping_add(row.dw_out_octets);
                     }
                 }
                 let dt = dt_s.max(1e-3);
                 if snap.prev_net_rx > 0 || snap.prev_net_tx > 0 {
-                    snap.net_rx_bps = (rx.saturating_sub(snap.prev_net_rx) as f64) / dt;
-                    snap.net_tx_bps = (tx.saturating_sub(snap.prev_net_tx) as f64) / dt;
+                    snap.net_rx_bps = (rx32.wrapping_sub(snap.prev_net_rx as u32) as f64) / dt;
+                    snap.net_tx_bps = (tx32.wrapping_sub(snap.prev_net_tx as u32) as f64) / dt;
                 }
-                snap.prev_net_rx = rx;
-                snap.prev_net_tx = tx;
+                snap.prev_net_rx = u64::from(rx32);
+                snap.prev_net_tx = u64::from(tx32);
             }
         }
     }
@@ -225,9 +226,9 @@ pub fn sample_metrics(
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     {
-        let _guard = NvidiaFlightGuard;
+        let guard = NvidiaFlightGuard;
         if let Some(nvsmi) = find_executable("nvidia-smi", &user_home_dir()) {
-            if let Ok(child) = Command::new(nvsmi)
+            if let Ok(mut child) = Command::new(nvsmi)
                 .args([
                     "--query-gpu=utilization.gpu,memory.used",
                     "--format=csv,noheader,nounits",
@@ -237,17 +238,30 @@ pub fn sample_metrics(
                 .stderr(Stdio::null())
                 .spawn()
             {
-                let nv_tmp = ipc_path(&format!("nvidia_stat.txt.tmp.{}", std::process::id()));
                 let _ = std::thread::Builder::new().spawn(move || {
-                    let _guard = _guard;
-                    if let Ok(out) = child.wait_with_output() {
-                        if out.status.success()
-                            && !out.stdout.is_empty()
-                            && fs::write(&nv_tmp, &out.stdout).is_ok()
-                            && fs::rename(&nv_tmp, &nv_cache).is_err()
-                        {
-                            let _ = fs::write(&nv_cache, &out.stdout);
-                            let _ = fs::remove_file(&nv_tmp);
+                    let _guard = guard;
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    loop {
+                        match child.try_wait() {
+                            Ok(Some(st)) => {
+                                if st.success() {
+                                    if let Some(mut out) = child.stdout.take() {
+                                        let mut buf = Vec::new();
+                                        if out.read_to_end(&mut buf).is_ok() && !buf.is_empty() {
+                                            let _ = atomic_write(&nv_cache, &buf);
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                            Ok(None) if Instant::now() < deadline => {
+                                std::thread::sleep(Duration::from_millis(50));
+                            }
+                            _ => {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                break;
+                            }
                         }
                     }
                 });

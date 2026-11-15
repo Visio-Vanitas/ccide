@@ -3,30 +3,11 @@
 use std::fs;
 use std::path::Path;
 
-use crate::json::{extract_json_bool, extract_json_object, extract_json_str};
+use crate::json::{extract_json_bool, extract_json_object, extract_json_str, json_escape};
+use crate::model_id::{gp_shim_name, is_valid_model_name, ro_shim_name};
 use crate::orchestrator::workflow_router::route_workflow;
-use crate::orchestrator::{
-    gp_shim_name, ro_shim_name, sync_agent_shims, OrchestratorConfig, RoleKind, RoleSlot,
-    EFFORT_TIERS,
-};
-use crate::platform::{ipc_dir, ipc_path};
-use crate::session::is_valid_model_name;
-
-pub(crate) fn json_esc(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 8);
-    for ch in s.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
+use crate::orchestrator::{sync_agent_shims, OrchestratorConfig, RoleKind, RoleSlot, EFFORT_TIERS};
+use crate::platform::{atomic_write, ipc_path};
 
 fn normalize_effort(raw: &str) -> Option<String> {
     let low = raw.trim().to_ascii_lowercase();
@@ -115,24 +96,14 @@ pub fn pick_slot_model(slot: &RoleSlot, session_id: &str, role: RoleKind) -> Str
         .ok()
         .and_then(|s| s.trim().parse::<usize>().ok())
         .unwrap_or(0);
-    let _ = fs::create_dir_all(ipc_dir());
-    let tmp = ipc_path(&format!(
-        "orch_rr_{}_{}.tmp.{}",
-        sid,
-        role.key(),
-        std::process::id()
-    ));
     let next_val = ((idx + 1) % slot.models.len()).to_string();
-    if fs::write(&tmp, &next_val).is_ok() && fs::rename(&tmp, &path).is_err() {
-        let _ = fs::write(&path, &next_val);
-        let _ = fs::remove_file(&tmp);
-    }
+    let _ = atomic_write(&path, next_val.as_bytes());
     slot.models[idx % slot.models.len()].clone()
 }
 
 pub(crate) fn push_opt_str(fields: &mut Vec<String>, key: &str, val: Option<&str>) {
     if let Some(v) = val {
-        fields.push(format!("\"{}\":\"{}\"", key, json_esc(v)));
+        fields.push(format!("\"{}\":\"{}\"", key, json_escape(v)));
     }
 }
 
@@ -192,7 +163,7 @@ fn route_agent(tool_in: &str, session_id: &str, home: &str) -> Option<String> {
 
     let mut fields = vec![format!(
         "\"subagent_type\":\"{}\"",
-        json_esc(&final_sub_type)
+        json_escape(&final_sub_type)
     )];
     if !use_shim && !is_existing_shim {
         let m_cand = if matches!(target_model.as_str(), "sonnet" | "opus" | "haiku" | "fable") {
@@ -209,10 +180,10 @@ fn route_agent(tool_in: &str, session_id: &str, home: &str) -> Option<String> {
         fields.push(format!("\"effort\":\"{}\"", target_effort));
     }
     if !desc.is_empty() || clean_desc != desc {
-        fields.push(format!("\"description\":\"{}\"", json_esc(&clean_desc)));
+        fields.push(format!("\"description\":\"{}\"", json_escape(&clean_desc)));
     }
     if !prompt.is_empty() {
-        fields.push(format!("\"prompt\":\"{}\"", json_esc(&prompt)));
+        fields.push(format!("\"prompt\":\"{}\"", json_escape(&prompt)));
     }
     for k in ["isolation", "name", "cwd"] {
         push_opt_str(&mut fields, k, extract_json_str(tool_in, k).as_deref());

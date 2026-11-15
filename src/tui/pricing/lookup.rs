@@ -1,9 +1,30 @@
 //! `tokscale`-aligned model key normalization, prefix/suffix stripping, and JSONC rate loader.
 
 use std::collections::HashMap;
+use std::env;
+use std::path::{Path, PathBuf};
 
 use crate::json::{extract_json_f64, extract_json_u64};
 use crate::tui::pricing::ModelRate;
+
+pub fn resolve_pricing_path(home: &str) -> PathBuf {
+    if let Ok(explicit) = env::var("CCIDE_PRICING_FILE") {
+        let t = explicit.trim();
+        if !t.is_empty() {
+            return PathBuf::from(t);
+        }
+    }
+    if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
+        let t = xdg.trim();
+        if !t.is_empty() {
+            let p = Path::new(t).join("cc-ide/pricing.json");
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+    Path::new(home).join(".config/cc-ide/pricing.json")
+}
 
 const PROVIDER_PREFIXES: &[&str] = &[
     "us.anthropic.",
@@ -47,59 +68,6 @@ const FUZZY_BLOCKLIST: &[&str] = &[
 ];
 
 const MAX_SUFFIX_STRIP_SEGMENTS: usize = 4;
-
-pub fn strip_jsonc(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let bytes = raw.as_bytes();
-    let n = bytes.len();
-    let mut i = 0usize;
-    let mut in_str = false;
-    while i < n {
-        if in_str {
-            if bytes[i] == b'\\' && i + 1 < n {
-                if let Some(bs) = raw[i..].chars().next() {
-                    out.push(bs);
-                    i += bs.len_utf8();
-                }
-                if let Some(ch) = raw[i..].chars().next() {
-                    out.push(ch);
-                    i += ch.len_utf8();
-                }
-                continue;
-            }
-            if bytes[i] == b'"' {
-                in_str = false;
-            }
-            if let Some(ch) = raw[i..].chars().next() {
-                out.push(ch);
-                i += ch.len_utf8();
-            } else {
-                i += 1;
-            }
-        } else if bytes[i] == b'"' {
-            in_str = true;
-            out.push('"');
-            i += 1;
-        } else if bytes[i] == b'/' && i + 1 < n && bytes[i + 1] == b'/' {
-            i += 2;
-            while i < n && bytes[i] != b'\n' {
-                i += 1;
-            }
-        } else if bytes[i] == b'/' && i + 1 < n && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < n && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            i = (i + 2).min(n);
-        } else if let Some(ch) = raw[i..].chars().next() {
-            out.push(ch);
-            i += ch.len_utf8();
-        } else {
-            i += 1;
-        }
-    }
-    out
-}
 
 pub fn parse_section_into(section_obj: &str, dst: &mut HashMap<String, ModelRate>) {
     let bytes = section_obj.as_bytes();

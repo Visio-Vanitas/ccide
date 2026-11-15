@@ -27,13 +27,7 @@ use open::handle_open;
 use wezterm::{activate_wezterm_center, close_wezterm_panes};
 use wt::{close_wt_panes, focus_wt_center_from_sidebar};
 
-pub(crate) fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
-}
+pub(crate) use crate::json::json_escape as escape_json;
 
 /// Fast, non-blocking Center-Pane Focus & Subagent Switcher used by `ccide-core sidebar`.
 pub fn focus_center_after_view_switch(
