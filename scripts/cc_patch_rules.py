@@ -2,9 +2,12 @@
 """
 cc_patch_rules.py — Version-Independent Structural Regex Patch Rules for Claude Code (`macOS`/`Linux`/`Windows`).
 """
+import os
 import re
+import sys
 
-from bun_pe import BunLayout, iter_js_regions  # type: ignore[import-not-found]
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from bun_pe import BunLayout, iter_js_regions  # type: ignore[import-not-found]  # noqa: E402
 
 
 def discover_runtime_symbols(buf: bytearray, layout: BunLayout | None) -> dict[str, str]:

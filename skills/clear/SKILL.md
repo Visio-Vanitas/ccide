@@ -8,7 +8,7 @@ description: Dismiss all completed subagents from the Right Sidebar SUBAGENTS li
 Run the native `ccide-core` command to immediately dismiss all completed (`✓ done`) subagents from the Right Sidebar (`SUBAGENTS` panel) and wake all open sidebars via `SIGUSR2`:
 
 ```bash
-~/.claude/bin/ccide-core workspace clear-subagents
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace clear-subagents
 ```
 
 Interactive sidebar shortcuts (no command needed):

@@ -80,7 +80,18 @@ class IssueTemplateAndAgentInfraTests(unittest.TestCase):
         brief2 = atc.parse_issue_to_brief(issue_form)
         self.assertEqual(brief2["kind"], "feat")
         self.assertIn("area:workspace", brief2["areas"])
+        self.assertIn("src/commands/workspace/", brief2["relevant_paths"])
         self.assertEqual(brief2["acceptance_criteria"], ["Splits 30% | 54% | 16% in Ghostty"])
+
+        issue_ws_dir = {
+            "number": 55,
+            "title": "fix(workspace): harden src/commands/workspace/ ghostty probe",
+            "labels": [],
+            "body": "### Acceptance Criteria\n- [ ] Passes Ghostty tests\n",
+        }
+        brief3 = atc.parse_issue_to_brief(issue_ws_dir)
+        self.assertIn("area:workspace", brief3["areas"])
+        self.assertIn("src/commands/workspace/", brief3["relevant_paths"])
 
     def test_extract_closing_numbers_and_line_budget(self):
         refs = atc.extract_closing_numbers("Summary\nCloses #6, fixes #7 and RESOLVED #12.")

@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${0:A:h}"
-PLUGIN_VERSION="0.9.1"
+PLUGIN_VERSION="0.9.2"
 HOME_DIR="$HOME"
 CLAUDE_DIR="$HOME_DIR/.claude"
 CACHE_DIR="$HOME_DIR/.cache/cc-ide"
@@ -115,7 +115,7 @@ Usage: ./install.sh [option]
 
 Options:
   (no args)                     Launch interactive TUI Setup, Theme Studio & Doctor (falls back to --yes if non-TTY)
-  --yes, -y                     Non-interactive full build, plugin install, binary patch & hot-reload
+  --yes, -y, --apply            Non-interactive full build, plugin install, binary patch & hot-reload
   --doctor [--json]             Run environment & companion dependency health check (human TUI or JSON)
   --patch-only                  Re-apply only the claude.exe structural binary patches
   --iterm-preferences-only      Back up & apply ccide's recommended iTerm2 preferences (idempotent)
@@ -152,6 +152,7 @@ if [[ "$MODE" == "--uninstall" ]]; then
   rm -f "$HOME_DIR/Library/Application Support/iTerm2/Scripts/AutoLaunch/ccide_daemon.py" 2>/dev/null || true
   rm -rf "$HOME_DIR/.config/yazi/plugins/hscroll.yazi" 2>/dev/null || true
   rm -f "$HOME_DIR/.config/cc-ide/ccide.tmTheme" 2>/dev/null || true
+  rm -f "$HOME/.claude/scripts/cc_tui_lib.py" "$CLAUDE_DIR/scripts/cc_tui_lib.py" 2>/dev/null || true
 
   for cfg_p in \
     "$HOME_DIR/.config/yazi/yazi.toml" \
@@ -291,7 +292,8 @@ if [[ -d "$PROJECT_ROOT/assets/workflows" ]]; then
   cp -f "$PROJECT_ROOT/assets/workflows/"*.js "$CLAUDE_DIR/workflows/" 2>/dev/null || true
 fi
 
-for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py bun_pe.py cc_patch_rules.py cc_schema_inspector.py cc-maint.py ccide_syntax_pal.py ccide_workflow_runner.py ccide_workflow_server.py pane-runner.sh lazygit-pager.sh lazygit-log.py git_smooth_graph.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py cc_tui_lib.py ccide ensure-ccide-core.sh ensure-ccide-core.mjs; do
+rm -f "$CLAUDE_DIR/scripts/cc_tui_lib.py" 2>/dev/null || true
+for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py bun_pe.py cc_patch_rules.py cc_schema_inspector.py cc-maint.py ccide_syntax_pal.py ccide_workflow_runner.py ccide_workflow_server.py pane-runner.sh lazygit-pager.sh lazygit-log.py git_smooth_graph.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py ccide ensure-ccide-core.sh ensure-ccide-core.mjs; do
   chmod +x "$PROJECT_ROOT/scripts/$script_name"
   ln -sf "$PROJECT_ROOT/scripts/$script_name" "$CLAUDE_DIR/scripts/$script_name"
 done

@@ -8,9 +8,12 @@ Used by `scripts/cc-maint.py` to:
 2. Scan JS bundles (`/$bunfs/` or `B:/~BUN/`) for `statusLine`, `message.usage`, `subagents/*.meta.json`,
    and Hook event (`MK` array) keys and diff them against `assets/cc-schema.json`.
 """
+import os
 import re
+import sys
 
-from bun_pe import BunLayout, iter_js_regions  # type: ignore[import-not-found]
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from bun_pe import BunLayout, iter_js_regions  # type: ignore[import-not-found]  # noqa: E402
 
 
 def collect_js_corpus(buf: bytearray, layout: BunLayout | None) -> bytes:

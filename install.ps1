@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$PluginVersion = "0.9.1"
+$PluginVersion = "0.9.2"
 $HomeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 $ClaudeDir = Join-Path $HomeDir ".claude"
 $CacheDir = Join-Path $HomeDir ".cache\cc-ide"
@@ -265,6 +265,129 @@ if ($OptCompanion -eq "1") {
     $YaziCfgDir = if ($env:APPDATA) { Join-Path $env:APPDATA "yazi\config" } else { Join-Path $HomeDir ".config\yazi" }
     New-Item -ItemType Directory -Force -Path (Join-Path $YaziCfgDir "plugins\hscroll.yazi") | Out-Null
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "assets\yazi-hscroll.lua") -Destination (Join-Path $YaziCfgDir "plugins\hscroll.yazi\main.lua") -Force
+
+    $YaziToml = Join-Path $YaziCfgDir "yazi.toml"
+    Backup-Once $YaziToml
+    if (-not (Test-Path $YaziToml)) {
+        $DefaultYaziToml = @'
+[mgr]
+mouse_events = ["click", "scroll", "touch", "move", "drag"]
+scrolloff = 4
+'@
+        Set-Content -LiteralPath $YaziToml -Value ($DefaultYaziToml + "`n") -NoNewline -Encoding UTF8
+    }
+    $YaziSrc = Get-Content -LiteralPath $YaziToml -Raw -Encoding UTF8
+    $CleanYazi = [regex]::Replace($YaziSrc, '(?s)\r?\n?# Managed by cc-ide:[^\r\n]*\r?\n.*?(?=\z|\r?\n\[(?!\[plugin\.prepend_previewers\]\]))', "").TrimEnd()
+    if ($CleanYazi -match '(?m)^mouse_events\s*=\s*\[([^\]]*)\]') {
+        if ($Matches[1] -notmatch '["'']touch["'']') {
+            $CleanYazi = [regex]::Replace($CleanYazi, '(?m)^(mouse_events\s*=\s*\[)([^\]]*)\]', '$1$2, "touch"]', 1)
+        }
+    } elseif ($CleanYazi -match '(?m)^\[mgr\]') {
+        $CleanYazi = [regex]::Replace($CleanYazi, '(?m)^\[mgr\]', "[mgr]`nmouse_events = [`"click`", `"scroll`", `"touch`", `"move`", `"drag`"]", 1)
+    } else {
+        $CleanYazi = "[mgr]`nmouse_events = [`"click`", `"scroll`", `"touch`", `"move`", `"drag`"]`n`n" + $CleanYazi.TrimStart()
+    }
+    $PreviewerBlock = @'
+
+
+# Managed by cc-ide: 120Hz cached & bounds-clamped horizontal previewers
+[[plugin.prepend_previewers]]
+url = "*.{md,markdown,MD}"
+run = "hscroll -- md"
+
+[[plugin.prepend_previewers]]
+mime = "application/{json,ndjson}"
+run = "hscroll -- json"
+
+[[plugin.prepend_previewers]]
+mime = "text/*"
+run = "hscroll -- code"
+
+[[plugin.prepend_previewers]]
+mime = "application/{mbox,javascript,wine-extension-ini}"
+run = "hscroll -- code"
+'@
+    $UpdatedYazi = $CleanYazi + $PreviewerBlock + "`n"
+    if ($UpdatedYazi -ne $YaziSrc) {
+        Set-Content -LiteralPath $YaziToml -Value $UpdatedYazi -NoNewline -Encoding UTF8
+    }
+
+    $KeymapToml = Join-Path $YaziCfgDir "keymap.toml"
+    Backup-Once $KeymapToml
+    $KmSrc = if (Test-Path $KeymapToml) { Get-Content -LiteralPath $KeymapToml -Raw -Encoding UTF8 } else { "" }
+    $KmClean = [regex]::Replace($KmSrc, '(?s)\r?\n?# Managed by cc-ide:[^\r\n]*\r?\n.*?(?=\z|\r?\n# (?!Managed by cc-ide))', "").TrimEnd()
+    $KeymapBlock = @'
+# Managed by cc-ide: ergonomic keyboard highlight activation & bounded horizontal panning
+[[mgr.prepend_keymap]]
+on   = "<Up>"
+run  = "plugin hscroll -- key arrow -1"
+desc = "Move cursor up (activate highlight)"
+
+[[mgr.prepend_keymap]]
+on   = "k"
+run  = "plugin hscroll -- key arrow -1"
+desc = "Move cursor up (activate highlight)"
+
+[[mgr.prepend_keymap]]
+on   = "<Down>"
+run  = "plugin hscroll -- key arrow 1"
+desc = "Move cursor down (activate highlight)"
+
+[[mgr.prepend_keymap]]
+on   = "j"
+run  = "plugin hscroll -- key arrow 1"
+desc = "Move cursor down (activate highlight)"
+
+[[mgr.prepend_keymap]]
+on   = "<Left>"
+run  = "plugin hscroll -- key leave"
+desc = "Go to parent directory (activate highlight)"
+
+[[mgr.prepend_keymap]]
+on   = "h"
+run  = "plugin hscroll -- key leave"
+desc = "Go to parent directory (activate highlight)"
+
+[[mgr.prepend_keymap]]
+on   = "<Right>"
+run  = "plugin hscroll -- key enter"
+desc = "Enter child directory (activate highlight)"
+
+[[mgr.prepend_keymap]]
+on   = "l"
+run  = "plugin hscroll -- key enter"
+desc = "Enter child directory (activate highlight)"
+
+[[mgr.prepend_keymap]]
+on   = "<S-Left>"
+run  = "plugin hscroll -- -4"
+desc = "Pan file tree & preview left"
+
+[[mgr.prepend_keymap]]
+on   = "<S-Right>"
+run  = "plugin hscroll -- 4"
+desc = "Pan file tree & preview right"
+
+[[mgr.prepend_keymap]]
+on   = "<A-Left>"
+run  = "plugin hscroll -- -4"
+desc = "Pan file tree & preview left"
+
+[[mgr.prepend_keymap]]
+on   = "<A-Right>"
+run  = "plugin hscroll -- 4"
+desc = "Pan file tree & preview right"
+
+[[mgr.prepend_keymap]]
+on   = ["z", "0"]
+run  = "plugin hscroll -- reset"
+desc = "Reset horizontal pan offset"
+'@
+    $KmOut = $(if ($KmClean) { "$KmClean`n`n" } else { "" }) + $KeymapBlock + "`n"
+    if ($KmOut -ne $KmSrc) {
+        Set-Content -LiteralPath $KeymapToml -Value $KmOut -NoNewline -Encoding UTF8
+    }
+
     $InitLua = Join-Path $YaziCfgDir "init.lua"
     Backup-Once $InitLua
     $InitTxt = if (Test-Path $InitLua) { Get-Content -LiteralPath $InitLua -Raw } else { "" }

@@ -1316,7 +1316,7 @@ local function peek_markdown(job, url_str)
 		local home = os.getenv("HOME") or os.getenv("USERPROFILE") or ""
 		local script = home .. (IS_WIN and "\\.claude\\scripts\\md-render.py" or "/.claude/scripts/md-render.py")
 		local py_cmd = IS_WIN and "python" or "python3"
-		local out = Command(py_cmd):arg({ script, "-w", tostring(area_w), tostring(job.file.path) }):stdout(Command.PIPED):stderr(Command.NULL):output()
+		local out = Command(py_cmd):arg({ "-I", script, "-w", tostring(area_w), tostring(job.file.path) }):stdout(Command.PIPED):stderr(Command.NULL):output()
 		raw_all = (out and out.stdout) or ""
 		if raw_all ~= "" then
 			write_cached_block(cache_path, key, raw_all)

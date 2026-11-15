@@ -50,7 +50,7 @@ jobs:
               ("area:patcher", ["patch_claude_binary", "patcher", "sigusr2", "__bun", "bun!"]),
               ("area:sidebar", ["sidebar", "sprite", "subagents", "context", "cost", "tokscale"]),
               ("area:installer", ["install.sh", "iterm-preferences", "iterm-pyenv", "pyenv", "doctor", "setup"]),
-              ("area:workspace", ["workspace.rs", "ccide_daemon", "iterm2_workspace", "osc 1337", "tmux"]),
+              ("area:workspace", ["src/commands/workspace/", "ccide_daemon", "iterm2_workspace", "osc 1337", "tmux"]),
               ("area:hscroll", ["pty-hscroll", "yazi-hscroll", "lazygit-pager", "lazygit-log", "md-render"]),
               ("area:statusline", ["statusline", "autocompact", "auto-compact", "powerline"]),
               ("area:ci", ["ci.yml", "release.yml", "cc-compat-watch", "workflow"]),

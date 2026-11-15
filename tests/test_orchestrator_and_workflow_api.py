@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for built-in Workflow JS templates, macro expansion, CLI runner & HTTP/SSE API server."""
 
+import errno
 import json
 import os
 import re
@@ -9,7 +10,9 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
+from unittest import mock
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
@@ -82,7 +85,51 @@ class WorkflowTemplatesAndApiTests(unittest.TestCase):
         self.assertIn("balanced", data["presets"])
         self.assertIn("hetero-rr", data["presets"])
 
+    def test_discover_workflows_survives_permission_and_os_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blocked_dir = os.path.join(tmp, "blocked")
+            readable_dir = os.path.join(tmp, "readable")
+            os.makedirs(blocked_dir)
+            os.makedirs(readable_dir)
+            with open(os.path.join(readable_dir, "unreadable.js"), "w", encoding="utf-8") as f:
+                f.write("export const meta = { name: 'unreadable' };")
+            with open(os.path.join(readable_dir, "ok-wf.js"), "w", encoding="utf-8") as f:
+                f.write("export const meta = { name: 'ok-wf', description: 'ok' };")
+
+            real_listdir = os.listdir
+            real_open = open
+
+            def fake_listdir(path):
+                if path == blocked_dir:
+                    raise PermissionError(errno.EPERM, "Operation not permitted", path)
+                return real_listdir(path)
+
+            def fake_open(file, *args, **kwargs):
+                if isinstance(file, str) and file.endswith("unreadable.js"):
+                    raise PermissionError(errno.EACCES, "Permission denied", file)
+                return real_open(file, *args, **kwargs)
+
+            with mock.patch.object(wf_runner, "workflow_search_dirs", return_value=[blocked_dir, readable_dir]), \
+                 mock.patch("os.listdir", side_effect=fake_listdir), \
+                 mock.patch("builtins.open", side_effect=fake_open):
+                found = wf_runner.discover_workflows(cwd=tmp, repo_root=tmp)
+            self.assertEqual([w["name"] for w in found], ["ok-wf"])
+
+    def test_patch_rules_and_schema_inspector_isolated_import(self):
+        for script_name in ("cc_patch_rules.py", "cc_schema_inspector.py"):
+            proc = subprocess.run(
+                [sys.executable, "-I", os.path.join(_SCRIPTS_DIR, script_name)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"{script_name} failed under -I: {proc.stderr}")
+
     def test_workflow_http_server_and_anthropic_sse_with_mock_claude(self):
+        def _is_loopback_blocked(exc: BaseException) -> bool:
+            if isinstance(exc, PermissionError) or getattr(exc, "errno", None) == errno.EPERM:
+                return True
+            reason = getattr(exc, "reason", None)
+            return isinstance(reason, PermissionError) or getattr(reason, "errno", None) == errno.EPERM
+
         with tempfile.TemporaryDirectory() as tmp:
             mock_bin = os.path.join(tmp, "claude")
             with open(mock_bin, "w", encoding="utf-8") as f:
@@ -97,7 +144,17 @@ class WorkflowTemplatesAndApiTests(unittest.TestCase):
             os.environ["CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL"] = "should-be-stripped"
             os.environ["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] = "1"
 
-            srv = wf_server.create_server("127.0.0.1", 0)
+            try:
+                srv = wf_server.create_server("127.0.0.1", 0)
+            except OSError as exc:
+                for k, v in old_env.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+                if _is_loopback_blocked(exc):
+                    self.skipTest("loopback sockets blocked by sandbox")
+                raise
             port = srv.server_address[1]
             thr = threading.Thread(target=srv.serve_forever, daemon=True)
             thr.start()
@@ -135,6 +192,10 @@ class WorkflowTemplatesAndApiTests(unittest.TestCase):
                 self.assertIn("event: content_block_delta", sse_body)
                 self.assertIn("mocked-ok", sse_body)
                 self.assertIn("event: message_stop", sse_body)
+            except (PermissionError, urllib.error.URLError) as exc:
+                if _is_loopback_blocked(exc):
+                    self.skipTest("loopback sockets blocked by sandbox")
+                raise
             finally:
                 srv.shutdown()
                 srv.server_close()

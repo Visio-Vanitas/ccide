@@ -162,7 +162,7 @@ jobs:
           zsh -n install.sh
           zsh -n scripts/ccide
           zsh -n scripts/pane-runner.sh
-          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/cc_tui_lib.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/git_smooth_graph.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py scripts/ccide_workflow_runner.py scripts/ccide_workflow_server.py scripts/ccide_syntax_pal.py
+          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/git_smooth_graph.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py scripts/ccide_workflow_runner.py scripts/ccide_workflow_server.py scripts/ccide_syntax_pal.py
           pwsh -NoProfile -Command '$errs = $null; foreach ($f in @("install.ps1", "scripts/ccide.ps1")) { [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errs); if ($errs) { Write-Error "$f : $errs"; exit 1 } }'
 
       - name: Validate Plugin & Marketplace JSON Manifests & Version Parity
@@ -214,14 +214,19 @@ jobs:
               cargo_ver = re.search(r'(?m)^version\s*=\s*"([^"]+)"', f.read()).group(1)
           with open(".claude-plugin/plugin.json", encoding="utf-8") as f:
               plugin_ver = json.load(f)["version"]
+          with open(".claude-plugin/marketplace.json", encoding="utf-8") as f:
+              mkt = json.load(f)
+              mkt_ver = mkt["version"]
+              mkt_p0_ver = mkt["plugins"][0]["version"]
           with open("install.sh", encoding="utf-8") as f:
               inst_ver = re.search(r'(?m)^PLUGIN_VERSION="([^"]+)"', f.read()).group(1)
           with open("install.ps1", encoding="utf-8") as f:
               ps1_ver = re.search(r'(?m)^\$PluginVersion\s*=\s*"([^"]+)"', f.read()).group(1)
-          assert cargo_ver == plugin_ver == inst_ver == ps1_ver, (
-              f"Version mismatch: Cargo.toml={cargo_ver}, plugin.json={plugin_ver}, install.sh={inst_ver}, install.ps1={ps1_ver}"
+          assert cargo_ver == plugin_ver == mkt_ver == mkt_p0_ver == inst_ver == ps1_ver, (
+              f"Version mismatch: Cargo.toml={cargo_ver}, plugin.json={plugin_ver}, "
+              f"marketplace.json={mkt_ver}/{mkt_p0_ver}, install.sh={inst_ver}, install.ps1={ps1_ver}"
           )
-          print(f"OK: 4-way version parity ({cargo_ver})")
+          print(f"OK: 5-way version parity ({cargo_ver})")
           PY
 
       - name: Build Debug Engine & Run Dynamic Patcher, Workbench & Cross-Platform Unit Tests

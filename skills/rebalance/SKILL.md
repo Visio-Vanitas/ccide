@@ -7,20 +7,19 @@ description: Rebalance all open ccide tabs to deterministic 30% | 54% | 16% colu
 
 Normalize every open `ccide` tab to the `30% | 54% | 16%` layout, re-bind each tab's shell PID for process isolation, and lock the Yazi/Lazygit/Companion panes to zero scrollback.
 
-## Preferred command (Tier 1 warm daemon, no Python cold start)
+## Preferred command (cross-OS native resolver, no Python cold start)
 
 ```bash
-ccide-core workspace rebalance
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace rebalance
 ```
 
-- If `/tmp/.cc-ide/iterm_daemon.sock` is alive, this is a single Unix-socket RPC.
-- If the socket is dead, it starts `ccide_daemon.py` and falls back to `iterm2_workspace.py rebalance`.
-- Inside `tmux` it only re-enables `mouse on`; tmux keeps its own geometry (percentages apply at pane creation).
+- On macOS iTerm2, if `/tmp/.cc-ide/iterm_daemon.sock` is alive, this is a single Unix-socket RPC; otherwise `ccide-core` starts `ccide_daemon.py` automatically.
+- On macOS Ghostty `>= 1.3`, it equalizes and resizes native `Ghostty.sdef` splits to `30% | 54% | 16%`; inside `tmux` it ensures `mouse on` (tmux keeps creation-time pane geometry).
 
 ## Full rebalance + sidebar hot-reload
 
 ```bash
-ccide-core workspace rebalance && pkill -USR2 -f "ccide-core sidebar" || true
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace rebalance
 ```
 
 Under Tier 2 (SSH), the change lands on the client Mac's native split; the remote side does not need `rebalance` because its panes are client-local. If a tab cannot be reached, re-open the tab with `ccide` (it will auto-fall back to `tmux -L ccide`).

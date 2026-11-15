@@ -17,6 +17,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -67,7 +68,12 @@ def visible_width(s: str) -> int:
 
 def get_ipc_dir() -> str:
     return os.environ.get("CCIDE_IPC_DIR") or (
-        os.path.join(tempfile.gettempdir(), ".cc-ide") if os.name == "nt" else "/tmp/.cc-ide"
+        os.path.join(
+            os.environ.get("TMP") or os.environ.get("TEMP") or tempfile.gettempdir(),
+            ".cc-ide",
+        )
+        if os.name == "nt"
+        else "/tmp/.cc-ide"
     )
 
 

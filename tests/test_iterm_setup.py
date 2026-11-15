@@ -2,6 +2,7 @@
 """Hermetic unit tests for Issue #6 (`iterm-preferences.py` & `iterm-pyenv.py`)."""
 
 import contextlib
+import errno
 import http.server
 import importlib.util
 import io
@@ -12,6 +13,8 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
 from unittest import mock
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -142,26 +145,41 @@ class ITermPreferencesAndPyenvTests(unittest.TestCase):
                 self.assertEqual(src, "user-configured")
 
             # 2. Concurrent probe selects fastest HTTP 200 mirror and writes 24h TTL cache
-            with _local_mirror_server(delay_s=0.14, status_code=200) as slow_url, _local_mirror_server(
-                delay_s=0.0, status_code=200
-            ) as fast_url, _local_mirror_server(delay_s=0.0, status_code=503) as dead_url:
-                with mock.patch.dict(os.environ, {"PIP_INDEX_URL": ""}, clear=False):
-                    with mock.patch.object(iterm_pyenv, "detect_user_pip_index", return_value=None):
-                        chosen2, src2 = iterm_pyenv.select_pypi_index(
-                            "/usr/bin/python3",
-                            cache_file,
-                            mirrors=[("slow", slow_url), ("fast", fast_url), ("dead", dead_url)],
-                        )
-                        self.assertEqual(chosen2, fast_url)
-                        self.assertIn("fast", src2)
-                        self.assertTrue(os.path.isfile(cache_file))
+            try:
+                with _local_mirror_server(delay_s=0.14, status_code=200) as slow_url, _local_mirror_server(
+                    delay_s=0.0, status_code=200
+                ) as fast_url, _local_mirror_server(delay_s=0.0, status_code=503) as dead_url:
+                    with mock.patch.dict(os.environ, {"PIP_INDEX_URL": ""}, clear=False):
+                        with mock.patch.object(iterm_pyenv, "detect_user_pip_index", return_value=None):
+                            chosen2, src2 = iterm_pyenv.select_pypi_index(
+                                "/usr/bin/python3",
+                                cache_file,
+                                mirrors=[("slow", slow_url), ("fast", fast_url), ("dead", dead_url)],
+                            )
+                            if chosen2 is None and src2 == "unreachable":
+                                try:
+                                    urllib.request.urlopen(fast_url, timeout=1.0).close()
+                                except (PermissionError, urllib.error.URLError) as exc:
+                                    reason = getattr(exc, "reason", None)
+                                    if (
+                                        isinstance(exc, PermissionError)
+                                        or isinstance(reason, PermissionError)
+                                        or getattr(exc, "errno", None) == errno.EPERM
+                                        or getattr(reason, "errno", None) == errno.EPERM
+                                    ):
+                                        self.skipTest("loopback sockets blocked by sandbox")
+                            self.assertEqual(chosen2, fast_url)
+                            self.assertIn("fast", src2)
+                            self.assertTrue(os.path.isfile(cache_file))
 
-                        # Subsequent call hits 24h cache without probing network
-                        chosen3, src3 = iterm_pyenv.select_pypi_index(
-                            "/usr/bin/python3", cache_file, mirrors=[]
-                        )
-                        self.assertEqual(chosen3, fast_url)
-                        self.assertEqual(src3, "cached")
+                            # Subsequent call hits 24h cache without probing network
+                            chosen3, src3 = iterm_pyenv.select_pypi_index(
+                                "/usr/bin/python3", cache_file, mirrors=[]
+                            )
+                            self.assertEqual(chosen3, fast_url)
+                            self.assertEqual(src3, "cached")
+            except PermissionError:
+                self.skipTest("loopback sockets blocked by sandbox")
 
     def test_offline_all_mirrors_unreachable_falls_back_gracefully_to_tier3(self):
         with tempfile.TemporaryDirectory() as td:
@@ -171,16 +189,19 @@ class ITermPreferencesAndPyenvTests(unittest.TestCase):
                 "CCIDE_FORCE_VENV": "1",
                 "PIP_INDEX_URL": "",
             }
-            with _local_mirror_server(delay_s=0.0, status_code=503) as offline_url:
-                with mock.patch.dict(os.environ, env, clear=False):
-                    with mock.patch.object(iterm_pyenv, "detect_user_pip_index", return_value=None):
-                        buf = io.StringIO()
-                        with contextlib.redirect_stdout(buf):
-                            rc = iterm_pyenv.ensure_iterm_pyenv(td, mirrors=[("off", offline_url)])
-                        self.assertEqual(rc, 0)
-                        out = buf.getvalue()
-                        self.assertIn("Tier 3 (`tmux`)", out)
-                        self.assertIn("-m venv", out)
+            try:
+                with _local_mirror_server(delay_s=0.0, status_code=503) as offline_url:
+                    with mock.patch.dict(os.environ, env, clear=False):
+                        with mock.patch.object(iterm_pyenv, "detect_user_pip_index", return_value=None):
+                            buf = io.StringIO()
+                            with contextlib.redirect_stdout(buf):
+                                rc = iterm_pyenv.ensure_iterm_pyenv(td, mirrors=[("off", offline_url)])
+                            self.assertEqual(rc, 0)
+                            out = buf.getvalue()
+                            self.assertIn("Tier 3 (`tmux`)", out)
+                            self.assertIn("-m venv", out)
+            except PermissionError:
+                self.skipTest("loopback sockets blocked by sandbox")
 
 
 if __name__ == "__main__":

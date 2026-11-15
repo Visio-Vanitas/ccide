@@ -32,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     --iterm) BACKEND="iterm"; shift ;;
     --ghostty) BACKEND="ghostty"; shift ;;
     --wezterm) BACKEND="wezterm"; shift ;;
+    --wt) BACKEND="wt"; shift ;;
     --backend)
       BACKEND="${2:-auto}"
       if [[ $# -ge 2 ]]; then shift 2; else shift; fi
@@ -131,6 +132,8 @@ Adaptive 3-Tier Workspace Backends:
   --iterm          Force Tier 1: Local iTerm2 native Metal split panes
   --osc            Force Tier 2: OSC 1337 passthrough to client iTerm2 native split panes
   --ghostty        Force Ghostty 1.3+ native Metal split panes
+  --wezterm        Force WezTerm native CLI 3-column split panes
+  --wt             Force Windows Terminal (`wt.exe -w 0`) 3-column split panes
   --tmux           Force Tier 3: Universal tmux 3-column layout (`tmux -L ccide`)
   --ssh <host>     Connect to <host> with SSH ControlMaster ready for native iTerm2 splits
 

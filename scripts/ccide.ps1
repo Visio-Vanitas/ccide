@@ -39,6 +39,8 @@ while ($i -lt $args.Count) {
     $arg = [string]$args[$i]
     switch -Regex ($arg) {
         "^(--no-git|--tree-only)$" { $ShowGit = "0"; $i++; continue }
+        "^--mon$"                  { $ShowMon = "1"; $i++; continue }
+        "^(--no-mon|--2|--3)$"     { $ShowMon = "0"; $i++; continue }
         "^--no-right$"             { $ShowRight = "0"; $i++; continue }
         "^--wezterm$"              { $Backend = "wezterm"; $i++; continue }
         "^--wt$"                   { $Backend = "wt"; $i++; continue }
@@ -179,6 +181,19 @@ $PaneSpec = ""
 if (Test-Path $CoreBin) {
     $GitRootArg = if ($GitRoot) { $GitRoot } else { "-" }
     $PaneSpec = (& $CoreBin workspace open $TargetDir $YaziId $ShowGit $ShowMon $LeftPct $GitRootArg $ShowRight $Backend 2>$null | Select-Object -First 1)
+}
+
+if ($env:CLAUDECODE) {
+    if ($env:CLAUDE_CODE_SESSION_ID) {
+        $CacheDir = Join-Path $HomeDir ".cache\cc-ide"
+        $IpcDir = if ($env:CCIDE_IPC_DIR) { $env:CCIDE_IPC_DIR } else { Join-Path ([System.IO.Path]::GetTempPath()) ".cc-ide" }
+        New-Item -ItemType Directory -Force -Path $CacheDir, $IpcDir | Out-Null
+        $SessFile = "session_$($env:CLAUDE_CODE_SESSION_ID).yazi"
+        Set-Content -LiteralPath (Join-Path $CacheDir $SessFile) -Value $YaziId -NoNewline -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $IpcDir $SessFile) -Value $YaziId -NoNewline -Encoding ASCII
+    }
+    Write-Host "Workspace panes ready ($PaneSpec, Yazi ID: $YaziId)."
+    exit 0
 }
 
 function Resolve-ClaudeExe {

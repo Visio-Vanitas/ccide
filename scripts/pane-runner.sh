@@ -90,7 +90,7 @@ case "$ROLE" in
     while true; do
       clear_terminal_buffers
       if [[ -f "$HSCROLL_BRIDGE" && -x "$PYTHON_BIN" ]]; then
-        "$PYTHON_BIN" "$HSCROLL_BRIDGE" "$LAZYGIT_BIN" "${LG_ARGS[@]}" || true
+        "$PYTHON_BIN" -I "$HSCROLL_BRIDGE" "$LAZYGIT_BIN" "${LG_ARGS[@]}" || true
       else
         "$LAZYGIT_BIN" "${LG_ARGS[@]}" || true
       fi
@@ -119,8 +119,8 @@ case "$ROLE" in
     export CC_YAZI_ID="$CLIENT_ID"
     export CC_INSTANCE_ID="$INSTANCE_ID"
     claude --dangerously-skip-permissions "$@" || true
-    if [[ "$KEEP_PANES" == "0" && -x "$HOME/.local/bin/cc-close" && -n "$INSTANCE_ID" ]]; then
-      "$HOME/.local/bin/cc-close" "$INSTANCE_ID" >/dev/null 2>&1 || true
+    if [[ "$KEEP_PANES" == "0" && -x "$CCIDE_CORE_BIN" && -n "$INSTANCE_ID" ]]; then
+      "$CCIDE_CORE_BIN" workspace close "$INSTANCE_ID" "$CLIENT_ID" >/dev/null 2>&1 || true
     fi
     exec "${SHELL:-/bin/zsh}" -l
     ;;

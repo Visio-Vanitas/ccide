@@ -27,33 +27,33 @@ Manage the `cc-ide` workspace in the current tab or across all open windows/tabs
 
 2. **Rebalance all open tabs to `30% | 54% | 16%` and lock TUI panes to zero scrollback**:
    ```bash
-   ccide-core workspace rebalance
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace rebalance
    ```
 
 3. **Fast focus / subagent switch** (used by the right sidebar; no Python cold start):
    ```bash
-   ccide-core workspace switch-subagent <yazi_id> <session_id> <view_id> [footer_rank]
-   ccide-core workspace focus <query>
-   ccide-core workspace close [<pane_spec>] [<yazi_id>]
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace switch-subagent <yazi_id> <session_id> <view_id> [footer_rank]
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace focus <query>
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace close [<pane_spec>] [<yazi_id>]
    ```
 
 4. **Rebuild, re-patch the Claude Code binary, and hot-reload all sidebars (from the cloned `ccide` repository)**:
    ```bash
-   ./install.sh
+   ./install.sh   # or .\install.ps1 on Windows
    ```
-   The Claude Code binary patch is version-independent (dynamic Bun trailer parsing + invariant string anchors) and is re-applied automatically by `ccide` on the first launch after any Claude Code update — `./install.sh --patch-only` is only needed for a forced re-patch.
+   The Claude Code binary patch is version-independent (dynamic Bun trailer parsing + invariant string anchors) and is re-applied automatically by `ccide` on the first launch after any Claude Code update — `./install.sh --patch-only` (or `.\install.ps1 -PatchOnly`) is only needed for a forced re-patch.
 
-5. **Fetch / refresh the prebuilt engine without `cargo`** (used automatically by marketplace installs and `install.sh` fallback):
+5. **Fetch / refresh the prebuilt engine without `cargo`** (used automatically by marketplace installs and installers):
    ```bash
-   scripts/ensure-ccide-core.sh --help
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" --help
    ```
-   Resolves `$CLAUDE_PLUGIN_ROOT/bin`, `~/.claude/bin`, then `PATH`; otherwise downloads `ccide-core-<triple>.tar.gz` from the latest GitHub Release and verifies it against `SHA256SUMS.txt`.
+   Resolves `~/.claude/bin` then `$CLAUDE_PLUGIN_ROOT/bin`; otherwise downloads `ccide-core-<triple>.tar.gz` from the latest GitHub Release and verifies it against `SHA256SUMS.txt`.
 
 ## Release channels
 
-- `dev` — development; CI gate only (`rustc 1.70.0` MSRV, fmt/clippy, 4-target matrix, patcher tests).
-- `preview` — merges via PR from `dev`; publishes a **pre-release** (`v0.5.0-rc.<run_number>`) after live npm `@anthropic-ai/claude-code@latest` patch verification.
-- `main` — merges via PR from `preview` only (enforced by CI); publishes the **immutable stable** `v0.5.0` release.
+- `dev` — development; CI gate only (`rustc 1.70.0` MSRV, fmt/clippy, 6-target matrix, patcher tests).
+- `preview` — merges via PR from `dev`; publishes a **pre-release** (`v0.9.2-rc.<run_number>` on `0.X.0` minor milestones) after live npm `@anthropic-ai/claude-code@latest` patch verification.
+- `main` — merges via PR from `preview` only (enforced by CI); publishes the **immutable stable** `v0.9.2` release (`0.x.y` patches tag on `main` and reuse the `0.X.0` binaries).
 - A daily `cc-compat-watch.yml` probe (`03:17 UTC`) tests the patcher against the newest published Claude Code and opens a deduplicated `[Compat Alert]` issue if it breaks.
 
 ## Health checks

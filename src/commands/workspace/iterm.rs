@@ -112,7 +112,7 @@ pub fn ensure_daemon_started(home: &str) {
     let daemon_script = format!("{}/.claude/scripts/ccide_daemon.py", home);
     if Path::new(&py).exists() && Path::new(&daemon_script).exists() {
         let _ = Command::new(&py)
-            .arg(&daemon_script)
+            .args(["-I", daemon_script.as_str()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

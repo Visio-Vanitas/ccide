@@ -11,7 +11,7 @@ function splitArgs(raw: string): string[] {
 async function resolveIpcDir($: EngineInterface): Promise<string> {
   const custom = await $.env.get('CCIDE_IPC_DIR')
   if (custom) return custom
-  const winTmp = (await $.env.get('TEMP')) || (await $.env.get('TMP'))
+  const winTmp = (await $.env.get('TMP')) || (await $.env.get('TEMP'))
   const userProfile = await $.env.get('USERPROFILE')
   if (winTmp && userProfile) return `${winTmp.replace(/[\\/]+$/, '')}/.cc-ide`
   return '/tmp/.cc-ide'
@@ -21,14 +21,26 @@ async function resolveHomeDir($: EngineInterface): Promise<string> {
   return (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
 }
 
-async function runCore(
-  $: EngineInterface,
-  resolverPath: string,
-  subArgs: readonly string[],
-): Promise<{ code: number; out: string }> {
-  const res = await $.process.run(['node', resolverPath, ...subArgs], { timeoutMs: 15000 })
+function resolverPath($: EngineInterface): string {
+  return `${$.plugin.root}/scripts/ensure-ccide-core.mjs`
+}
+
+async function runCore($: EngineInterface, subArgs: readonly string[]): Promise<{ code: number; out: string }> {
+  const res = await $.process.run(['node', resolverPath($), ...subArgs], { timeoutMs: 15000 })
   const out = [stripAnsi(res.stdout), stripAnsi(res.stderr)].filter(Boolean).join('\n')
   return { code: res.exitCode, out }
+}
+
+const MAX_CACHED_SESSIONS = 64
+const MAX_PERF_LINES = 256
+
+function setBoundedMap<K, V>(map: Map<K, V>, key: K, value: V, limit = MAX_CACHED_SESSIONS): void {
+  if (map.has(key)) map.delete(key)
+  else if (map.size >= limit) {
+    const oldest = map.keys().next().value
+    if (oldest !== undefined) map.delete(oldest)
+  }
+  map.set(key, value)
 }
 
 const lastModels = new Map<string, string>()
@@ -43,11 +55,11 @@ async function syncSessionModel($: EngineInterface, overrideModel?: string): Pro
     ])
     const m = (curModel || '').trim()
     if (!sid || !m || m.startsWith('<') || lastModels.get(sid) === m) return
-    lastModels.set(sid, m)
+    setBoundedMap(lastModels, sid, m)
     const writes: Promise<unknown>[] = [$.fs.write(`${ipcDir}/mod_model_${sid}.txt`, `${m}\n`)]
     if (home) writes.push($.fs.write(`${home}/.cache/cc-ide/status/model_${sid}.cache`, `${m}\n`))
     await Promise.all(writes)
-    const resolver = `${$.plugin.root}/scripts/ensure-ccide-core.mjs`
+    const resolver = resolverPath($)
     const sidPid = (await $.fs.read(`${ipcDir}/sb_${sid}.pid`).catch(() => '')).trim()
     const rawPids = sidPid
       ? [sidPid]
@@ -62,7 +74,9 @@ async function syncSessionModel($: EngineInterface, overrideModel?: string): Pro
                 .map(n => $.fs.read(`${ipcDir}/${n}`).catch(() => '')),
             ),
           )
-    const pids = rawPids.map(t => t.trim()).filter(p => /^\d+$/.test(p) && Number(p) > 1)
+    const pids = rawPids
+      .map(t => t.trim().split(/[:\s]/)[0])
+      .filter(p => /^\d+$/.test(p) && Number(p) > 1)
     await Promise.all(
       pids.map(pid =>
         $.process.run(['node', resolver, 'wake-pid', pid], { timeoutMs: 2000 }).catch(() => undefined),
@@ -91,13 +105,16 @@ async function appendPerfSample(
         if (!lines) {
           const existing = await $.fs.read(pfPath).catch(() => '')
           lines = existing.split('\n').map(s => s.trim()).filter(Boolean)
-          perfBuffers.set(sid, lines)
         }
+        setBoundedMap(perfBuffers, sid, lines)
         lines.push(JSON.stringify(sample))
+        if (lines.length > MAX_PERF_LINES) {
+          lines.splice(0, lines.length - MAX_PERF_LINES)
+        }
         await $.fs.write(pfPath, `${lines.join('\n')}\n`)
       })
       .catch(() => undefined)
-    perfQueues.set(sid, next)
+    setBoundedMap(perfQueues, sid, next)
     await next
   } catch {
     // Non-fatal perf stream write
@@ -191,41 +208,37 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'palette' }, async ($, e) => {
-    const resolver = `${$.plugin.root}/scripts/ensure-ccide-core.mjs`
     const sub = e.args.trim() || 'list'
-    const { code, out } = await runCore($, resolver, [
-      'workspace',
-      'theme',
-      ...splitArgs(sub),
-    ])
-    if (code === 0 && sub !== 'list' && sub !== 'path') {
-      $.ui.toast(`cc-ide palette: ${sub}`)
-    }
+    const { code, out } = await runCore($, ['workspace', 'theme', ...splitArgs(sub)])
+    if (code === 0 && sub !== 'list' && sub !== 'path') $.ui.toast(`cc-ide palette: ${sub}`)
     return { text: out || `Palette command '${sub}' completed.`, exitCode: code }
   })
 
   on('command.run', { command: 'rebalance-panes' }, async $ => {
-    const resolver = `${$.plugin.root}/scripts/ensure-ccide-core.mjs`
-    const { code, out } = await runCore($, resolver, ['workspace', 'rebalance'])
-    $.ui.toast('Rebalanced cc-ide columns (30% | 54% | 16%)')
+    const { code, out } = await runCore($, ['workspace', 'rebalance'])
+    const ok = code === 0 && !/unsupported/i.test(out)
+    $.ui.toast(
+      ok
+        ? 'Rebalanced cc-ide columns (30% | 54% | 16%)'
+        : out || 'Rebalance failed or unsupported on current terminal',
+    )
     return {
-      text: out || 'Rebalanced open cc-ide workspace panes (30% | 54% | 16%).',
+      text:
+        out ||
+        (ok
+          ? 'Rebalanced open cc-ide workspace panes (30% | 54% | 16%).'
+          : 'Rebalance failed or unsupported on current terminal.'),
       exitCode: code,
     }
   })
 
   on('command.run', { command: 'clear-agents' }, async $ => {
-    const resolver = `${$.plugin.root}/scripts/ensure-ccide-core.mjs`
-    const { code, out } = await runCore($, resolver, [
-      'workspace',
-      'clear-subagents',
-    ])
+    const { code, out } = await runCore($, ['workspace', 'clear-subagents'])
     if (out) $.ui.toast(out)
     return { text: out || 'Cleared completed subagents.', exitCode: code }
   })
 
   on('command.run', { command: 'orch' }, async ($, e) => {
-    const resolver = `${$.plugin.root}/scripts/ensure-ccide-core.mjs`
     const parts = splitArgs(e.args)
     const presets = ['balanced', 'fast', 'deep-audit', 'hetero-rr']
     const orchArgs =
@@ -236,52 +249,36 @@ export const register: Register = on => {
           : ['status', 'preset', 'set', 'sync'].includes(parts[0])
             ? ['orchestrator', ...parts]
             : ['orchestrator', 'set', ...parts]
-    const { code, out } = await runCore($, resolver, orchArgs)
-    if (code === 0 && orchArgs[1] !== 'status') {
-      $.ui.toast(`cc-ide orch: ${orchArgs.slice(1).join(' ')}`)
-    }
+    const { code, out } = await runCore($, orchArgs)
+    if (code === 0 && orchArgs[1] !== 'status') $.ui.toast(`cc-ide orch: ${orchArgs.slice(1).join(' ')}`)
     return { text: out || 'Orchestrator updated.', exitCode: code }
   })
 
   on('command.run', { command: 'ccide-doctor' }, async ($, e) => {
-    const resolver = `${$.plugin.root}/scripts/ensure-ccide-core.mjs`
     const parts = splitArgs(e.args)
     const head = (parts[0] || 'doctor').toLowerCase()
     if (head === 'theme' || head === 'palette') {
       const target = parts[1] || 'list'
-      const { code, out } = await runCore($, resolver, [
-        'workspace',
-        'theme',
-        target,
-      ])
+      const { code, out } = await runCore($, ['workspace', 'theme', target])
       if (code === 0 && target !== 'list') $.ui.toast(`cc-ide palette: ${target}`)
       return { text: out || `Palette: ${target}`, exitCode: code }
     }
     if (head === 'rebalance') {
-      const { code, out } = await runCore($, resolver, ['workspace', 'rebalance'])
-      $.ui.toast('Rebalanced cc-ide columns')
+      const { code, out } = await runCore($, ['workspace', 'rebalance'])
+      if (code === 0 && !/unsupported/i.test(out)) $.ui.toast('Rebalanced cc-ide columns')
+      else $.ui.toast(out || 'Rebalance failed or unsupported on current terminal')
       return { text: out || 'Rebalanced workspace panes.', exitCode: code }
     }
     if (head === 'clear' || head === 'clear-subagents') {
-      const { code, out } = await runCore($, resolver, [
-        'workspace',
-        'clear-subagents',
-      ])
+      const { code, out } = await runCore($, ['workspace', 'clear-subagents'])
       return { text: out || 'Cleared completed subagents.', exitCode: code }
     }
     if (head === 'orch' || head === 'orchestrator') {
       const rest = parts.slice(1)
-      const { code, out } = await runCore($, resolver, [
-        'orchestrator',
-        ...(rest.length ? rest : ['status']),
-      ])
+      const { code, out } = await runCore($, ['orchestrator', ...(rest.length ? rest : ['status'])])
       return { text: out || 'Orchestrator updated.', exitCode: code }
     }
-    const { code, out } = await runCore($, resolver, [
-      'doctor',
-      $.plugin.root,
-      ...parts.slice(head === 'doctor' ? 1 : 0),
-    ])
+    const { code, out } = await runCore($, ['doctor', $.plugin.root, ...parts.slice(head === 'doctor' ? 1 : 0)])
     return { text: out || 'cc-ide doctor finished.', exitCode: code }
   })
 }
