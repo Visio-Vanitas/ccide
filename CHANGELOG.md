@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.3] - 2026-11-15
+
+### Changed & Fixed
+- **Zero-Cycle Layered Architecture & 100% `<= 300`-Line Rust Modules (`src/budget/`, `src/model_id.rs`, `src/json/`, `src/session/`, `src/tui/`, `src/commands/`)**:
+  - Extracted leaf modules `src/budget/{mod,config}.rs` and `src/model_id.rs`, split `src/json.rs` into `src/json/{mod,extract,scan,jsonc}.rs` (deduplicating 2 JSONC strippers and 5 JSON escapers), and eliminated every `crate::commands` reverse dependency and `orchestrator <-> session` cycle, guarded by CI-grade assertions in `tests/test_agent_infra.py`.
+  - Split every oversized Rust source file below `300` lines (`src/session/{mod,binding,scan,model,model_compact,subagents,subagent_state,transcript,transcript_main,focus}.rs`, `src/tui/{grid,grid_render}.rs`, `src/tui/logo/{mod,ansi}.rs`, `src/commands/setup/{doctor,doctor_probes}.rs`, `src/commands/statusline/{mod,git_info}.rs`, `src/commands/yazi_hook.rs`).
+- **Session Isolation, Theme Leader Election & Telemetry Hardening (`src/platform.rs`, `src/session/`, `src/tui/palette/`, `src/telemetry/`)**:
+  - Unified atomic writes into `platform::atomic_write` and added case-insensitive Windows cwd matching via `platform::paths_equal_ci`, separated pure `choose_binding()` + `commit_binding()` with `dir_mtime` session-scan caching, and fixed `compact_model_for_width` non-ASCII tail glyph measurement.
+  - Added `SyncOutcome` / `PaletteReload { changed, synced_leader }` so only the sidebar winning `.sync.lock` triggers companion Yazi preview refreshes, bounded `ya emit-to` waiter threads (`<= 4`, `2 s` timeout), bounded Linux/Windows `nvidia-smi` waits to `5 s`, and handled 32-bit `MibIfRow` `wrapping_sub` rollover on Windows.
+
+---
+
 ## [0.9.2] - 2026-11-15
 
 ### Fixed
