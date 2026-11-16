@@ -121,6 +121,7 @@ class IssueTemplateAndAgentInfraTests(unittest.TestCase):
             "budget",
             "model_id",
             "platform",
+            "proto",
         )
 
         def iter_rs_files(base_path: str):
@@ -185,6 +186,39 @@ class IssueTemplateAndAgentInfraTests(unittest.TestCase):
             over_budget,
             [],
             msg=f"Rust files exceeding 300-line budget: {', '.join(over_budget)}",
+        )
+
+    def test_release_version_parity_and_arch_contract_exist(self):
+        import json
+        import re
+
+        self.assertTrue(
+            os.path.isfile(os.path.join(REPO_ROOT, "docs", "ARCH_v0.10.md"))
+        )
+        with open(os.path.join(REPO_ROOT, "Cargo.toml"), encoding="utf-8") as f:
+            cargo_ver = re.search(r'(?m)^version\s*=\s*"([^"]+)"', f.read()).group(1)
+        with open(os.path.join(REPO_ROOT, "Cargo.lock"), encoding="utf-8") as f:
+            lock_ver = re.search(
+                r'(?ms)name\s*=\s*"ccide-core"\s*\nversion\s*=\s*"([^"]+)"', f.read()
+            ).group(1)
+        with open(
+            os.path.join(REPO_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8"
+        ) as f:
+            plugin_ver = json.load(f)["version"]
+        with open(
+            os.path.join(REPO_ROOT, ".claude-plugin", "marketplace.json"),
+            encoding="utf-8",
+        ) as f:
+            mkt = json.load(f)
+            mkt_ver = mkt["version"]
+            mkt_p0_ver = mkt["plugins"][0]["version"]
+        with open(os.path.join(REPO_ROOT, "install.sh"), encoding="utf-8") as f:
+            inst_ver = re.search(r'(?m)^PLUGIN_VERSION="([^"]+)"', f.read()).group(1)
+        with open(os.path.join(REPO_ROOT, "install.ps1"), encoding="utf-8") as f:
+            ps1_ver = re.search(r'(?m)^\$PluginVersion\s*=\s*"([^"]+)"', f.read()).group(1)
+        self.assertEqual(
+            {cargo_ver, lock_ver, plugin_ver, mkt_ver, mkt_p0_ver, inst_ver, ps1_ver},
+            {cargo_ver},
         )
 
 

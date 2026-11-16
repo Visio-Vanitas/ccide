@@ -15,9 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ffi::{get_ppid_of, is_pid_alive, ProcToken};
 use crate::json::extract_json_str;
-use crate::platform::{
-    cache_dir, clean_canonicalize, find_executable, ipc_path, normalize_slashes,
-};
+use crate::platform::{cache_dir, clean_canonicalize, find_executable, ipc_path};
 
 pub use crate::model_id::is_valid_model_name;
 #[allow(unused_imports)]
@@ -28,24 +26,18 @@ pub use model::{
     short_model_label, ConfigModels,
 };
 pub use scan::{resolve_live_yazi_tab, resolve_yazi_id_from_ppid};
+pub use transcript_main::normalize_path_under_cwd;
 
 fn ancestor_distance(mut pid: u32, target_ancestor: u32) -> Option<usize> {
     if target_ancestor == 0 || pid == 0 {
         return None;
     }
-    for hops in 0..=32 {
+    for hops in 0..32 {
         if pid == target_ancestor {
             return Some(hops);
         }
-        #[cfg(unix)]
-        if pid <= 1 {
-            return None;
-        }
-        #[cfg(windows)]
-        if pid == 4 {
-            return None;
-        }
-        if hops == 32 {
+        let at_root = if cfg!(windows) { pid == 4 } else { pid <= 1 };
+        if at_root {
             return None;
         }
         match get_ppid_of(pid) {
@@ -120,30 +112,45 @@ fn query_tmux_pane_title_bounded(tmux_bin: &Path, center_pane: &str) -> Option<S
     }
 }
 
+/// Parses `panes_<yid>.txt` locally without cross-layer imports: returns `(is_tmux, center_pane)`.
+fn parse_tmux_spec(raw: &str) -> (bool, Option<&str>) {
+    let t = raw.trim();
+    if t.starts_with("v2;") {
+        let is_tmux = t.split(';').any(|kv| kv == "b=tmux");
+        let c = if is_tmux {
+            t.split(';')
+                .find_map(|kv| kv.strip_prefix("c="))
+                .filter(|c| !c.is_empty())
+        } else {
+            None
+        };
+        return (is_tmux, c);
+    }
+    if let Some(rest) = t.strip_prefix("tmux:") {
+        return (true, rest.split(':').next().filter(|c| !c.is_empty()));
+    }
+    (false, None)
+}
+
 fn read_tab_pane_title(home: &str, tab_yazi_id: &str, query_tmux: bool) -> Option<String> {
     if tab_yazi_id.is_empty() {
         return None;
     }
     let spec =
         fs::read_to_string(ipc_path(&format!("panes_{tab_yazi_id}.txt"))).unwrap_or_default();
-    if query_tmux {
-        if let Some(rest) = spec.trim().strip_prefix("tmux:") {
-            let center_pane = rest.split(':').next().unwrap_or("");
-            if !center_pane.is_empty() {
+    let (is_tmux, center_opt) = parse_tmux_spec(&spec);
+    if is_tmux {
+        if query_tmux {
+            if let Some(center_pane) = center_opt {
                 if let Some(tmux) = find_executable("tmux", home) {
                     return query_tmux_pane_title_bounded(&tmux, center_pane);
                 }
             }
         }
+        return None;
     }
-    if !spec.trim().starts_with("tmux:") {
-        if let Ok(raw) = fs::read_to_string(ipc_path(&format!("tab_title_{tab_yazi_id}.txt"))) {
-            if let Some(t) = clean_claude_pane_title(&raw) {
-                return Some(t);
-            }
-        }
-    }
-    None
+    let raw = fs::read_to_string(ipc_path(&format!("tab_title_{tab_yazi_id}.txt"))).ok()?;
+    clean_claude_pane_title(&raw)
 }
 
 fn is_claimed_by_live_sibling(cdir: &Path, session_id: &str, my_yid: &str) -> bool {
@@ -181,19 +188,15 @@ pub fn resolve_isolated_session_binding(
             pid: shell_pid_arg,
             start_ms: 0,
         })
-    } else if !tab_yazi_id.is_empty() {
+    } else {
         fs::read_to_string(cdir.join(format!("tab_shell_{}.txt", tab_yazi_id)))
             .ok()
+            .filter(|_| !tab_yazi_id.is_empty())
             .and_then(|s| ProcToken::parse(&s))
             .unwrap_or(ProcToken {
                 pid: 0,
                 start_ms: 0,
             })
-    } else {
-        ProcToken {
-            pid: 0,
-            start_ms: 0,
-        }
     };
     let shell_pid = shell_tok.pid;
     let canon_target = clean_canonicalize(target_cwd).unwrap_or_else(|_| PathBuf::from(target_cwd));
@@ -235,65 +238,44 @@ pub fn resolve_isolated_session_id(
     (b.session_id, b.ui_pid)
 }
 
-/// Normalizes `file_path` so if its canonical realpath lies under `canonicalize(target_cwd)`,
-/// it uses `target_cwd`'s spelling (ensuring Yazi's `reveal` matches the directory spelling).
-pub fn normalize_path_under_cwd(file_path: &str, target_cwd: &str) -> String {
-    if file_path.is_empty() || target_cwd.is_empty() {
-        return file_path.to_string();
-    }
-    if let (Ok(canon_file), Ok(canon_cwd)) = (
-        clean_canonicalize(file_path),
-        clean_canonicalize(target_cwd),
-    ) {
-        if let Ok(rel) = canon_file.strip_prefix(&canon_cwd) {
-            let sep = if cfg!(windows) && target_cwd.contains('\\') {
-                '\\'
-            } else {
-                '/'
-            };
-            let base = target_cwd.trim_end_matches(['/', '\\']);
-            let rel_norm = normalize_slashes(&rel.to_string_lossy());
-            if rel_norm.is_empty() {
-                return base.to_string();
-            }
-            let rel_native = if sep == '\\' {
-                rel_norm.replace('/', "\\")
-            } else {
-                rel_norm
-            };
-            return format!("{}{}{}", base, sep, rel_native);
-        }
-    }
-    file_path.to_string()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::clean_claude_pane_title;
+    use super::{clean_claude_pane_title, parse_tmux_spec};
 
     #[test]
-    fn cleans_iterm_and_spinner_pane_titles_accurately() {
+    fn cleans_titles_and_parses_v1_v2_tmux_specs() {
+        let cases = [
+            (
+                "palette-syntax-ghostty-support (claude)",
+                Some("palette-syntax-ghostty-support"),
+            ),
+            (
+                "✳ high-concurrency-optimization (claude)",
+                Some("high-concurrency-optimization"),
+            ),
+            (
+                "✳ agent connection test (claude)",
+                Some("agent connection test"),
+            ),
+            ("◐ 并发优化测试 (claude.exe)", Some("并发优化测试")),
+            (
+                "✳ [v0.10] .github fix (claude)",
+                Some("[v0.10] .github fix"),
+            ),
+            ("Claude Code (claude)", None),
+            ("claude", None),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(clean_claude_pane_title(raw).as_deref(), expected);
+        }
         assert_eq!(
-            clean_claude_pane_title("palette-syntax-ghostty-support (claude)"),
-            Some("palette-syntax-ghostty-support".to_string())
+            parse_tmux_spec("v2;b=tmux;k=1234;c=%12;y=%2;lp=30;f=gr"),
+            (true, Some("%12"))
         );
+        assert_eq!(parse_tmux_spec("tmux:%1:%2,%3"), (true, Some("%1")));
         assert_eq!(
-            clean_claude_pane_title("✳ high-concurrency-optimization (claude)"),
-            Some("high-concurrency-optimization".to_string())
+            parse_tmux_spec("v2;b=wezterm;k=1234;c=5;lp=30;f=gr"),
+            (false, None)
         );
-        assert_eq!(
-            clean_claude_pane_title("✳ agent connection test (claude)"),
-            Some("agent connection test".to_string())
-        );
-        assert_eq!(
-            clean_claude_pane_title("◐ 并发优化测试 (claude.exe)"),
-            Some("并发优化测试".to_string())
-        );
-        assert_eq!(
-            clean_claude_pane_title("✳ [v0.10] .github fix (claude)"),
-            Some("[v0.10] .github fix".to_string())
-        );
-        assert_eq!(clean_claude_pane_title("Claude Code (claude)"), None);
-        assert_eq!(clean_claude_pane_title("claude"), None);
     }
 }

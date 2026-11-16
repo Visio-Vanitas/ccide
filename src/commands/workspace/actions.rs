@@ -35,6 +35,7 @@ pub fn wake_all_sidebars() {
 }
 
 pub fn refresh_open_yazi_previews(home: &str) {
+    let _ = crate::commands::workspace::spec::prune_dead_specs(home);
     let Some(ya) = find_executable("ya", home) else {
         return;
     };

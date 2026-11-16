@@ -20,19 +20,23 @@ if _SCRIPTS_DIR not in sys.path:
 
 def _engine_bin() -> str:
     exe = "ccide-core.exe" if os.name == "nt" else "ccide-core"
-    cands = (
-        os.path.join(_REPO_ROOT, "target", "debug", exe),
-        os.path.join(_REPO_ROOT, "bin", exe),
-        os.path.join(_REPO_ROOT, "target", "release", exe),
-    )
-    for cand in cands:
-        if os.path.isfile(cand):
-            return cand
+    cands = [
+        p
+        for p in (
+            os.path.join(_REPO_ROOT, "target", "debug", exe),
+            os.path.join(_REPO_ROOT, "bin", exe),
+            os.path.join(_REPO_ROOT, "target", "release", exe),
+        )
+        if os.path.isfile(p)
+    ]
+    if cands:
+        return max(cands, key=os.path.getmtime)
     cargo = shutil.which("cargo")
+    dbg_bin = os.path.join(_REPO_ROOT, "target", "debug", exe)
     if cargo:
         subprocess.run([cargo, "build", "--locked"], cwd=_REPO_ROOT, check=True)
-        if os.path.isfile(cands[0]):
-            return cands[0]
+        if os.path.isfile(dbg_bin):
+            return dbg_bin
     raise FileNotFoundError("ccide-core binary not built yet")
 
 
@@ -198,6 +202,13 @@ case "$*" in
   *"get version"*)
     cat "{ver_file}"
     ;;
+  *"equalize_splits"*)
+    if [ "${{MOCK_REB_ERR:-0}}" = "1" ]; then
+      echo "err"
+    else
+      echo "ok"
+    fi
+    ;;
   *"split"*)
     echo "ghostty:term-center-1:term-yazi-2,term-git-3,term-sb-4"
     ;;
@@ -226,7 +237,7 @@ exit 0
             p_ok = subprocess.run([bin_path, "workspace", "probe-ghostty"], env=env)
             self.assertEqual(p_ok.returncode, 0)
 
-            # Native open computes exact 30% | 54% | 16% pixel deltas (480px left, 456px right on 2400px)
+            # Native open computes exact 30% | 54% | 16% pixel deltas (480px left, 460px right on 2400px) and emits v2 PaneSpec
             o_res = subprocess.run(
                 [bin_path, "workspace", "open", td, "9901", "1", "0", "30", td, "1", "ghostty"],
                 env=env,
@@ -236,7 +247,7 @@ exit 0
             self.assertEqual(o_res.returncode, 0, msg=o_res.stderr)
             self.assertEqual(
                 o_res.stdout.strip(),
-                "ghostty:term-center-1:term-yazi-2,term-git-3,term-sb-4",
+                "v2;b=ghostty;k=9901;c=term-center-1;y=term-yazi-2;l=term-git-3;s=term-sb-4;lp=30;f=gr",
             )
 
             # Focus & Close lifecycle
@@ -250,8 +261,10 @@ exit 0
 
             with open(log_file, encoding="utf-8") as f:
                 logged = f.read()
+            self.assertIn('first terminal whose name is "ccide-9901"', logged)
+            self.assertNotIn("front window", logged)
             self.assertIn("resize_split:left,480", logged)
-            self.assertIn("resize_split:right,456", logged)
+            self.assertIn("resize_split:right,460", logged)
             self.assertIn("term-center-1", logged)
             self.assertIn("term-yazi-2", logged)
             self.assertIn("term-sb-4", logged)
@@ -261,6 +274,172 @@ exit 0
                 f.write("1.2.0\n")
             p_old = subprocess.run([bin_path, "workspace", "probe-ghostty"], env=env)
             self.assertNotEqual(p_old.returncode, 0)
+
+    @unittest.skipIf(os.name == "nt", "POSIX mock executable test")
+    def test_ghostty_f1_targeting_f2_live_rebalance_and_linux_probes(self):
+        bin_path = _engine_bin()
+        with tempfile.TemporaryDirectory() as td:
+            ipc_dir = os.path.join(td, "ipc")
+            os.makedirs(ipc_dir, exist_ok=True)
+            log_file = os.path.join(td, "osa_f12.log")
+            mock_osa = os.path.join(td, "mock_osa")
+            with open(mock_osa, "w", encoding="utf-8") as f:
+                f.write(
+                    f"""#!/bin/sh
+printf '%s\\n---\\n' "$*" >> "{log_file}"
+case "$*" in
+  *"get version"*) echo "1.3.2" ;;
+  *"equalize_splits"*)
+    if [ "${{MOCK_REB_ERR:-0}}" = "1" ]; then
+      echo "err"
+    else
+      echo "ok"
+    fi
+    ;;
+  *"split"*)
+    if [ "${{MOCK_NO_MATCH:-0}}" = "1" ]; then
+      echo ""
+    else
+      echo "ghostty:term-center-1:term-yazi-2,term-git-3,term-sb-4"
+    fi
+    ;;
+esac
+exit 0
+"""
+                )
+            os.chmod(mock_osa, stat.S_IRWXU)
+
+            base_env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("TMUX", "SSH_CONNECTION", "SSH_TTY", "ITERM_SESSION_ID", "WEZTERM_PANE", "GHOSTTY_SURFACE_ID", "CCIDE_GHOSTTY_FRONT_FALLBACK")
+            }
+            base_env.update(
+                {
+                    "HOME": td,
+                    "TERM_PROGRAM": "ghostty",
+                    "CCIDE_OSASCRIPT_BIN": mock_osa,
+                    "CCIDE_GHOSTTY_WIDTH_PX": "2000",
+                    "CCIDE_IPC_DIR": ipc_dir,
+                }
+            )
+
+            # F1a: $GHOSTTY_SURFACE_ID targets exact terminal id without front-window fallback
+            env_sid = {**base_env, "GHOSTTY_SURFACE_ID": "surf-88"}
+            subprocess.run(
+                [bin_path, "workspace", "open", td, "9902", "1", "0", "25", td, "1", "ghostty"],
+                env=env_sid,
+                check=True,
+                capture_output=True,
+            )
+            # F1b: CCIDE_GHOSTTY_FRONT_FALLBACK=1 enables front window error fallback
+            env_fb = {**base_env, "CCIDE_GHOSTTY_FRONT_FALLBACK": "1"}
+            subprocess.run(
+                [bin_path, "workspace", "open", td, "9903", "1", "0", "25", td, "1", "ghostty"],
+                env=env_fb,
+                check=True,
+                capture_output=True,
+            )
+            # F1c: unmatched terminal returns empty stdout (clean fallthrough to tmux)
+            env_nomatch = {**base_env, "MOCK_NO_MATCH": "1"}
+            r_nm = subprocess.run(
+                [bin_path, "workspace", "open", td, "9904", "1", "0", "25", td, "1", "ghostty"],
+                env=env_nomatch,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(r_nm.stdout.strip(), "")
+            self.assertFalse(os.path.exists(os.path.join(ipc_dir, "panes_9904.txt")))
+
+            with open(log_file, encoding="utf-8") as f:
+                f1_log = f.read()
+            self.assertIn('first terminal whose id is "surf-88"', f1_log)
+            self.assertIn("focused terminal of selected tab of front window", f1_log)
+
+            # F2: live geom_<yid>_{yazi,sidebar}.txt + caller width overrides stale ghostty_w_9902.txt & uses spec.left_pct=25
+            with open(os.path.join(ipc_dir, "geom_9902_yazi.txt"), "w", encoding="utf-8") as f:
+                f.write("72 40 720 900\n")
+            with open(os.path.join(ipc_dir, "geom_9902_sidebar.txt"), "w", encoding="utf-8") as f:
+                f.write("38 40 380 900\n")
+            env_reb = {**base_env, "CC_YAZI_ID": "9902", "CCIDE_GHOSTTY_WIDTH_PX": "1300"}
+            r_reb = subprocess.run(
+                [bin_path, "workspace", "rebalance", "9902"],
+                env=env_reb,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(r_reb.returncode, 0, msg=r_reb.stderr)
+            self.assertIn("rebalanced 1/1 tabs", r_reb.stdout)
+            self.assertIn("applied ghostty 9902", r_reb.stdout)
+            with open(log_file, encoding="utf-8") as f:
+                reb_log = f.read()
+            self.assertIn("resize_split:left,200", reb_log)
+            self.assertIn("resize_split:right,520", reb_log)
+
+            # B2: osascript rebalance "err" -> exit 3 & Unsupported("panes not found")
+            r_reb_err = subprocess.run(
+                [bin_path, "workspace", "rebalance", "9902"],
+                env={**env_reb, "MOCK_REB_ERR": "1"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(r_reb_err.returncode, 3)
+            self.assertIn("panes not found", r_reb_err.stdout)
+
+            # Linux CLI / D-Bus / >150ms timeout mocks (opt-in gated behind CCIDE_GHOSTTY_LINUX=1)
+            mock_gh_cli = os.path.join(td, "mock_ghostty_cli")
+            mock_gdbus_ok = os.path.join(td, "mock_gdbus_ok")
+            mock_slow = os.path.join(td, "mock_slow")
+            with open(mock_gh_cli, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\necho 'new_split'\necho 'resize_split'\necho 'goto_split'\n")
+            with open(mock_gdbus_ok, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\necho 'interface org.gtk.Actions { methods: Activate(); } // new-split'\n")
+            with open(mock_slow, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\nexec sleep 0.5\n")
+            for p in (mock_gh_cli, mock_gdbus_ok, mock_slow):
+                os.chmod(p, stat.S_IRWXU)
+            # Warm newly written fast mocks once to avoid macOS syspolicyd cold-exec jitter vs 150ms bound.
+            for p in (mock_gh_cli, mock_gdbus_ok):
+                subprocess.run([p], stdout=subprocess.DEVNULL, check=True)
+
+            lin_base = {
+                **base_env,
+                "CCIDE_OSASCRIPT_BIN": "/nonexistent/osascript",
+                "CCIDE_GHOSTTY_LINUX": "1",
+            }
+            # 1) Linux CLI probe
+            p_cli = subprocess.run(
+                [bin_path, "workspace", "detect", "--json"],
+                env={**lin_base, "CCIDE_GHOSTTY_BIN": mock_gh_cli, "CCIDE_GDBUS_BIN": "/nonexistent/gdbus"},
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(json.loads(p_cli.stdout)["ghostty_cap"], "linux-cli")
+            # 2) Linux D-Bus fallback probe
+            p_dbus = subprocess.run(
+                [bin_path, "workspace", "detect", "--json"],
+                env={**lin_base, "CCIDE_GHOSTTY_BIN": "/nonexistent/ghostty", "CCIDE_GDBUS_BIN": mock_gdbus_ok},
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(json.loads(p_dbus.stdout)["ghostty_cap"], "linux-dbus")
+            # 3) >150ms timeout kills slow probes promptly and yields none
+            t0 = time.monotonic()
+            p_to = subprocess.run(
+                [bin_path, "workspace", "probe-ghostty"],
+                env={**lin_base, "CCIDE_GHOSTTY_BIN": mock_slow, "CCIDE_GDBUS_BIN": mock_slow},
+            )
+            elapsed = time.monotonic() - t0
+            self.assertNotEqual(p_to.returncode, 0)
+            self.assertLess(elapsed, 0.8)
+            # 4) Opt-in disabled -> none even if binaries are valid
+            p_off = subprocess.run(
+                [bin_path, "workspace", "probe-ghostty"],
+                env={**lin_base, "CCIDE_GHOSTTY_LINUX": "0", "CCIDE_GHOSTTY_BIN": mock_gh_cli, "CCIDE_GDBUS_BIN": mock_gdbus_ok},
+            )
+            self.assertNotEqual(p_off.returncode, 0)
 
     def test_builtin_slash_commands_module_registered_in_hooks_json(self):
         with open(os.path.join(_REPO_ROOT, "hooks", "hooks.json"), encoding="utf-8") as f:

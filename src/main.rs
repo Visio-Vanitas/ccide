@@ -5,8 +5,9 @@
 //! - `ccide-core pane-runner <yazi|lazygit|macmon|sidebar> <target_dir> [yazi_id] [shell_pid]`
 //! - `ccide-core yazi-hook`
 //! - `ccide-core statusline`
-//! - `ccide-core workspace <open|close|rebalance|focus|switch-subagent|clear-subagents|theme> ...`
+//! - `ccide-core workspace <open|close|rebalance|detect|focus|switch-subagent|clear-subagents|theme> ...`
 //! - `ccide-core setup [project_root]` / `ccide-core doctor [--json] [project_root]`
+//! - `ccide-core proto [--json]` / `ccide-core --version`
 //! - `ccide-core ipc-dir` / `ccide-core wake-pid <pid[:start_ms]>`
 
 mod budget;
@@ -16,6 +17,7 @@ mod json;
 mod model_id;
 mod orchestrator;
 mod platform;
+mod proto;
 mod session;
 mod telemetry;
 mod tui;
@@ -27,6 +29,10 @@ fn main() {
     let subcmd = args.get(1).map(|s| s.as_str()).unwrap_or("sidebar");
 
     match subcmd {
+        "--version" | "-V" | "version" => {
+            println!("ccide-core {}", env!("CARGO_PKG_VERSION"));
+        }
+        "proto" => proto::run(&args),
         "sidebar" => {
             let target_dir = args.get(2).cloned().unwrap_or_else(|| {
                 env::current_dir()

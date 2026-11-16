@@ -232,6 +232,19 @@ jobs:
       - name: Build Debug Engine & Run Dynamic Patcher, Workbench & Cross-Platform Unit Tests
         run: |
           cargo build --locked
+          ./target/debug/ccide-core --version
+          python3 -I - <<'PY'
+          import json, re, subprocess
+          with open("Cargo.toml", encoding="utf-8") as f:
+              cargo_ver = re.search(r'(?m)^version\s*=\s*"([^"]+)"', f.read()).group(1)
+          ver_out = subprocess.check_output(["./target/debug/ccide-core", "--version"], text=True).strip()
+          assert ver_out == f"ccide-core {cargo_ver}", f"Unexpected --version output: {ver_out!r}"
+          proto = json.loads(subprocess.check_output(["./target/debug/ccide-core", "proto", "--json"], text=True))
+          assert proto["ccide_version"] == cargo_ver and proto["ipc_proto"] == 1 and proto["patch_proto"] == 1 and proto["spec_version"] == 2, proto
+          det = json.loads(subprocess.check_output(["./target/debug/ccide-core", "workspace", "detect", "--json"], text=True))
+          assert "backend" in det and "ghostty_cap" in det, det
+          print("OK: CLI --version, proto --json, workspace detect --json")
+          PY
           python3 -I -m unittest discover -s tests -v
 
       - name: Verify Live 3-OS Upstream @anthropic-ai/claude-code Compatibility (preview/main)

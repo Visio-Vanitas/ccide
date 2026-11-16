@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::commands::setup::doctor::{item, CheckStatus, DoctorItem};
+use crate::ffi::is_pid_alive;
 use crate::json::{extract_json_bool, extract_json_str};
-use crate::platform::{find_executable, ipc_path};
+use crate::platform::{find_executable, ipc_path, legacy_ipc_dir};
+use crate::proto::{IPC_PROTO, PATCH_PROTO};
 use crate::tui::width::trunc_to_width;
 
 pub(super) fn cmd_first_line(bin: &Path, args: &[&str]) -> Option<String> {
@@ -100,6 +102,59 @@ pub(super) fn probe_claude_and_orchestrator(
     }
 }
 
+pub(super) fn probe_legacy_patch_proto(home: &str, items: &mut Vec<DoctorItem>) -> bool {
+    let mut legacy_patch = false;
+    if let Some(ldir) = legacy_ipc_dir() {
+        let is_legacy_only = |pid: u32| -> bool {
+            pid > 1
+                && is_pid_alive(pid)
+                && ldir.join(format!("cur_pid_{pid}.txt")).is_file()
+                && !ipc_path(&format!("cur_pid_{pid}.txt")).is_file()
+                && !ipc_path(&format!("ready_pid_{pid}")).is_file()
+        };
+        for se in crate::session::scan::scan_alive_sessions(home) {
+            if is_legacy_only(se.pid) {
+                legacy_patch = true;
+                break;
+            }
+        }
+        if !legacy_patch {
+            if let Ok(rd) = fs::read_dir(&ldir) {
+                for entry in rd.flatten() {
+                    let fname = entry.file_name();
+                    let name = fname.to_string_lossy();
+                    if let Some(pid_s) = name
+                        .strip_prefix("cur_pid_")
+                        .and_then(|s| s.strip_suffix(".txt"))
+                    {
+                        if let Ok(pid) = pid_s.parse::<u32>() {
+                            if is_legacy_only(pid) {
+                                legacy_patch = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if legacy_patch {
+        items.push(item(
+            CheckStatus::Warn,
+            "IPC Patch Proto",
+            "legacy /tmp/.cc-ide patch active · run `ccide` or `./install.sh --patch-only`"
+                .to_string(),
+        ));
+    } else {
+        items.push(item(
+            CheckStatus::Ok,
+            "IPC Patch Proto",
+            format!("ipc_proto={IPC_PROTO} · patch_proto={PATCH_PROTO} · per-UID ready_pid"),
+        ));
+    }
+    legacy_patch
+}
+
 pub(super) fn probe_macos_iterm(home: &str, items: &mut Vec<DoctorItem>) {
     let iterm_app = [
         PathBuf::from("/Applications/iTerm.app"),
@@ -133,7 +188,10 @@ pub(super) fn probe_macos_iterm(home: &str, items: &mut Vec<DoctorItem>) {
         .unwrap_or(false);
 
     if sock_live {
-        let d = "warm socket active (/tmp/.cc-ide/iterm_daemon.sock)".to_string();
+        let d = format!(
+            "warm socket active ({})",
+            ipc_path("iterm_daemon.sock").display()
+        );
         items.push(item(CheckStatus::Ok, "iTerm2 Daemon", d));
     } else if iterm_app.is_some() && py_iterm_ok {
         items.push(item(

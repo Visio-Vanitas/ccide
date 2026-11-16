@@ -1,27 +1,14 @@
 //! TUI Box & Structured `--json` Renderers for `ccide-core doctor`.
 
 use crate::commands::setup::doctor::{CheckStatus, DoctorReport};
+use crate::json::json_escape;
+use crate::proto::{IPC_PROTO, PATCH_PROTO};
 use crate::tui::grid::{
     format_bottom_border, format_boxed_row, format_top_border, get_terminal_geometry, BoxRow,
 };
 use crate::tui::palette::Palette;
 use crate::tui::width::trunc_to_width;
 use crate::tui::{BOLD, RESET};
-
-fn json_esc(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 8);
-    for ch in s.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c => out.push(c),
-        }
-    }
-    out
-}
 
 pub fn format_doctor_json(report: &DoctorReport) -> String {
     let mut checks_json = String::new();
@@ -43,10 +30,10 @@ pub fn format_doctor_json(report: &DoctorReport) -> String {
         let slug = slug.trim_matches('_');
         checks_json.push_str(&format!(
             "    {{\"id\":\"{}\",\"status\":\"{}\",\"label\":\"{}\",\"detail\":\"{}\"}}",
-            json_esc(slug),
+            json_escape(slug),
             st,
-            json_esc(&it.label),
-            json_esc(&it.detail)
+            json_escape(&it.label),
+            json_escape(&it.detail)
         ));
     }
     let warn_count = report
@@ -55,14 +42,19 @@ pub fn format_doctor_json(report: &DoctorReport) -> String {
         .filter(|i| i.status == CheckStatus::Warn)
         .count();
     format!(
-        "{{\n  \"schema_version\": 1,\n  \"ccide_version\": \"{}\",\n  \"os_arch\": \"{}\",\n  \"backend_tier\": \"{}\",\n  \"healthy\": {},\n  \"warnings\": {},\n  \"checks\": [\n{}\n  ],\n  \"missing_hint\": \"{}\"\n}}",
+        "{{\n  \"schema_version\": 1,\n  \"ccide_version\": \"{}\",\n  \"os_arch\": \"{}\",\n  \"backend_tier\": \"{}\",\n  \"ipc_dir\": \"{}\",\n  \"ipc_proto\": {},\n  \"patch_proto\": {},\n  \"ghostty_cap\": \"{}\",\n  \"legacy_patch\": {},\n  \"healthy\": {},\n  \"warnings\": {},\n  \"checks\": [\n{}\n  ],\n  \"missing_hint\": \"{}\"\n}}",
         env!("CARGO_PKG_VERSION"),
-        json_esc(&report.os_arch),
-        json_esc(&report.backend_tier),
+        json_escape(&report.os_arch),
+        json_escape(&report.backend_tier),
+        json_escape(&report.ipc_dir),
+        IPC_PROTO,
+        PATCH_PROTO,
+        json_escape(report.ghostty_cap),
+        if report.legacy_patch { "true" } else { "false" },
         if warn_count == 0 { "true" } else { "false" },
         warn_count,
         checks_json,
-        json_esc(&report.missing_hint),
+        json_escape(&report.missing_hint),
     )
 }
 

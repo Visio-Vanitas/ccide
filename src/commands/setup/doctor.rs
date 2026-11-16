@@ -8,11 +8,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::commands::setup::doctor_render::{format_doctor_json, print_doctor_tui};
+use crate::commands::workspace::ghostty::{probe_ghostty, GhosttyCap};
 use crate::json::extract_json_str;
-use crate::platform::{clean_canonicalize, find_executable, user_home_dir};
+use crate::platform::{clean_canonicalize, find_executable, ipc_dir, user_home_dir};
 
 use doctor_probes::{
-    cmd_first_line, probe_claude_and_orchestrator, probe_companion_tools, probe_macos_iterm,
+    cmd_first_line, probe_claude_and_orchestrator, probe_companion_tools, probe_legacy_patch_proto,
+    probe_macos_iterm,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +35,9 @@ pub struct DoctorItem {
 pub struct DoctorReport {
     pub os_arch: String,
     pub backend_tier: String,
+    pub ipc_dir: String,
+    pub ghostty_cap: &'static str,
+    pub legacy_patch: bool,
     pub items: Vec<DoctorItem>,
     pub missing_hint: String,
 }
@@ -85,6 +90,7 @@ pub fn resolve_project_root(explicit_arg: Option<&str>, home: &str) -> PathBuf {
 
 pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     let os_arch = format!("{}/{}", env::consts::OS, env::consts::ARCH);
+    let ipc_dir_s = ipc_dir().to_string_lossy().into_owned();
     let is_ssh = env::var("SSH_CONNECTION").is_ok() || env::var("SSH_TTY").is_ok();
     let is_tmux = env::var("TMUX").is_ok();
     let is_wezterm =
@@ -99,10 +105,13 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         || env::var("GHOSTTY_RESOURCES_DIR")
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false);
-    let ghostty_native = is_ghostty
-        && !is_tmux
-        && !is_ssh
-        && crate::commands::workspace::ghostty::probe_ghostty_native_capable(home);
+    let ghostty_cap_enum = if is_ghostty && !is_tmux && !is_ssh {
+        probe_ghostty(home)
+    } else {
+        GhosttyCap::None
+    };
+    let ghostty_cap = ghostty_cap_enum.as_str();
+    let ghostty_native = ghostty_cap_enum == GhosttyCap::MacOsAppleScript;
 
     let backend_tier = if cfg!(windows) {
         if is_wezterm {
@@ -136,6 +145,7 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     let is_macos = cfg!(target_os = "macos");
 
     probe_claude_and_orchestrator(home, project_root, &mut items);
+    let legacy_patch = probe_legacy_patch_proto(home, &mut items);
 
     if cfg!(windows) {
         let wez = find_executable("wezterm", home);
@@ -162,8 +172,11 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         let wv = find_executable("wezterm", home)
             .and_then(|b| cmd_first_line(&b, &["--version"]))
             .unwrap_or_else(|| "wezterm".to_string());
-        let det = format!("{wv} (native CLI split engine)");
-        items.push(item(CheckStatus::Ok, "Split Engine", det));
+        items.push(item(
+            CheckStatus::Ok,
+            "Split Engine",
+            format!("{wv} (native CLI split engine)"),
+        ));
     } else if is_ghostty && !is_tmux && !is_ssh {
         let det = if ghostty_native {
             "Ghostty · Native Metal Split Engine + Kitty APC Sprites".to_string()
@@ -171,7 +184,7 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
             "Ghostty · Tier 3 tmux Engine + Kitty Sprites (Ghostty 1.3+ enables native splits)"
                 .to_string()
         } else {
-            "Ghostty · Tier 3 tmux Engine + Kitty APC Sprites".to_string()
+            format!("Ghostty ({ghostty_cap}) · Tier 3 tmux Engine + Kitty APC Sprites")
         };
         let status = if ghostty_native || find_executable("tmux", home).is_some() {
             CheckStatus::Ok
@@ -212,6 +225,9 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     DoctorReport {
         os_arch,
         backend_tier,
+        ipc_dir: ipc_dir_s,
+        ghostty_cap,
+        legacy_patch,
         items,
         missing_hint,
     }
@@ -243,6 +259,9 @@ mod tests {
         let rep = DoctorReport {
             os_arch: "windows/x86_64".to_string(),
             backend_tier: "Tier 1 (Win) · WezTerm".to_string(),
+            ipc_dir: "C:/Temp/.cc-ide".to_string(),
+            ghostty_cap: "none",
+            legacy_patch: false,
             items: vec![item(
                 CheckStatus::Ok,
                 "Claude Code",
@@ -254,5 +273,10 @@ mod tests {
         assert!(js.contains("\"schema_version\": 1"));
         assert!(js.contains("\"healthy\": true"));
         assert!(js.contains("2.1.323 \\\"ok\\\""));
+        assert!(js.contains("\"ipc_dir\": \"C:/Temp/.cc-ide\""));
+        assert!(js.contains("\"ipc_proto\": 1"));
+        assert!(js.contains("\"patch_proto\": 1"));
+        assert!(js.contains("\"ghostty_cap\": \"none\""));
+        assert!(js.contains("\"legacy_patch\": false"));
     }
 }

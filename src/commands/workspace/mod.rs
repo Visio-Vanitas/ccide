@@ -1,13 +1,20 @@
 //! `ccide-core workspace`: Adaptive Cross-Platform Tiling Workspace & Theme Controller (`src/commands/workspace/`).
 
 pub mod actions;
+pub mod detect;
 pub mod ghostty;
+pub mod ghostty_linux;
 pub mod ghostty_script;
 pub mod iterm;
+pub mod layout;
 pub mod open;
+pub mod rebalance;
 pub mod reload;
+pub mod spec;
+pub mod spec_io;
 pub mod tmux;
 pub mod wezterm;
+pub mod wezterm_rebalance;
 pub mod wt;
 
 use std::env;
@@ -15,15 +22,16 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::platform::{cache_dir, ipc_dir, ipc_path, user_home_dir};
+use crate::platform::{cache_dir, ipc_dir, user_home_dir};
 
 use actions::{run_clear_subagents, run_theme_command};
-use ghostty::{
-    activate_ghostty_center, close_ghostty_panes, is_ghostty_env, probe_ghostty_native_capable,
-    rebalance_ghostty_panes,
+use ghostty::{activate_ghostty_center, close_ghostty_panes, probe_ghostty_native_capable};
+use iterm::{
+    close_iterm_panes, emit_osc1337, ensure_daemon_started, find_python_bin, send_daemon_ipc,
 };
-use iterm::{emit_osc1337, ensure_daemon_started, find_python_bin, send_daemon_ipc};
 use open::handle_open;
+use spec::{read_pane_spec, remove_tab_state, Backend, PaneSpec};
+use tmux::{close_tmux, focus_tmux_center};
 use wezterm::{activate_wezterm_center, close_wezterm_panes};
 use wt::{close_wt_panes, focus_wt_center_from_sidebar};
 
@@ -37,50 +45,48 @@ pub fn focus_center_after_view_switch(
     view_id: &str,
     footer_rank: usize,
 ) {
-    let pane_spec =
-        fs::read_to_string(ipc_path(&format!("panes_{}.txt", tab_yazi_id))).unwrap_or_default();
-    let spec = pane_spec.trim();
-
-    if let Some(rest) = spec.strip_prefix("tmux:") {
-        let center_pane = rest.split(':').next().unwrap_or("");
-        if !center_pane.is_empty() {
-            if let Ok(mut child) = Command::new("tmux")
-                .args(["select-pane", "-t", center_pane])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                let _ = std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
+    if let Some(spec) = read_pane_spec(tab_yazi_id) {
+        match spec.backend {
+            Backend::Tmux => {
+                focus_tmux_center(&spec);
+                return;
             }
+            Backend::WezTerm => {
+                activate_wezterm_center(home, &spec);
+                return;
+            }
+            Backend::Ghostty => {
+                activate_ghostty_center(&spec);
+                return;
+            }
+            Backend::Wt => {
+                focus_wt_center_from_sidebar(home);
+                return;
+            }
+            Backend::Osc => {
+                let payload = format!(
+                    "{{\"op\":\"focus\",\"yid\":\"{}\",\"sid\":\"{}\",\"view\":\"{}\"}}",
+                    escape_json(tab_yazi_id),
+                    escape_json(session_id),
+                    escape_json(view_id)
+                );
+                let _ = emit_osc1337(&payload);
+                return;
+            }
+            Backend::Iterm => {}
+        }
+    } else {
+        let in_ssh = env::var("SSH_CONNECTION").is_ok() || env::var("SSH_TTY").is_ok();
+        if in_ssh && env::var("TMUX").is_err() {
+            let payload = format!(
+                "{{\"op\":\"focus\",\"yid\":\"{}\",\"sid\":\"{}\",\"view\":\"{}\"}}",
+                escape_json(tab_yazi_id),
+                escape_json(session_id),
+                escape_json(view_id)
+            );
+            let _ = emit_osc1337(&payload);
             return;
         }
-    }
-    if let Some(rest) = spec.strip_prefix("wezterm:") {
-        activate_wezterm_center(home, rest.split(':').next().unwrap_or(""));
-        return;
-    }
-    if let Some(rest) = spec.strip_prefix("ghostty:") {
-        activate_ghostty_center(rest.split(':').next().unwrap_or(""));
-        return;
-    }
-    if spec.starts_with("wt:") {
-        focus_wt_center_from_sidebar(home);
-        return;
-    }
-
-    let in_ssh = env::var("SSH_CONNECTION").is_ok() || env::var("SSH_TTY").is_ok();
-    if spec.starts_with("osc:") || (in_ssh && env::var("TMUX").is_err()) {
-        let payload = format!(
-            "{{\"op\":\"focus\",\"yid\":\"{}\",\"sid\":\"{}\",\"view\":\"{}\"}}",
-            escape_json(tab_yazi_id),
-            escape_json(session_id),
-            escape_json(view_id)
-        );
-        let _ = emit_osc1337(&payload);
-        return;
     }
 
     let req = format!(
@@ -130,86 +136,50 @@ pub fn run(args: &[String]) {
     match args.get(2).map(|s| s.as_str()).unwrap_or("open") {
         "open" => handle_open(&home, &cdir, args),
         "close" => {
-            let arg_spec = args.get(3).map(|s| s.as_str()).unwrap_or("");
-            let yazi_id = args.get(4).map(|s| s.as_str()).unwrap_or("");
-            let spec = if !arg_spec.is_empty() {
-                arg_spec.to_string()
+            let arg_spec = args.get(3).map(|s| s.trim()).unwrap_or("");
+            let yazi_id = args.get(4).map(|s| s.trim()).unwrap_or("");
+            let parsed_spec = if !arg_spec.is_empty() {
+                PaneSpec::parse(arg_spec, yazi_id)
             } else if !yazi_id.is_empty() {
-                fs::read_to_string(ipc_path(&format!("panes_{}.txt", yazi_id)))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string()
+                read_pane_spec(yazi_id)
             } else {
-                String::new()
+                None
             };
             close_wt_panes(yazi_id);
-            if let Some(rest) = spec.strip_prefix("tmux:") {
-                for sp in rest
-                    .split(':')
-                    .nth(1)
-                    .unwrap_or(rest)
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                {
-                    let _ = Command::new("tmux")
-                        .args(["kill-pane", "-t", sp])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
+            if let Some(spec) = parsed_spec {
+                let eff_yid = if !yazi_id.is_empty() {
+                    yazi_id.to_string()
+                } else {
+                    spec.yid.clone()
+                };
+                match spec.backend {
+                    Backend::Tmux => close_tmux(&spec),
+                    Backend::WezTerm => close_wezterm_panes(&home, &spec),
+                    Backend::Ghostty => close_ghostty_panes(&spec),
+                    Backend::Wt => close_wt_panes(&eff_yid),
+                    Backend::Osc => {
+                        let _ = emit_osc1337(&format!(
+                            "{{\"op\":\"close\",\"yid\":\"{}\"}}",
+                            escape_json(&eff_yid)
+                        ));
+                    }
+                    Backend::Iterm => {
+                        let caller = env::var("ITERM_SESSION_ID").unwrap_or_default();
+                        close_iterm_panes(&home, &caller, &spec);
+                    }
                 }
-            } else if spec.starts_with("wezterm:") {
-                close_wezterm_panes(&home, &spec);
-            } else if spec.starts_with("ghostty:") {
-                close_ghostty_panes(&spec);
-            } else if let Some(yid) = spec.strip_prefix("wt:") {
-                close_wt_panes(yid);
-            } else if let Some(yid) = spec.strip_prefix("osc:") {
-                let _ = emit_osc1337(&format!(
-                    "{{\"op\":\"close\",\"yid\":\"{}\"}}",
-                    escape_json(yid)
-                ));
-            } else if !cfg!(windows) && !spec.is_empty() {
-                let raw_ids = spec.strip_prefix("iterm:").unwrap_or(&spec);
-                let req = format!(
-                    "{{\"op\":\"close\",\"pane_ids\":\"{}\",\"caller_guid\":\"{}\"}}",
-                    escape_json(raw_ids),
-                    escape_json(&env::var("ITERM_SESSION_ID").unwrap_or_default())
-                );
-                if send_daemon_ipc(&req, 1000).is_none() {
-                    let _ = Command::new(find_python_bin(&home))
-                        .args([ws.as_str(), "close", raw_ids])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
+                if !eff_yid.is_empty() {
+                    remove_tab_state(&eff_yid);
                 }
-            }
-            if !yazi_id.is_empty() {
-                let _ = fs::remove_file(ipc_path(&format!("panes_{yazi_id}.txt")));
-                let _ = fs::remove_file(ipc_path(&format!("ghostty_w_{yazi_id}.txt")));
+            } else if !yazi_id.is_empty() {
+                remove_tab_state(yazi_id);
             }
         }
         "rebalance" => {
-            if env::var("TMUX").map(|s| !s.is_empty()).unwrap_or(false) {
-                let _ = Command::new("tmux")
-                    .args(["set-option", "-w", "mouse", "on"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                return;
-            }
-            if is_ghostty_env() && ghostty::probe_ghostty_native_capable(&home) {
-                rebalance_ghostty_panes(30);
-                return;
-            }
-            if !cfg!(windows) && send_daemon_ipc("{\"op\":\"rebalance\"}", 1500).is_none() {
-                ensure_daemon_started(&home);
-                let _ = Command::new(find_python_bin(&home))
-                    .args([ws.as_str(), "rebalance"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-            }
+            let code = rebalance::run_rebalance(&home, args.get(3).map(|s| s.as_str()));
+            std::process::exit(code);
         }
+        "detect" => detect::run_detect(&home, args),
         "focus" => {
             let query = args.get(3).map(|s| s.as_str()).unwrap_or("");
             if !cfg!(windows) && !query.is_empty() {

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::json::{extract_json_str, extract_json_u64};
+use crate::platform::{clean_canonicalize, normalize_slashes};
 use crate::session::transcript::{update_jsonl_tracker, JsonlTracker};
 
 pub struct MainSessionOps {
@@ -96,4 +97,36 @@ pub fn get_main_session_file_ops(
     }
 
     out
+}
+
+/// Normalizes `file_path` so if its canonical realpath lies under `canonicalize(target_cwd)`,
+/// it uses `target_cwd`'s spelling (ensuring Yazi's `reveal` matches the directory spelling).
+pub fn normalize_path_under_cwd(file_path: &str, target_cwd: &str) -> String {
+    if file_path.is_empty() || target_cwd.is_empty() {
+        return file_path.to_string();
+    }
+    if let (Ok(canon_file), Ok(canon_cwd)) = (
+        clean_canonicalize(file_path),
+        clean_canonicalize(target_cwd),
+    ) {
+        if let Ok(rel) = canon_file.strip_prefix(&canon_cwd) {
+            let sep = if cfg!(windows) && target_cwd.contains('\\') {
+                '\\'
+            } else {
+                '/'
+            };
+            let base = target_cwd.trim_end_matches(['/', '\\']);
+            let rel_norm = normalize_slashes(&rel.to_string_lossy());
+            if rel_norm.is_empty() {
+                return base.to_string();
+            }
+            let rel_native = if sep == '\\' {
+                rel_norm.replace('/', "\\")
+            } else {
+                rel_norm
+            };
+            return format!("{}{}{}", base, sep, rel_native);
+        }
+    }
+    file_path.to_string()
 }

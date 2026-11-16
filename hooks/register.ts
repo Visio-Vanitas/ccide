@@ -127,6 +127,19 @@ async function appendPerfSample(
   }
 }
 
+async function handleRebalance($: EngineInterface): Promise<{ text: string; exitCode: number }> {
+  const { code, out } = await runCore($, ['workspace', 'rebalance'])
+  const lines = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+  let msg = 'Rebalance failed'
+  if (code === 0) msg = lines[0] || 'Rebalance failed (ccide-core unavailable)'
+  else if (code === 3) {
+    const u = lines.find(l => l.startsWith('unsupported '))
+    msg = u ? (u.split(': ').slice(1).join(': ') || u) : (lines[0] || 'Rebalance unsupported on current terminal')
+  }
+  $.ui.toast(msg)
+  return { text: out || msg, exitCode: code }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const cmds = [
@@ -220,23 +233,7 @@ export const register: Register = on => {
     return { text: out || `Palette command '${sub}' completed.`, exitCode: code }
   })
 
-  on('command.run', { command: 'rebalance-panes' }, async $ => {
-    const { code, out } = await runCore($, ['workspace', 'rebalance'])
-    const ok = code === 0 && !/unsupported/i.test(out)
-    $.ui.toast(
-      ok
-        ? 'Rebalanced cc-ide columns (30% | 54% | 16%)'
-        : out || 'Rebalance failed or unsupported on current terminal',
-    )
-    return {
-      text:
-        out ||
-        (ok
-          ? 'Rebalanced open cc-ide workspace panes (30% | 54% | 16%).'
-          : 'Rebalance failed or unsupported on current terminal.'),
-      exitCode: code,
-    }
-  })
+  on('command.run', { command: 'rebalance-panes' }, async $ => handleRebalance($))
 
   on('command.run', { command: 'clear-agents' }, async $ => {
     const { code, out } = await runCore($, ['workspace', 'clear-subagents'])
@@ -269,12 +266,7 @@ export const register: Register = on => {
       if (code === 0 && target !== 'list') $.ui.toast(`cc-ide palette: ${target}`)
       return { text: out || `Palette: ${target}`, exitCode: code }
     }
-    if (head === 'rebalance') {
-      const { code, out } = await runCore($, ['workspace', 'rebalance'])
-      if (code === 0 && !/unsupported/i.test(out)) $.ui.toast('Rebalanced cc-ide columns')
-      else $.ui.toast(out || 'Rebalance failed or unsupported on current terminal')
-      return { text: out || 'Rebalanced workspace panes.', exitCode: code }
-    }
+    if (head === 'rebalance') return handleRebalance($)
     if (head === 'clear' || head === 'clear-subagents') {
       const { code, out } = await runCore($, ['workspace', 'clear-subagents'])
       return { text: out || 'Cleared completed subagents.', exitCode: code }
