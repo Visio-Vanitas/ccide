@@ -1,7 +1,11 @@
-//! Cross-Platform OS Paths, UNC Normalization & Executable Resolution (`src/platform.rs`).
+//! Cross-Platform OS Paths, UNC Normalization & Executable Resolution (`src/platform/mod.rs`).
 //!
 //! Unifies environment & filesystem conventions across macOS, Linux, and Windows (`pwsh`/`cmd.exe`)
 //! with zero external crate dependencies (MSRV `1.70.0`).
+
+pub mod ipc;
+
+pub use ipc::{ipc_dir, ipc_path, legacy_ipc_dir, try_ipc_dir};
 
 use std::env;
 use std::fs;
@@ -34,28 +38,6 @@ pub fn current_username() -> String {
     env::var("USER")
         .or_else(|_| env::var("USERNAME"))
         .unwrap_or_default()
-}
-
-/// Ephemeral IPC directory (`/tmp/.cc-ide` on Unix; `%TEMP%\.cc-ide` on Windows; `$CCIDE_IPC_DIR` override).
-pub fn ipc_dir() -> PathBuf {
-    if let Ok(custom) = env::var("CCIDE_IPC_DIR") {
-        let t = custom.trim();
-        if !t.is_empty() {
-            return PathBuf::from(t);
-        }
-    }
-    #[cfg(windows)]
-    {
-        env::temp_dir().join(".cc-ide")
-    }
-    #[cfg(not(windows))]
-    {
-        PathBuf::from("/tmp/.cc-ide")
-    }
-}
-
-pub fn ipc_path(name: &str) -> PathBuf {
-    ipc_dir().join(name)
 }
 
 pub fn cache_dir(home: &str) -> PathBuf {
@@ -152,6 +134,8 @@ pub fn is_internal_or_temp_path(abs_path: &str, home: &str) -> bool {
     }
     if norm.starts_with("/tmp/")
         || norm.starts_with("/private/tmp/")
+        || norm.starts_with("/tmp/.cc-ide-")
+        || norm.starts_with("/private/tmp/.cc-ide-")
         || norm.contains("/.cache/cc-ide/")
         || norm.contains("/.claude/projects/")
         || norm.contains("/tmp/claude-")
@@ -267,6 +251,10 @@ mod tests {
         assert!(!is_internal_or_temp_path("/repo/.lib/foo.rs", "/Users/dev"));
         assert!(is_internal_or_temp_path(
             "/Users/dev/.lib/foo.rs",
+            "/Users/dev"
+        ));
+        assert!(is_internal_or_temp_path(
+            "/tmp/.cc-ide-501/ready_pid_42",
             "/Users/dev"
         ));
         assert!(paths_equal_ci(Path::new("/a/b/"), Path::new("/a/b")));

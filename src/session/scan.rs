@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use crate::ffi::{current_ppid, is_descendant_of, is_pid_alive};
+use crate::ffi::{current_ppid, is_descendant_of, is_pid_alive, ProcToken};
 use crate::json::{extract_json_bool, extract_json_str, extract_json_u64};
 use crate::platform::{clean_canonicalize, ipc_dir, paths_equal_ci};
 
@@ -157,8 +157,13 @@ pub fn resolve_yazi_id_from_ppid(cache_dir_path: &str) -> String {
                 .and_then(|s| s.strip_suffix(".txt"))
             {
                 if let Ok(stxt) = fs::read_to_string(&p) {
-                    if let Ok(spid) = stxt.trim().parse::<u32>() {
-                        if is_descendant_of(ppid, spid) {
+                    if let Some(tok) = ProcToken::parse(&stxt) {
+                        let spid_ok = if tok.start_ms > 0 {
+                            tok.is_alive_match()
+                        } else {
+                            is_pid_alive(tok.pid)
+                        };
+                        if spid_ok && is_descendant_of(ppid, tok.pid) {
                             let mtime = entry
                                 .metadata()
                                 .and_then(|m| m.modified())
@@ -217,8 +222,11 @@ pub fn resolve_live_yazi_tab(
             let Ok(txt) = fs::read_to_string(&p) else {
                 continue;
             };
-            let sb_pid = extract_json_u64(&txt, "pid").unwrap_or(0) as u32;
-            if !is_pid_alive(sb_pid) {
+            let Some(sb_tok) = extract_json_str(&txt, "pid").and_then(|s| ProcToken::parse(&s))
+            else {
+                continue;
+            };
+            if !sb_tok.is_alive_match() {
                 continue;
             }
             let yid = extract_json_str(&txt, "yazi_id").unwrap_or_default();

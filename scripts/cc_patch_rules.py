@@ -9,6 +9,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from bun_pe import BunLayout, iter_js_regions  # type: ignore[import-not-found]  # noqa: E402
 
+PATCH_PROTO = 1
+PATCH_RULES_VERSION = "2"
+
 
 def discover_runtime_symbols(buf: bytearray, layout: BunLayout | None) -> dict[str, str]:
     re_enter = re.compile(
@@ -119,29 +122,27 @@ def apply_all_structural_patches(
         )
 
         def build_jn(m: re.Match[bytes]) -> bytes:
-            jn_v, now_v, lo_v = m.group(1), m.group(2), m.group(3)
-            te_v, lt_v, to_v, um_v = m.group(4), m.group(5), m.group(6), m.group(7)
-            qt_v, ge_v, hn_v, tail = m.group(8), m.group(9), m.group(10), m.group(11)
+            jn_v, te_v, lt_v = m.group(1), m.group(4), m.group(5)
+            to_v, um_v, qt_v, ge_v, hn_v, tail = m.group(6), m.group(7), m.group(8), m.group(9), m.group(10), m.group(11)
             return (
-                jn_v + b"=()=>{let " + now_v + b"=Date.now()," + lo_v + b"=!1;for(const u of Object.values(" + te_v
-                + b")){if(" + um_v + b'(u)&&u.status==="running"&&!u.isIdle)' + lo_v + b"=!0}if(" + lo_v + b"&&!" + ge_v
-                + b")" + hn_v + b"(" + now_v + b")}" + tail
-                + b'try{let r=import.meta.require,fs=r("fs"),p=process.pid,g=globalThis,w=process.platform==="win32",'
-                + b'd=process.env.CCIDE_IPC_DIR||(w?r("os").tmpdir()+"/.cc-ide":"/tmp/.cc-ide");'
-                + b"g.__cc={Qt:" + qt_v + b",to:" + to_v + b",te:" + te_v + b",lt:" + lt_v + b",fs};"
-                + b"if(!g.__cc_h){fs.mkdirSync(d,{recursive:!0});"
-                + b"g.__cc_h=()=>{try{let c=g.__cc,rf=`${d}/req_pid_${p}.json`;if(!c||!c.fs.existsSync(rf))return;"
-                + b'let q=JSON.parse(c.fs.readFileSync(rf,"utf8"));c.fs.unlinkSync(rf);'
-                + b'if(!q.id||q.id==="main"){if(c.lt!==void 0)' + exit_fn.encode("ascii")
-                + b"(c.Qt)}else{if(!(c.to.get?c.to.get(q.id):c.te[q.id]))" + adopt_fn.encode("ascii")
-                + b'({agentId:q.id,description:q.desc||"subagent",agentType:q.type||"general-purpose"},c.to);'
-                + enter_fn.encode("ascii") + b'(q.id,c.Qt)}}catch{}};'
-                + b'w?fs.watch(d,(_,f)=>f==`req_pid_${p}.json`&&g.__cc_h()).unref():process.on("SIGUSR2",g.__cc_h)}w&&g.__cc_h();'
-                + b"let st=`${" + lt_v + b'??"main"}\\n\\n${Object.keys(' + te_v
-                + b").length}`;if(g.__cc_s!==st){g.__cc_s=st;"
-                + b"let cf=`${d}/cur_pid_${p}.tmp`;fs.writeFileSync(cf,st);fs.renameSync(cf,`${d}/cur_pid_${p}.txt`);"
-                + b'let sp=`${d}/sb_pid_${p}.pid`;if(fs.existsSync(sp)){let k=+fs.readFileSync(sp,"utf8");'
-                + b'k>1&&(w?r("child_process").spawn("ccide-core",["wake-pid",""+k],{stdio:"ignore",windowsHide:!0}).on("error",()=>{}).unref():process.kill(k,"SIGUSR2"))}}}catch{}'
+                jn_v + b"=()=>{Object.values(" + te_v + b").some(u=>" + um_v
+                + b'(u)&&u.status=="running"&&!u.isIdle)&&!' + ge_v + b"&&" + hn_v + b"(Date.now())}" + tail
+                + b'try{let Z=process,r=import.meta.require,fs=r("fs"),R=fs.readFileSync,'
+                + b'A=(f,v)=>{fs.writeFileSync(f+".t",v);fs.renameSync(f+".t",f)},'
+                + b'p=Z.pid,g=global,w=process.platform==="win32",E=Z.env,M="main",S="SIGUSR2",'
+                + b'qn=`req_pid_${p}.json`,d=E.CCIDE_IPC_DIR||(w?r("os").tmpdir()+"/.cc-ide":"/tmp/.cc-ide-"+process.getuid());'
+                + b"g.__cc=[" + qt_v + b"," + to_v + b"," + te_v + b"," + lt_v + b"];"
+                + b'if(!g.__cc_h){fs.mkdirSync(d,{recursive:!0,mode:448});A(d+"/ready_pid_"+p,"1");'
+                + b'g.__cc_h=()=>{try{let[a,b,e,h]=g.__cc,f=d+"/"+qn,q=JSON.parse(R(f));fs.unlinkSync(f);'
+                + b'!q.id||q.id==M?h!=null&&' + exit_fn.encode("ascii") + b"(a):((b.get?.(q.id)??e[q.id])||"
+                + adopt_fn.encode("ascii") + b"({agentId:q.id,description:q.desc,agentType:q.type},b),"
+                + enter_fn.encode("ascii") + b"(q.id,a))}catch{}};"
+                + b"w?fs.watch(d,(_,f)=>f==qn&&g.__cc_h()).unref():Z.on(S,g.__cc_h)}w&&g.__cc_h();"
+                + b"let st=`${" + lt_v + b"??M}\\n\\n${Object.keys(" + te_v
+                + b").length}`;if(g.__cc_s!=st){g.__cc_s=st;A(`${d}/cur_pid_${p}.txt`,st);"
+                + b'let raw=""+R(`${d}/sb_pid_${p}.pid`),k=parseInt(raw),sm=+raw.split(":")[1];'
+                + b'if(k>1){if(w)r("child_process").spawn(E.CCIDE_CORE_BIN||"ccide-core",["wake-pid",raw],{stdio:"ignore",windowsHide:1}).on("error",()=>{}).unref();'
+                + b'else{if(Z.platform=="linux"&&sm>0)try{let b=/^btime (\\d+)/m.exec(R("/proc/stat"))[1],s=(R(`/proc/${k}/stat`)+"").split(")").pop().split(" ")[20];Math.abs(b*1e3+s*10-sm)>5e3&&(k=0)}catch{}k>1&&Z.kill(k,S)}}}}catch{}'
             )
 
         record("sigusr2_view_switch_hook", True, *apply_regex_patch_in_regions(buf, layout, re_jn, build_jn, f"Event-driven view-switch hook ({enter_fn}/{exit_fn}/{adopt_fn})"))

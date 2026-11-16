@@ -5,18 +5,19 @@ pub mod dispatch;
 pub mod hit_mask;
 pub mod input;
 pub mod ipc;
+pub mod ipc_guard;
 pub mod mouse_actions;
 pub mod orch_panel;
 pub mod subagents_panel;
 
 use std::collections::HashMap;
-use std::fs;
 use std::io::Write;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
-use crate::ffi::{install_signal_handlers, ConsoleRawSession, DIRTY_EVENT, RUNNING};
+use crate::ffi::{ProcToken, DIRTY_EVENT, RUNNING};
 use crate::orchestrator::OrchestratorWatcher;
-use crate::platform::{cache_dir, ipc_dir, user_home_dir};
+use crate::platform::user_home_dir;
 use crate::session::transcript::SubagentItem;
 use crate::session::{classify_model_family, load_config_models, ConfigModels, SessionBinding};
 use crate::telemetry::TelemetrySampler;
@@ -25,30 +26,25 @@ use crate::tui::grid::{get_terminal_geometry, render_multi_panel_grid};
 use crate::tui::logo::{build_top_logo_panel, load_adaptive_logos};
 use crate::tui::palette::PaletteWatcher;
 
-use bottom_panel::append_bottom_panels;
-use dispatch::{handle_input_batch, DispatchEnv, SidebarSelectState};
-use hit_mask::{FocusZone, SidebarGeomMask};
+use bottom_panel::{
+    append_bottom_panels, begin_sidebar_session, finish_sidebar_session, poll_and_dispatch_input,
+    sweep_stale_sidebar_files,
+};
+use dispatch::SidebarSelectState;
+use hit_mask::FocusZone;
 use ipc::{
-    refresh_session_and_subagents, register_sidebar_tab, update_isolated_session_binding,
-    write_active_view_state,
+    refresh_session_and_subagents, update_isolated_session_binding, write_active_view_state,
 };
 use orch_panel::build_orchestrator_panel;
 use subagents_panel::build_subagents_panel;
 
 pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
     let home = user_home_dir();
-    let _ = fs::create_dir_all(cache_dir(&home));
-    let _ = fs::create_dir_all(ipc_dir());
-    let my_pid_str = std::process::id().to_string();
-    register_sidebar_tab(&home, tab_yazi_id, target_cwd, shell_pid_arg, &my_pid_str);
-
-    install_signal_handlers(true);
-    let console = ConsoleRawSession::enter();
-    let mut stdout = std::io::stdout();
-    let _ = stdout.write_all(
-        b"\x1b]1;[AI] Companion & Agents\x07\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h\x1b[49m\x1b[2J\x1b[3J",
-    );
-    let _ = stdout.flush();
+    let my_tok = ProcToken::self_token();
+    let my_tok_str = my_tok.encode();
+    let (console, mut stdout) =
+        begin_sidebar_session(&home, tab_yazi_id, target_cwd, shell_pid_arg, &my_tok_str);
+    let mut last_sweep = Instant::now();
 
     let mut logos = load_adaptive_logos(&home);
     let mut pal_watcher = PaletteWatcher::new(&home);
@@ -74,7 +70,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         tab_yazi_id,
         target_cwd,
         shell_pid_arg,
-        &my_pid_str,
+        my_tok,
         &mut sb,
     );
 
@@ -86,6 +82,10 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
     let mut prev_geom_key = (0usize, 0usize);
 
     while RUNNING.load(Ordering::Relaxed) {
+        if last_sweep.elapsed() >= Duration::from_secs(30) {
+            sweep_stale_sidebar_files();
+            last_sweep = Instant::now();
+        }
         let geom = get_terminal_geometry();
         if (geom.rows, geom.cols) != prev_geom_key {
             prev_geom_key = (geom.rows, geom.cols);
@@ -118,7 +118,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                     tab_yazi_id,
                     target_cwd,
                     shell_pid_arg,
-                    &my_pid_str,
+                    my_tok,
                     &mut sb,
                 )
             {
@@ -129,7 +129,12 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 prev_rows.clear();
                 active_view_id = "main".to_string();
                 write_active_view_state(&home, tab_yazi_id, "main");
-                (cached_ctx_snap, seen_main_seq, sel.cost_scroll) = (None, None, 0);
+                (
+                    cached_ctx_snap,
+                    seen_main_seq,
+                    sel.cost_scroll,
+                    sel.status_notice,
+                ) = (None, None, 0, None);
             }
             (
                 main_tool, main_file, main_line, main_span, cached_cfg, subagents,
@@ -141,6 +146,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 sb.ui_pid,
                 &mut active_view_id,
                 &sel.last_click_instant,
+                &mut sel.status_notice,
                 &mut main_tracker,
                 &mut sub_trackers,
                 &mut seen_main_seq,
@@ -197,6 +203,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 &subagents,
                 &cached_cfg,
                 &orch_watcher.cfg.active_preset,
+                sel.status_notice.as_deref(),
                 tick,
                 pal,
             );
@@ -254,47 +261,33 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
         } else {
             1000
         };
-        let mut in_buf = [0u8; 1024];
-        if let Some(n) = console.poll_stdin(&mut in_buf, timeout_ms) {
+        if poll_and_dispatch_input(
+            &console,
+            timeout_ms,
+            &home,
+            tab_yazi_id,
+            target_cwd,
+            &sb,
+            &main_file,
+            main_line,
+            main_span,
+            geom.cols,
+            top_h,
+            mid_h,
+            ctx_box_h,
+            viewport_h,
+            cost_max_scroll,
+            split_ctx_cost,
+            &row_tag_map,
+            &mut subagents,
+            &mut active_view_id,
+            &mut sel,
+            &mut orch_watcher.cfg,
+        ) {
             fast_input_redraw = true;
-            let panel3_top_row = top_h + mid_h + 1;
-            let env = DispatchEnv {
-                home: &home,
-                yazi_id: tab_yazi_id,
-                cwd: target_cwd,
-                sid: &sb.session_id,
-                cpid: sb.ui_pid,
-                main_file: &main_file,
-                main_line,
-                main_span,
-                viewport_h,
-                cost_max_scroll,
-                hit_mask: SidebarGeomMask {
-                    cols: geom.cols,
-                    top_h,
-                    panel3_top_row,
-                    cost_top_row: panel3_top_row + ctx_box_h,
-                    show_context_panel: sel.show_context,
-                    split_ctx_cost,
-                },
-            };
-            handle_input_batch(
-                &String::from_utf8_lossy(&in_buf[..n]),
-                &env,
-                &row_tag_map,
-                &mut subagents,
-                &mut active_view_id,
-                &mut sel,
-                &mut orch_watcher.cfg,
-            );
         }
         tick = tick.wrapping_add(1);
     }
 
-    bottom_panel::cleanup_sidebar_pid_files(tab_yazi_id, &sb.session_id, sb.ui_pid, &my_pid_str);
-
-    let _ = stdout.write_all(
-        b"\x1b_Ga=d,d=i,i=71,q=2\x1b\\\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1049l\x1b[?25h\x1b[0m\n",
-    );
-    let _ = stdout.flush();
+    finish_sidebar_session(tab_yazi_id, &sb.session_id, sb.ui_pid, my_tok);
 }

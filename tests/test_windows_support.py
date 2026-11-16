@@ -67,11 +67,11 @@ class CrossPlatformPackagingTests(unittest.TestCase):
             os.path.join(_REPO_ROOT, "src", "tui", "context"),
             os.path.join(_REPO_ROOT, "src", "tui", "palette"),
             os.path.join(_REPO_ROOT, "src", "ffi"),
+            os.path.join(_REPO_ROOT, "src", "platform"),
             os.path.join(_REPO_ROOT, "src", "telemetry"),
             os.path.join(_REPO_ROOT, "src", "orchestrator"),
         ]
         extra_files = [
-            os.path.join(_REPO_ROOT, "src", "platform.rs"),
             os.path.join(_REPO_ROOT, "src", "tui", "layout.rs"),
             os.path.join(_REPO_ROOT, "src", "commands", "pane_runner.rs"),
             os.path.join(_REPO_ROOT, "src", "commands", "pre_tool_hook.rs"),

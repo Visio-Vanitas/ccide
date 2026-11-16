@@ -168,6 +168,12 @@ if [[ ! -x "$CCIDE_CORE_BIN" && -f "$SCRIPT_DIR/ensure-ccide-core.sh" ]]; then
   sh "$SCRIPT_DIR/ensure-ccide-core.sh" --help >/dev/null 2>&1 || true
   [[ -x "$HOME/.claude/bin/ccide-core" ]] && CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
 fi
+export CCIDE_CORE_BIN
+if [[ -z "${CCIDE_IPC_DIR:-}" && -x "$CCIDE_CORE_BIN" ]]; then
+  _ipc_dir="$("$CCIDE_CORE_BIN" ipc-dir 2>/dev/null || true)"
+  [[ -n "$_ipc_dir" && -d "$_ipc_dir" ]] && CCIDE_IPC_DIR="$_ipc_dir"
+fi
+export CCIDE_IPC_DIR="${CCIDE_IPC_DIR:-/tmp/.cc-ide-$(id -u)}"
 
 # If `--tmux` is requested (or running without a native split backend and without `$TMUX`),
 # bootstrap inside a dedicated `tmux -L ccide` server if not already inside `tmux`.
@@ -189,12 +195,13 @@ if [[ -z "${TMUX:-}" && ( "$BACKEND" == "tmux" || ( "$BACKEND" == "auto" && "$NA
     SESSION_NAME="ccide-${PWD:t}-$$"
     QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
     exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-      "export CCIDE_BACKEND=tmux; exec ${(q)0} ${QUOTED_ORIG} --tmux"
+      "export CCIDE_BACKEND=tmux CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
   fi
 fi
 
 CACHE_DIR="$HOME/.cache/cc-ide"
-mkdir -p "$CACHE_DIR" /tmp/.cc-ide 2>/dev/null || true
+mkdir -p "$CACHE_DIR" 2>/dev/null || true
+mkdir -p -m 700 "$CCIDE_IPC_DIR" 2>/dev/null || mkdir -p "$CCIDE_IPC_DIR" 2>/dev/null || true
 
 # Deterministic numeric Yazi client ID
 YAZI_CLIENT_ID="$(( ($$ * 65537 + RANDOM * 257 + ${#TARGET_DIR}) & 0x7fffffff ))"
@@ -224,7 +231,7 @@ if [[ -z "$PANE_SPEC" && -z "${TMUX:-}" && "$BACKEND" == "auto" && -z "${CLAUDEC
   SESSION_NAME="ccide-${PWD:t}-$$"
   QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
   exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-    "export CCIDE_BACKEND=tmux; exec ${(q)0} ${QUOTED_ORIG} --tmux"
+    "export CCIDE_BACKEND=tmux CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
 fi
 
 if [[ -n "${CLAUDECODE:-}" ]]; then
@@ -239,7 +246,7 @@ export CC_YAZI_ID="$YAZI_CLIENT_ID"
 
 # Auto-repatch Claude Code binary seamlessly if it was auto-updated since last launch
 auto_ensure_claude_patched() {
-  local c_cli real_c target_exe cur_stamp stamp_file patcher py_bin
+  local c_cli real_c target_exe cur_stamp raw_stat stamp_file patcher py_bin
   c_cli="$(command -v claude || true)"
   [[ -n "$c_cli" ]] || return 0
   real_c="$(realpath "$c_cli" 2>/dev/null || readlink -f "$c_cli" 2>/dev/null || echo "$c_cli")"
@@ -248,7 +255,8 @@ auto_ensure_claude_patched() {
   [[ -f "$target_exe" && -w "$target_exe" ]] || return 0
 
   stamp_file="$CACHE_DIR/claude_bin.stamp"
-  cur_stamp="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
+  raw_stat="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
+  cur_stamp="${raw_stat:+r2:$raw_stat}"
   if [[ -n "$cur_stamp" && -f "$stamp_file" && "$(cat "$stamp_file" 2>/dev/null)" == "$cur_stamp" ]]; then
     return 0
   fi
@@ -258,8 +266,8 @@ auto_ensure_claude_patched() {
   py_bin="$(command -v python3 || true)"
   if [[ -f "$patcher" && -n "$py_bin" ]]; then
     if "$py_bin" -I "$patcher" --binary "$target_exe" >/dev/null 2>&1; then
-      cur_stamp="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
-      [[ -n "$cur_stamp" ]] && printf '%s' "$cur_stamp" > "$stamp_file"
+      raw_stat="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
+      [[ -n "$raw_stat" ]] && printf 'r2:%s' "$raw_stat" > "$stamp_file"
     fi
   fi
 }

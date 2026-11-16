@@ -18,6 +18,19 @@ if (-not (Test-Path $CoreBin)) {
     $AltBin = Join-Path $RepoRoot "bin\ccide-core.exe"
     if (Test-Path $AltBin) { $CoreBin = $AltBin }
 }
+if (Test-Path $CoreBin) { $env:CCIDE_CORE_BIN = $CoreBin }
+if (-not $env:CCIDE_IPC_DIR) {
+    $ResolvedIpc = ""
+    if (Test-Path $CoreBin) {
+        $CandIpc = (& $CoreBin ipc-dir 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -eq 0 -and $CandIpc) { $ResolvedIpc = $CandIpc.Trim() }
+    }
+    if (-not $ResolvedIpc) {
+        $WinTmp = if ($env:TEMP) { $env:TEMP } elseif ($env:TMP) { $env:TMP } else { [System.IO.Path]::GetTempPath() }
+        $ResolvedIpc = Join-Path $WinTmp.TrimEnd('\', '/') ".cc-ide"
+    }
+    $env:CCIDE_IPC_DIR = $ResolvedIpc
+}
 
 function Resolve-PyExe {
     foreach ($n in @("python", "python3", "py")) {
@@ -220,7 +233,7 @@ function Invoke-AutoEnsureClaudePatched {
     $StampFile = Join-Path $CacheDir "claude_bin.stamp"
     $Fi = Get-Item -LiteralPath $TargetExe -ErrorAction SilentlyContinue
     if (-not $Fi) { return }
-    $CurStamp = "$($Fi.Length):$($Fi.LastWriteTimeUtc.Ticks)"
+    $CurStamp = "r2:$($Fi.Length):$($Fi.LastWriteTimeUtc.Ticks)"
     if ((Test-Path $StampFile) -and ((Get-Content -LiteralPath $StampFile -Raw -ErrorAction SilentlyContinue).Trim() -eq $CurStamp)) {
         return
     }
@@ -233,7 +246,7 @@ function Invoke-AutoEnsureClaudePatched {
         if ($LASTEXITCODE -eq 0) {
             $FiAfter = Get-Item -LiteralPath $TargetExe -ErrorAction SilentlyContinue
             if ($FiAfter) {
-                Set-Content -LiteralPath $StampFile -Value "$($FiAfter.Length):$($FiAfter.LastWriteTimeUtc.Ticks)" -NoNewline -Encoding ASCII
+                Set-Content -LiteralPath $StampFile -Value "r2:$($FiAfter.Length):$($FiAfter.LastWriteTimeUtc.Ticks)" -NoNewline -Encoding ASCII
             }
         }
     }

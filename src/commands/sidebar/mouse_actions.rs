@@ -1,5 +1,6 @@
 //! Masked Pointer Action & Subagent Dismissal Helpers (`src/commands/sidebar/mouse_actions.rs`).
 
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use crate::commands::sidebar::hit_mask::{
@@ -22,6 +23,7 @@ pub struct DispatchEnv<'a> {
     pub viewport_h: usize,
     pub cost_max_scroll: usize,
     pub hit_mask: SidebarGeomMask,
+    pub switch_signal_ok: Cell<Option<bool>>,
 }
 
 impl<'a> DispatchEnv<'a> {
@@ -41,7 +43,7 @@ impl<'a> DispatchEnv<'a> {
     ) {
         *active_view = vid.to_string();
         *last_click = Instant::now();
-        trigger_native_view_switch(
+        let ok = trigger_native_view_switch(
             self.home,
             self.yazi_id,
             self.sid,
@@ -52,6 +54,7 @@ impl<'a> DispatchEnv<'a> {
             done,
             rank,
         );
+        self.switch_signal_ok.set(Some(ok));
         if !fp.is_empty() {
             trigger_yazi_reveal(self.home, self.yazi_id, self.cwd, fp, ln, sp);
         }
@@ -106,6 +109,7 @@ pub struct SidebarSelectState {
     pub orch_cursor: Option<usize>,
     pub pointer: PointerCapture,
     pub last_click_instant: Instant,
+    pub status_notice: Option<String>,
 }
 
 impl Default for SidebarSelectState {
@@ -122,6 +126,7 @@ impl Default for SidebarSelectState {
             orch_cursor: None,
             pointer: PointerCapture::default(),
             last_click_instant: Instant::now() - Duration::from_secs(10),
+            status_notice: None,
         }
     }
 }
@@ -141,31 +146,31 @@ pub fn apply_masked_action(
 ) {
     match act {
         MaskedAction::SelectMain => {
-            sel.pane_has_focus = false;
-            sel.focus_zone = None;
-            sel.sub_cursor = None;
+            (sel.pane_has_focus, sel.focus_zone, sel.sub_cursor) = (false, None, None);
             env.switch_to_main(active_view_id, &mut sel.last_click_instant);
+            if let Some(ok) = env.switch_signal_ok.get() {
+                sel.status_notice = (!ok).then(|| "repatch needed (ccide doctor)".to_string());
+            }
             *switched_view = true;
         }
         MaskedAction::SelectSubagent(idx) => {
             if let Some(ag) = subagents.get(idx) {
-                sel.pane_has_focus = false;
-                sel.focus_zone = None;
-                sel.sub_cursor = None;
+                (sel.pane_has_focus, sel.focus_zone, sel.sub_cursor) = (false, None, None);
                 env.switch_to_agent(ag, active_view_id, &mut sel.last_click_instant);
+                if let Some(ok) = env.switch_signal_ok.get() {
+                    sel.status_notice = (!ok).then(|| "repatch needed (ccide doctor)".to_string());
+                }
                 *switched_view = true;
             }
         }
         MaskedAction::DismissSubagent(idx) => {
-            sel.pane_has_focus = true;
-            sel.focus_zone = Some(FocusZone::Subagents);
-            *dismiss_idx = Some(idx);
+            (sel.pane_has_focus, sel.focus_zone, *dismiss_idx) =
+                (true, Some(FocusZone::Subagents), Some(idx));
             emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::ClearAllDone => {
-            sel.pane_has_focus = true;
-            sel.focus_zone = Some(FocusZone::Subagents);
-            *clear_all_done = true;
+            (sel.pane_has_focus, sel.focus_zone, *clear_all_done) =
+                (true, Some(FocusZone::Subagents), true);
             emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::ToggleBottomPanel => {
@@ -182,22 +187,19 @@ pub fn apply_masked_action(
         MaskedAction::ToggleOrchestrator => {
             sel.pane_has_focus = true;
             sel.show_orchestrator = !sel.show_orchestrator;
-            sel.sub_cursor = None;
-            sel.orch_cursor = None;
+            (sel.sub_cursor, sel.orch_cursor) = (None, None);
             sel.focus_zone = Some(FocusZone::Subagents);
             emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::OrchCyclePreset(fwd) => {
-            sel.pane_has_focus = true;
-            sel.focus_zone = Some(FocusZone::Subagents);
-            sel.orch_cursor = Some(0);
+            (sel.pane_has_focus, sel.focus_zone, sel.orch_cursor) =
+                (true, Some(FocusZone::Subagents), Some(0));
             orch_cfg.cycle_preset(fwd);
             orch_cfg.save(env.home);
             emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::OrchCycleModel(idx, fwd) => {
-            sel.pane_has_focus = true;
-            sel.focus_zone = Some(FocusZone::Subagents);
+            (sel.pane_has_focus, sel.focus_zone) = (true, Some(FocusZone::Subagents));
             if let Some(&role) = ALL_ROLES.get(idx) {
                 sel.orch_cursor = Some(idx + 1);
                 orch_cfg.cycle_role_model(role, fwd);
@@ -206,8 +208,7 @@ pub fn apply_masked_action(
             emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::OrchCycleEffort(idx, fwd) => {
-            sel.pane_has_focus = true;
-            sel.focus_zone = Some(FocusZone::Subagents);
+            (sel.pane_has_focus, sel.focus_zone) = (true, Some(FocusZone::Subagents));
             if let Some(&role) = ALL_ROLES.get(idx) {
                 sel.orch_cursor = Some(idx + 1);
                 orch_cfg.cycle_role_effort(role, fwd);
@@ -216,21 +217,21 @@ pub fn apply_masked_action(
             emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::FocusZoneOnly(z) => {
-            sel.pane_has_focus = z.is_some();
-            sel.focus_zone = z;
+            (sel.pane_has_focus, sel.focus_zone) = (z.is_some(), z);
             if z != Some(FocusZone::Subagents) {
-                sel.sub_cursor = None;
-                sel.orch_cursor = None;
+                (sel.sub_cursor, sel.orch_cursor) = (None, None);
             }
             if z.is_some() {
                 emit_yazi_blur(env.home, env.yazi_id);
             }
         }
         MaskedAction::RestoreCenterFocusOnly => {
-            sel.pane_has_focus = false;
-            sel.focus_zone = None;
-            sel.sub_cursor = None;
-            *restore_focus = true;
+            (
+                sel.pane_has_focus,
+                sel.focus_zone,
+                sel.sub_cursor,
+                *restore_focus,
+            ) = (false, None, None, true);
         }
     }
 }

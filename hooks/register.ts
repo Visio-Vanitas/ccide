@@ -8,12 +8,18 @@ function splitArgs(raw: string): string[] {
   return raw.trim().split(/\s+/).filter(Boolean)
 }
 
+let cachedIpcDir = ''
+
 async function resolveIpcDir($: EngineInterface): Promise<string> {
   const custom = await $.env.get('CCIDE_IPC_DIR')
   if (custom) return custom
-  const winTmp = (await $.env.get('TMP')) || (await $.env.get('TEMP'))
-  const userProfile = await $.env.get('USERPROFILE')
-  if (winTmp && userProfile) return `${winTmp.replace(/[\\/]+$/, '')}/.cc-ide`
+  if (cachedIpcDir) return cachedIpcDir
+  try {
+    const { code, out } = await runCore($, ['ipc-dir'])
+    if (code === 0 && out) { cachedIpcDir = out.trim(); return cachedIpcDir }
+  } catch { /* fall back below */ }
+  const winTmp = (await $.env.get('TEMP')) || (await $.env.get('TMP'))
+  if (winTmp && (await $.env.get('USERPROFILE'))) return `${winTmp.replace(/[\\/]+$/, '')}/.cc-ide`
   return '/tmp/.cc-ide'
 }
 
@@ -74,12 +80,12 @@ async function syncSessionModel($: EngineInterface, overrideModel?: string): Pro
                 .map(n => $.fs.read(`${ipcDir}/${n}`).catch(() => '')),
             ),
           )
-    const pids = rawPids
-      .map(t => t.trim().split(/[:\s]/)[0])
-      .filter(p => /^\d+$/.test(p) && Number(p) > 1)
+    const toks = rawPids
+      .map(t => t.trim())
+      .filter(t => /^\d+(?::\d+)?$/.test(t) && parseInt(t, 10) > 1)
     await Promise.all(
-      pids.map(pid =>
-        $.process.run(['node', resolver, 'wake-pid', pid], { timeoutMs: 2000 }).catch(() => undefined),
+      toks.map(tok =>
+        $.process.run(['node', resolver, 'wake-pid', tok], { timeoutMs: 2000 }).catch(() => undefined),
       ),
     )
   } catch {

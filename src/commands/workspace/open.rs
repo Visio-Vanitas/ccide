@@ -17,8 +17,8 @@ use crate::commands::workspace::iterm::{
 use crate::commands::workspace::tmux::run_tmux_open;
 use crate::commands::workspace::wezterm::run_wezterm_open;
 use crate::commands::workspace::wt::run_wt_open;
-use crate::ffi::current_ppid;
-use crate::platform::{current_username, find_executable, ipc_path};
+use crate::ffi::{current_ppid, ProcToken};
+use crate::platform::{atomic_write, current_username, find_executable, ipc_path};
 
 pub fn handle_open(home: &str, cdir: &Path, args: &[String]) {
     let target_dir = args.get(3).map(|s| s.as_str()).unwrap_or(".");
@@ -46,9 +46,12 @@ pub fn handle_open(home: &str, cdir: &Path, args: &[String]) {
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or_else(current_ppid);
     if shell_pid > 1 {
-        let _ = fs::write(
-            cdir.join(format!("tab_shell_{}.txt", yazi_id)),
-            shell_pid.to_string(),
+        let tok_s = ProcToken::current(shell_pid)
+            .map(|t| t.encode())
+            .unwrap_or_else(|| shell_pid.to_string());
+        let _ = atomic_write(
+            &cdir.join(format!("tab_shell_{}.txt", yazi_id)),
+            tok_s.as_bytes(),
         );
     }
 

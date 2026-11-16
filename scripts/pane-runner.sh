@@ -18,10 +18,12 @@ INSTANCE_ID="${5:-}"
 shift_count=$(( $# >= 5 ? 5 : $# ))
 shift "$shift_count" || true
 
-mkdir -p /tmp/.cc-ide "$HOME/.cache/cc-ide" 2>/dev/null || true
+CCIDE_IPC_DIR="${CCIDE_IPC_DIR:-/tmp/.cc-ide-$(id -u)}"
+mkdir -p "$HOME/.cache/cc-ide" 2>/dev/null || true
+mkdir -p -m 700 "$CCIDE_IPC_DIR" 2>/dev/null || mkdir -p "$CCIDE_IPC_DIR" 2>/dev/null || true
 # Acknowledge client-side native split over SSH (`OSC 1337` Tier 2 handshake)
 if [[ -n "$CLIENT_ID" ]]; then
-  printf 'ok' > "/tmp/.cc-ide/osc_ack_${CLIENT_ID}" 2>/dev/null || true
+  printf 'ok' > "$CCIDE_IPC_DIR/osc_ack_${CLIENT_ID}" 2>/dev/null || true
 fi
 
 [[ -d "$TARGET_DIR" ]] && cd "$TARGET_DIR"

@@ -1,8 +1,4 @@
 //! Native Win32 (`x86_64-pc-windows-msvc` / `aarch64-pc-windows-msvc`) Console, Process & Event FFI.
-//!
-//! Zero external crates: binds directly to `kernel32.dll` (`src/ffi/win_sys.rs`) for `< 0.05ms`
-//! Named-Event sidebar wakeups (`Local\ccide_wake_<pid>`), VT raw console + SGR mouse input,
-//! `GetConsoleScreenBufferInfo` geometry, and `CreateToolhelp32Snapshot` process-tree isolation.
 
 use std::ptr;
 use std::sync::atomic::Ordering;
@@ -18,6 +14,10 @@ unsafe extern "system" fn ctrl_handler(_ctrl_type: u32) -> i32 {
 
 fn wide_null(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+pub fn current_euid() -> u32 {
+    0
 }
 
 pub fn install_signal_handlers(_enable_wakeup_sig: bool) {
@@ -40,17 +40,17 @@ pub struct ConsoleRawSession {
 impl ConsoleRawSession {
     pub fn enter() -> Self {
         unsafe {
-            let h_in = GetStdHandle(STD_INPUT_HANDLE);
-            let h_out = GetStdHandle(STD_OUTPUT_HANDLE);
-            let mut orig_in_mode = 0u32;
-            let mut orig_out_mode = 0u32;
+            let (h_in, h_out) = (
+                GetStdHandle(STD_INPUT_HANDLE),
+                GetStdHandle(STD_OUTPUT_HANDLE),
+            );
+            let (mut orig_in_mode, mut orig_out_mode) = (0u32, 0u32);
             let has_in = !h_in.is_null()
                 && h_in != INVALID_HANDLE_VALUE
                 && GetConsoleMode(h_in, &mut orig_in_mode) != 0;
             let has_out = !h_out.is_null()
                 && h_out != INVALID_HANDLE_VALUE
                 && GetConsoleMode(h_out, &mut orig_out_mode) != 0;
-
             if has_out {
                 let _ = SetConsoleMode(
                     h_out,
@@ -72,10 +72,8 @@ impl ConsoleRawSession {
                     let _ = SetConsoleMode(h_in, raw_in);
                 }
             }
-
             let ev_name = wide_null(&format!("Local\\ccide_wake_{}", std::process::id()));
             let wake_ev = CreateEventW(ptr::null_mut(), 0, 0, ev_name.as_ptr());
-
             Self {
                 h_in,
                 h_out,
@@ -129,51 +127,7 @@ impl ConsoleRawSession {
                 {
                     let mut out = String::with_capacity(128);
                     for rec in &recs[..read_n as usize] {
-                        if rec.event_type == 0x0001 {
-                            let ke = rec.event.key;
-                            if ke.key_down != 0 {
-                                if ke.u_char != 0 {
-                                    if let Some(ch) = char::from_u32(u32::from(ke.u_char)) {
-                                        out.push(ch);
-                                    }
-                                } else {
-                                    match ke.virtual_key_code {
-                                        0x26 => out.push_str("\x1b[A"),
-                                        0x28 => out.push_str("\x1b[B"),
-                                        0x27 => out.push_str("\x1b[C"),
-                                        0x25 => out.push_str("\x1b[D"),
-                                        0x21 => out.push_str("\x1b[5~"),
-                                        0x22 => out.push_str("\x1b[6~"),
-                                        0x24 => out.push_str("\x1b[H"),
-                                        0x23 => out.push_str("\x1b[F"),
-                                        0x2E => out.push_str("\x1b[3~"),
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        } else if rec.event_type == 0x0002 {
-                            let me = rec.event.mouse;
-                            if me.event_flags == 0x0001 && me.button_state == 0 {
-                                continue;
-                            }
-                            let col = (me.mouse_pos.x.max(0) as usize) + 1;
-                            let row = (me.mouse_pos.y.max(0) as usize) + 1;
-                            if (me.event_flags & 0x0004) != 0 {
-                                let delta = (me.button_state >> 16) as i16;
-                                let btn = if delta > 0 { 64 } else { 65 };
-                                out.push_str(&format!("\x1b[<{};{};{}M", btn, col, row));
-                            } else if me.event_flags == 0 {
-                                if (me.button_state & 0x0001) != 0 {
-                                    out.push_str(&format!("\x1b[<0;{};{}M", col, row));
-                                } else if (me.button_state & 0x0002) != 0 {
-                                    out.push_str(&format!("\x1b[<2;{};{}M", col, row));
-                                } else {
-                                    out.push_str(&format!("\x1b[<0;{};{}m", col, row));
-                                }
-                            }
-                        } else if rec.event_type == 0x0004 {
-                            DIRTY_EVENT.store(true, Ordering::SeqCst);
-                        }
+                        rec.append_vt(&mut out, &DIRTY_EVENT);
                     }
                     let bytes = out.as_bytes();
                     if !bytes.is_empty() && !buf.is_empty() {
@@ -243,6 +197,30 @@ pub fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+pub fn proc_start_ms(pid: u32) -> Option<u64> {
+    if pid <= 1 {
+        return None;
+    }
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let z = FileTime {
+            dw_low_date_time: 0,
+            dw_high_date_time: 0,
+        };
+        let (mut ct, mut et, mut kt, mut ut) = (z, z, z, z);
+        let ok = GetProcessTimes(h, &mut ct, &mut et, &mut kt, &mut ut) != 0;
+        let _ = CloseHandle(h);
+        if !ok {
+            return None;
+        }
+        let raw = ((ct.dw_high_date_time as u64) << 32) | (ct.dw_low_date_time as u64);
+        raw.checked_sub(116_444_736_000_000_000).map(|d| d / 10_000)
+    }
+}
+
 pub fn get_ppid_of(pid: u32) -> Option<u32> {
     if pid == 0 {
         return None;
@@ -267,7 +245,13 @@ pub fn get_ppid_of(pid: u32) -> Option<u32> {
             }
         }
         let _ = CloseHandle(snap);
-        found
+        let ppid = found?;
+        if let (Some(ps), Some(cs)) = (proc_start_ms(ppid), proc_start_ms(pid)) {
+            if ps > cs {
+                return None;
+            }
+        }
+        Some(ppid)
     }
 }
 
@@ -275,16 +259,18 @@ pub fn current_ppid() -> u32 {
     get_ppid_of(std::process::id()).unwrap_or(0)
 }
 
-pub fn wake_pid(pid: u32) {
-    if pid == 0 {
-        return;
+pub(crate) fn wake_pid(pid: u32) -> bool {
+    if pid <= 1 {
+        return false;
     }
     unsafe {
-        let ev_name = wide_null(&format!("Local\\ccide_wake_{}", pid));
+        let ev_name = wide_null(&format!("Local\\ccide_wake_{pid}"));
         let h = OpenEventW(EVENT_MODIFY_STATE, 0, ev_name.as_ptr());
-        if !h.is_null() {
-            let _ = SetEvent(h);
-            let _ = CloseHandle(h);
+        if h.is_null() {
+            return false;
         }
+        let ok = SetEvent(h) != 0;
+        let _ = CloseHandle(h);
+        ok
     }
 }

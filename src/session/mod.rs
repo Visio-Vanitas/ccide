@@ -13,8 +13,8 @@ pub mod transcript_main;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::ffi::{get_ppid_of, is_pid_alive};
-use crate::json::extract_json_u64;
+use crate::ffi::{get_ppid_of, is_pid_alive, ProcToken};
+use crate::json::extract_json_str;
 use crate::platform::{
     cache_dir, clean_canonicalize, find_executable, ipc_path, normalize_slashes,
 };
@@ -160,8 +160,10 @@ fn is_claimed_by_live_sibling(cdir: &Path, session_id: &str, my_yid: &str) -> bo
     let Ok(reg) = fs::read_to_string(ipc_path(&format!("sidebar_tab_{other_yid}.json"))) else {
         return false;
     };
-    let pid = extract_json_u64(&reg, "pid").unwrap_or(0) as u32;
-    is_pid_alive(pid)
+    let Some(tok) = extract_json_str(&reg, "pid").and_then(|s| ProcToken::parse(&s)) else {
+        return false;
+    };
+    tok.is_alive_match()
 }
 
 /// Strictly resolves `SessionBinding { session_id, ui_pid, data_pid }` for this tab's Claude
@@ -174,19 +176,33 @@ pub fn resolve_isolated_session_binding(
     shell_pid_arg: u32,
 ) -> SessionBinding {
     let cdir = cache_dir(home);
-    let shell_pid = if shell_pid_arg > 0 {
-        shell_pid_arg
+    let shell_tok = if shell_pid_arg > 0 {
+        ProcToken::current(shell_pid_arg).unwrap_or(ProcToken {
+            pid: shell_pid_arg,
+            start_ms: 0,
+        })
     } else if !tab_yazi_id.is_empty() {
         fs::read_to_string(cdir.join(format!("tab_shell_{}.txt", tab_yazi_id)))
             .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .unwrap_or(0)
+            .and_then(|s| ProcToken::parse(&s))
+            .unwrap_or(ProcToken {
+                pid: 0,
+                start_ms: 0,
+            })
     } else {
-        0
+        ProcToken {
+            pid: 0,
+            start_ms: 0,
+        }
     };
+    let shell_pid = shell_tok.pid;
     let canon_target = clean_canonicalize(target_cwd).unwrap_or_else(|_| PathBuf::from(target_cwd));
     let alive_entries = scan::scan_alive_sessions(home);
-    let shell_alive = shell_pid > 0 && is_pid_alive(shell_pid);
+    let shell_alive = if shell_tok.start_ms > 0 {
+        shell_tok.is_alive_match()
+    } else {
+        shell_pid > 0 && is_pid_alive(shell_pid)
+    };
 
     let choice = choose_binding(
         &alive_entries,
