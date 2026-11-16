@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.4] - 2026-11-15
+
+### Security & IPC Hardening
+- **Generation-Guarded `ProcToken` (`<pid>:<start_ms>`) (`src/ffi/`, `src/commands/sidebar/`, `src/session/`, `scripts/`)**:
+  - Replaced bare-PID signalling and ownership checks with `ProcToken { pid, start_ms }` backed by kernel start timestamps (`macOS proc_pidinfo`, Linux `/proc/<pid>/stat` + `btime`, Win32 `GetProcessTimes`), eliminating PID-reuse mis-signalling hazards (`SIGUSR2` & cleanup).
+  - Updated `wake-pid`, `notify_sidebar`, `sb_*.pid`, `sidebar_tab_*.json`, `tab_shell_*.txt`, `wake_all_sidebars`, `hooks/register.ts`, and `ccide_daemon.py` with startup and 30 s stale-token sweeps via `platform::atomic_write`.
+- **`ready_pid_<pid>` Patch Handshake & `ipc_guard` (`scripts/cc_patch_rules.py`, `assets/cc-schema.json`, `src/commands/sidebar/ipc_guard.rs`)**:
+  - Bumped `PATCH_RULES_VERSION = "2"` and `claude_bin.stamp` (`r2:`) so patched `claude.exe` binaries atomically write `ready_pid_<pid>`, enforce Linux `/proc/<k>/stat` generation verification before `SIGUSR2`, and pass full tokens on Windows.
+  - Added `claude_signalable(pid)` proof verification (`lstat` regular file, same UID, `mtime + 1000 >= start_ms`) before firing `SIGUSR2`, surfacing `repatch needed (ccide doctor)` in the sidebar when unverified.
+- **Per-UID `0700` `ipc_dir()` Convergence (`src/platform/ipc.rs`, `src/main.rs`, `scripts/`, `hooks/register.ts`, `assets/yazi-hscroll.lua`)**:
+  - Split `src/platform.rs` into `src/platform/{mod,ipc}.rs` with `OnceLock`-memoized `ipc_dir()` resolving `$CCIDE_IPC_DIR` -> Unix `/tmp/.cc-ide-<euid>` (`0700`, symlink/ownership checked, fallback `~/.cache/cc-ide/ipc`) -> Windows `%TEMP%`/`%TMP%`/`.cc-ide`, plus legacy `/tmp/.cc-ide` fallback reader and `ccide-core ipc-dir` CLI subcommand exported by `ccide` / `ccide.ps1` and aligned across all companion scripts.
+
+---
+
 ## [0.9.3] - 2026-11-15
 
 ### Changed & Fixed
