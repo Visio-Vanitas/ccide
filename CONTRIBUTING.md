@@ -12,7 +12,8 @@
 | **Cross-OS Symbol & Schema Workbench** | `ccide --check-cc [--local \| --fetch-npm [ver]] [--json]` | Probes `darwin-arm64`, `linux-x64`, and `win32-x64` Bun binaries simultaneously, extracts missed-anchor byte snippets, and diffs `assets/cc-schema.json` |
 | **Claude Binary Patcher Probe** | `python3 -I scripts/patch_claude_binary.py --verify [--binary <path>]` | Dry-run JSON report (`required_ok`, per-patch byte offsets, resolved runtime symbols, V8 ESM syntax validation) |
 | **Issue -> Agent Task Brief** | `python3 -I scripts/agent-task-context.py --issue <N>` | Structured JSON brief mapping an Issue Form / Markdown issue to `areas`, `relevant_paths`, `suggested_branch`, `acceptance_criteria`, and `Closes #<N>` |
-| **Modular File Size Gate** | `python3 -I scripts/agent-task-context.py --check-line-budget --changed-only` | JSON report checking touched `.rs` / `.py` modules against the `< 300`-line single-responsibility target |
+| **Modular File Size Gate** | `python3 -I scripts/agent-task-context.py --check-line-budget --changed-only` | JSON report checking touched `.rs` / `.py` modules against the `<= 300`-line single-responsibility target |
+| **Frozen Architecture Contract** | `docs/ARCH_v0.10.md` | Binding `PaneSpec` v2, `LayoutPlan` floors/golden table, `src/proto.rs` leaf constants, Ghostty & CLI contracts |
 | **Release Promotion Notes** | `python3 -I scripts/agent-task-context.py --promotion-notes origin/main..origin/dev` | Markdown summary + aggregated `Closes #<N>` directives for `dev -> preview -> main` promotion PRs |
 | **Pricing Catalog Sync** | `ccide --sync-pricing` | Refreshes multi-vendor token & cache pricing from `BerriAI/litellm` and `pydantic/genai-prices` |
 
@@ -23,8 +24,9 @@
 1. **Rust Edition 2021 & Strict MSRV `1.70.0` Floor**:
    - Zero external Cargo crates (`Cargo.lock` contains only `ccide-core` itself) and zero post-1.70 stdlib APIs.
    - Always verify with `cargo +1.70.0 check --locked --all-targets` and `cargo +1.70.0 test --locked`.
-2. **Modular `< 300`-Line Single-Responsibility Files**:
-   - Keep individual source files concise (`< 300` lines wherever practical) by splitting TUI panels, parsers, IPC bridges, and OS probes into focused submodules.
+2. **Modular `<= 300`-Line Single-Responsibility Files & Layered Leaf Modules**:
+   - Keep every Rust source file `<= 300` lines post-`rustfmt` (target `<= 285` lines) by splitting TUI panels, parsers, IPC bridges, workspace `PaneSpec`/`LayoutPlan` helpers, and OS probes into focused submodules.
+   - Leaf modules `src/{ffi,telemetry,session,tui,orchestrator,json,budget,platform,model_id,proto}` must NEVER import `crate::commands` (enforced by `tests/test_agent_infra.py`); route all IPC paths via `platform::ipc_path`, shared state writes via `platform::atomic_write`, and signals via `ffi::wake_token` (see `docs/ARCH_v0.10.md`).
 3. **Strict Per-Tab Process Isolation**:
    - Never introduce global cross-session state files (like `live_latest.json`); scope state by `sessionId`, `yazi_id`, or `claude_pid` ancestry.
 4. **Idempotent & Reversible User System Changes**:

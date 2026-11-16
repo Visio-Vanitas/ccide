@@ -1,7 +1,7 @@
 {
   "name": "cc-ide",
   "displayName": "CC-IDE 3-Column Tiling Workspace & Hardware Telemetry",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "workflows": "./assets/workflows",
   "description": "Cross-platform adaptive 3-column tiling IDE for Claude Code (macOS iTerm2 Metal Daemon, native Ghostty 1.3+, SSH OSC 1337, WezTerm, Windows Terminal wt.exe, and tmux) with palette-unified syntect syntax highlighting, Yazi hunk auto-scroll, native subagent/Workflow orchestration, and shared hardware oscilloscope + CONTEXT/COST telemetry.",
   "author": {

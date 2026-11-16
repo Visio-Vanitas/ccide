@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-11-16
+
+### Added & Changed
+- **Unified `PaneSpec` v2, `LayoutPlan` & Real Multi-Backend `rebalance` (`src/commands/workspace/{spec,layout,rebalance,open,mod,tmux,wezterm,wt,iterm}.rs`)**:
+  - Replaced ad-hoc `<backend>:<sides>` strings with typed `PaneSpec` v2 (`v2;b=...;k=...;c=...;y=...;l=...;m=...;s=...;lp=...;f=gmr`) plus v1 backwards-compatible parsing and automatic dead-tab spec pruning (`prune_dead_specs`), written exclusively by `workspace/open.rs`.
+  - Introduced `LayoutPlan::compute` (`22 / 48 / 28` column floors, right collapse `< 100` cols, left collapse `< 76` cols, `left_pct` `12..=45`) and `run_rebalance` with deterministic exit codes (`0` Applied/Reopened, `3` Unsupported, `1` error) — enabling live `tmux resize-pane -x` and WezTerm `adjust-pane-size` rebalances plus accurate `/rebalance-panes` exit-code toasts in `hooks/register.ts` (iTerm's Python daemon retains `56/80/38` floors until `v1.0`).
+- **Ghostty Caller Targeting, Live Width Rebalance & Opt-In Linux Probe (`src/commands/workspace/{ghostty,ghostty_script,ghostty_linux}.rs`)**:
+  - Fixed macOS Ghostty targeting (`F1`) via `OSC 2` `ccide-<yid>` title markers and `$GHOSTTY_SURFACE_ID` lookup (gated front-window fallback behind `CCIDE_GHOSTTY_FRONT_FALLBACK=1`), removed the `"1"` sentinel cache bug (`F3`), and drove `rebalance_ghostty` (`F2`) from live `geom_<yid>_*` pixel widths + `spec.left_pct`/`spec.show_right`.
+  - Added `GhosttyCap` and `ghostty_linux.rs` (`CCIDE_GHOSTTY_LINUX=1` opt-in `150 ms`-bounded `+list-actions` CLI and `gdbus` D-Bus probes), continuing to fall through cleanly to `tmux` in `v0.10.0`.
+- **Canonical `workspace detect`, `src/proto.rs`, Milestone-Pinned Bootstrap & Cross-OS Companion Reload (`src/proto.rs`, `src/main.rs`, `src/commands/{pane_runner,setup/doctor*}.rs`, `scripts/`)**:
+  - Added `ccide-core workspace detect [--json]` (replacing inline env sniffing in `scripts/ccide` and `scripts/ccide.ps1`), `ccide-core --version`, and `src/proto.rs` (`ccide-core proto [--json]`, `ipc_proto=1`, `patch_proto=1`, `patch_rules_version="2"`, `spec_version=2`).
+  - Added live `geom_<yid>_<role>.txt` reporting and cross-OS `reload_lg_<yid>` Lazygit theme hot-reload in `pane_runner.rs` + `workspace/reload.rs`, `doctor` `ipc_dir`/`ipc_proto`/`patch_proto`/`ghostty_cap`/`legacy_patch` (`IPC Patch Proto`) reporting, and milestone-tag pinning (`v<major>.<minor>.0`, dropping `releases/latest`) with `.ccide-core.version` skew detection in `scripts/ensure-ccide-core.{mjs,sh}`.
+
+### Compatibility Notes
+- **Pre-0.10 Running Sidebars**: Sidebars already running a pre-`0.10.0` binary cannot parse `v2` `panes_<yid>.txt` specs, so click-to-focus on newly opened tabs degrades until those tabs are reopened (`close` and `rebalance` use the new binary and are unaffected).
+- **`legacy_ipc_dir()` Retention**: Read-only fallback to legacy `/tmp/.cc-ide` (`claude_signalable`, `cur_pid`, `req_pid`) is retained in `v0.10.0` (surfaced via `doctor`'s `IPC Patch Proto` warning) and scheduled for removal in `v0.11.0`.
+
+---
+
 ## [0.9.4] - 2026-11-15
 
 ### Security & IPC Hardening
@@ -211,7 +230,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shared Cross-Platform Hardware Oscilloscope & Quadrant Model Logos (`src/telemetry/`, `src/tui/logo.rs`)**:
   - Single-instance `500 ms` `/tmp/.cc-ide/hw_telemetry_v1.bin` binary snapshot shared across all open tabs (`< 2 µs` read) rendering sub-pixel `CPU`, `GPU` (`IOKit AGX` / Linux `sysfs` & `nvidia-smi`), `MEM`, and `NET` curves alongside dynamic 2×2 Quadrant vector model logos (`CLAUDE`, `GEMINI`, `DEEPSEEK`, `OPENAI`, `GROK`).
 
-[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.4...v0.10.0
+[0.9.4]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.3...v0.9.4
+[0.9.3]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.2...v0.9.3
+[0.9.2]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.7.0...v0.8.0
