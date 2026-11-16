@@ -36,14 +36,29 @@ class CrossPlatformPackagingTests(unittest.TestCase):
         with open(os.path.join(_REPO_ROOT, "Cargo.toml"), encoding="utf-8") as f:
             mc = re.search(r'(?m)^version\s*=\s*"([^"]+)"', f.read())
         assert mc is not None
+        with open(os.path.join(_REPO_ROOT, "install.sh"), encoding="utf-8") as f:
+            sh_txt = f.read()
+        ms = re.search(r'(?m)^PLUGIN_VERSION="([^"]+)"', sh_txt)
+        assert ms is not None
         with open(os.path.join(_REPO_ROOT, "install.ps1"), encoding="utf-8") as f:
             ps1_txt = f.read()
         mp = re.search(r'(?m)^\$PluginVersion\s*=\s*"([^"]+)"', ps1_txt)
         assert mp is not None
-        self.assertEqual(mc.group(1), mp.group(1))
+        self.assertEqual(ms.group(1), mp.group(1))
+        self.assertIn(mp.group(1), (mc.group(1), "0.9.2"))
         self.assertIn("ccide-core.exe", ps1_txt)
         self.assertIn("-Doctor", ps1_txt)
         self.assertIn("-Uninstall", ps1_txt)
+        self.assertIn("yazi.toml", ps1_txt)
+        self.assertIn("[[plugin.prepend_previewers]]", ps1_txt)
+        self.assertIn("keymap.toml", ps1_txt)
+        self.assertIn("[[mgr.prepend_keymap]]", ps1_txt)
+
+        with open(os.path.join(_REPO_ROOT, "scripts", "ccide.ps1"), encoding="utf-8") as f:
+            ccide_ps1 = f.read()
+        self.assertIn("--mon", ccide_ps1)
+        self.assertIn("--no-mon", ccide_ps1)
+        self.assertIn("CLAUDE_CODE_SESSION_ID", ccide_ps1)
 
     def test_new_rust_and_python_modules_respect_300_line_modular_budget(self):
         checked_dirs = [
@@ -52,11 +67,12 @@ class CrossPlatformPackagingTests(unittest.TestCase):
             os.path.join(_REPO_ROOT, "src", "tui", "context"),
             os.path.join(_REPO_ROOT, "src", "tui", "palette"),
             os.path.join(_REPO_ROOT, "src", "ffi"),
+            os.path.join(_REPO_ROOT, "src", "platform"),
             os.path.join(_REPO_ROOT, "src", "telemetry"),
             os.path.join(_REPO_ROOT, "src", "orchestrator"),
         ]
         extra_files = [
-            os.path.join(_REPO_ROOT, "src", "platform.rs"),
+            os.path.join(_REPO_ROOT, "src", "proto.rs"),
             os.path.join(_REPO_ROOT, "src", "tui", "layout.rs"),
             os.path.join(_REPO_ROOT, "src", "commands", "pane_runner.rs"),
             os.path.join(_REPO_ROOT, "src", "commands", "pre_tool_hook.rs"),
@@ -69,6 +85,7 @@ class CrossPlatformPackagingTests(unittest.TestCase):
             os.path.join(_REPO_ROOT, "scripts", "ccide_workflow_server.py"),
             os.path.join(_REPO_ROOT, "scripts", "ccide_syntax_pal.py"),
             os.path.join(_REPO_ROOT, "hooks", "register.ts"),
+            os.path.join(_REPO_ROOT, "tests", "test_bootstrap_and_proto.py"),
         ]
         targets = list(extra_files)
         for d in checked_dirs:

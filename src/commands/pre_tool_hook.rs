@@ -3,7 +3,8 @@
 use std::io::Read;
 
 use crate::commands::workspace::actions::wake_all_sidebars;
-use crate::orchestrator::router::{json_esc, route_pre_tool_use};
+use crate::json::json_escape as json_esc;
+use crate::orchestrator::router::route_pre_tool_use;
 use crate::orchestrator::{
     sync_agent_shims, OrchestratorConfig, RoleKind, ALL_ROLES, EFFORT_TIERS,
 };

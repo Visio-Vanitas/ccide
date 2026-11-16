@@ -1,5 +1,7 @@
 {
   "schema_version": 1,
+  "patch_proto": 1,
+  "patch_rules_version": 2,
   "baseline_cc_version": "2.1.323",
   "patch_anchors": {
     "subagent_retention_timers": "in_process_teammate",

@@ -4,117 +4,26 @@
 //! `rate_limits.{five_hour,seven_day}`, `cost.{total_cost_usd,total_lines_added,total_lines_removed}`,
 //! `fast_mode`, `effort.level`, and linked git worktrees (`workspace.git_worktree` / `.git` file).
 
-pub mod compact;
+pub mod git_info;
 
 use std::env;
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::budget::{
+    compute_context_budget, extract_statusline_context, load_compact_config, CtxTier,
+};
 use crate::ffi::notify_sidebar;
 use crate::json::{
     extract_json_bool, extract_json_f64, extract_json_object, extract_json_str, extract_json_u64,
+    json_escape,
 };
-use crate::platform::{cache_dir, ipc_path, user_home_dir};
+use crate::platform::{atomic_write, cache_dir, ipc_path, user_home_dir};
 use crate::session::resolve_yazi_id_from_ppid;
 use crate::tui::palette::Palette;
-use crate::tui::width::floor_char_boundary;
 
-pub use compact::{
-    compute_context_budget, extract_statusline_context, load_compact_config, CompactConfig,
-    ContextBudget, CtxTier,
-};
-
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 8);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Atomic shared-cache write: `PID`-scoped temp + `rename`, falling back to a direct write when
-/// Windows holds the destination open for a concurrent reader.
-fn write_cache(path: &Path, data: &str) {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return;
-    };
-    let tmp = path.with_file_name(format!(".{}.tmp.{}", name, std::process::id()));
-    if fs::write(&tmp, data).is_ok() && fs::rename(&tmp, path).is_ok() {
-        return;
-    }
-    #[cfg(windows)]
-    {
-        let _ = fs::remove_file(path);
-        if fs::rename(&tmp, path).is_ok() {
-            return;
-        }
-    }
-    let _ = fs::write(path, data);
-    let _ = fs::remove_file(&tmp);
-}
-
-fn read_git_head_branch(dot_git: &Path) -> Option<String> {
-    let head_path = if dot_git.is_dir() {
-        dot_git.join("HEAD")
-    } else if dot_git.is_file() {
-        let ptr = fs::read_to_string(dot_git).ok()?;
-        let gdir = ptr.trim().strip_prefix("gitdir:")?.trim();
-        let resolved = if Path::new(gdir).is_absolute() {
-            PathBuf::from(gdir)
-        } else {
-            dot_git.parent()?.join(gdir)
-        };
-        resolved.join("HEAD")
-    } else {
-        return None;
-    };
-    let htxt = fs::read_to_string(head_path).ok()?;
-    let trimmed = htxt.trim();
-    // Symbolic refs (`ref: refs/heads/main`, `ref: refs/tags/v1.0`, ...) resolve to a short name
-    if let Some(sym) = trimmed.strip_prefix("ref:") {
-        let rp = sym.trim();
-        let br = rp
-            .strip_prefix("refs/heads/")
-            .or_else(|| rp.strip_prefix("refs/"))
-            .unwrap_or(rp);
-        return (!br.is_empty()).then(|| br.to_string());
-    }
-    let br = &trimmed[..floor_char_boundary(trimmed, trimmed.len().min(7))];
-    (!br.is_empty()).then(|| br.to_string())
-}
-
-fn fast_git_summary(cwd: &str, wt_hint: &str) -> String {
-    let mut cur = PathBuf::from(cwd);
-    for _ in 0..64 {
-        let dg = cur.join(".git");
-        if let Some(branch) = read_git_head_branch(&dg) {
-            if !wt_hint.is_empty() && wt_hint != branch {
-                return format!("\u{e0a0} {}[{}]", branch, wt_hint);
-            }
-            return format!("\u{e0a0} {}", branch);
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    if !wt_hint.is_empty() {
-        return format!("\u{e0a0} {}", wt_hint);
-    }
-    Path::new(cwd)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("~")
-        .to_string()
-}
+use git_info::fast_git_summary;
 
 pub fn run() {
     let mut input = String::new();
@@ -254,9 +163,9 @@ pub fn run() {
         yid = resolve_yazi_id_from_ppid(&base_cache_s);
     }
     if !yid.is_empty() && !session_id.is_empty() {
-        write_cache(
+        let _ = atomic_write(
             &base_cache.join(format!("session_{}.yazi", session_id)),
-            &yid,
+            yid.as_bytes(),
         );
     }
 
@@ -296,15 +205,15 @@ pub fn run() {
         now_s
     );
     if !session_id.is_empty() {
-        write_cache(
+        let _ = atomic_write(
             &base_cache.join(format!("live_sess_{}.json", session_id)),
-            &live_json,
+            live_json.as_bytes(),
         );
     }
     if !yid.is_empty() {
-        write_cache(
+        let _ = atomic_write(
             &base_cache.join(format!("live_tab_{}.json", yid)),
-            &live_json,
+            live_json.as_bytes(),
         );
     }
     notify_sidebar(&session_id, &yid);

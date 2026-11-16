@@ -272,6 +272,8 @@ class BunStandaloneMutationTests(unittest.TestCase):
         self.assertIn(b'function hideDone(m){return!1}', patched_src)
         self.assertIn(b"var rT=3000,rU=9e9,rV=9e9;", patched_src)
         self.assertIn(b'g.__cc_h', patched_src)
+        for token in (b"ready_pid_", b"mode:448", b"process.getuid()", b"parseInt", b"CCIDE_CORE_BIN", b"/proc/"):
+            self.assertIn(token, patched_src)
 
 
 class PlainJsFallbackTests(unittest.TestCase):

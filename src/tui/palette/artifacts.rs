@@ -1,6 +1,6 @@
 //! Companion Theme File Renderers (`ccide.tmTheme`, `glow-style.json`, `ghostty-theme.conf`).
 
-use super::Palette;
+use super::{ColorSpec, Palette};
 
 pub(crate) fn build_tm_theme(pal: &Palette) -> String {
     let (u, s) = (&pal.ui_specs, &pal.syntax);
@@ -128,4 +128,80 @@ pub(crate) fn build_ghostty_theme(pal: &Palette) -> String {
         out.push_str(&format!("palette = {i}={}\n", c.to_hex_string()));
     }
     out
+}
+
+fn sgr(c: ColorSpec, prefix: u8) -> String {
+    let (r, g, b) = c.to_rgb_approx();
+    format!("{prefix};2;{r};{g};{b}")
+}
+
+fn emph_bg_hex(c: ColorSpec) -> String {
+    let (r, g, b) = c.to_rgb_approx();
+    format!(
+        "#{:02X}{:02X}{:02X}",
+        r.saturating_mul(2),
+        g.saturating_mul(2),
+        b.saturating_mul(2)
+    )
+}
+
+pub(crate) fn build_syntax_resolved_json(pal: &Palette, digest: &str, bat_theme: &str) -> String {
+    let (u, s) = (&pal.ui_specs, &pal.syntax);
+    let hex_pairs: [(&str, String); 25] = [
+        ("text", u[0].to_hex_string()),
+        ("dim", u[1].to_hex_string()),
+        ("border", u[2].to_hex_string()),
+        ("cyan", u[3].to_hex_string()),
+        ("blue", u[4].to_hex_string()),
+        ("lavender", u[5].to_hex_string()),
+        ("amber", u[6].to_hex_string()),
+        ("green", u[7].to_hex_string()),
+        ("coral", u[8].to_hex_string()),
+        ("mint", u[9].to_hex_string()),
+        ("keyword", s.keyword.to_hex_string()),
+        ("function", s.function.to_hex_string()),
+        ("type_name", s.type_name.to_hex_string()),
+        ("string", s.string.to_hex_string()),
+        ("number", s.number.to_hex_string()),
+        ("comment", s.comment.to_hex_string()),
+        ("operator", s.operator.to_hex_string()),
+        ("variable", s.variable.to_hex_string()),
+        ("code_bg", s.code_bg.to_hex_string()),
+        ("diff_add_fg", s.diff_add_fg.to_hex_string()),
+        ("diff_add_bg", s.diff_add_bg.to_hex_string()),
+        ("diff_add_emph_bg", emph_bg_hex(s.diff_add_bg)),
+        ("diff_del_fg", s.diff_del_fg.to_hex_string()),
+        ("diff_del_bg", s.diff_del_bg.to_hex_string()),
+        ("diff_del_emph_bg", emph_bg_hex(s.diff_del_bg)),
+    ];
+    let sgr_pairs: [(&str, String); 12] = [
+        ("31", sgr(s.variable, 38)),
+        ("32", sgr(s.string, 38)),
+        ("33", sgr(s.type_name, 38)),
+        ("34", sgr(s.function, 38)),
+        ("35", sgr(s.keyword, 38)),
+        ("36", sgr(s.operator, 38)),
+        ("37", sgr(u[0], 38)),
+        ("38;5;8", sgr(s.comment, 38)),
+        ("38;5;9", sgr(s.number, 38)),
+        ("38;5;16", sgr(s.number, 38)),
+        ("38;5;17", sgr(s.operator, 38)),
+        ("code_bg", sgr(s.code_bg, 48)),
+    ];
+    let fmt_map = |items: &[(&str, String)]| -> String {
+        items
+            .iter()
+            .enumerate()
+            .map(|(i, (k, v))| {
+                let c = if i + 1 < items.len() { "," } else { "" };
+                format!("    \"{k}\": \"{v}\"{c}\n")
+            })
+            .collect()
+    };
+    format!(
+        "{{\n  \"digest\": \"{digest}\", \"preset\": \"{}\", \"bat_theme\": \"{bat_theme}\",\n  \"hex\": {{\n{}  }},\n  \"sgr\": {{\n{}  }}\n}}\n",
+        pal.preset,
+        fmt_map(&hex_pairs),
+        fmt_map(&sgr_pairs)
+    )
 }

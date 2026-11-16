@@ -1,12 +1,11 @@
 //! Incremental Offset-Cached `.jsonl` Transcript Parser for Main & Subagent Sessions.
 
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::json::{extract_json_str, extract_json_u64};
+use crate::json::extract_json_str;
 use crate::platform::{is_internal_or_temp_path, normalize_slashes};
 use crate::session::{extract_tool_line_target, is_valid_model_name};
 use crate::tui::width::floor_char_boundary;
@@ -14,6 +13,8 @@ use crate::tui::width::floor_char_boundary;
 pub use crate::session::subagents::{
     append_dismissed_subagents, get_session_subagents, SubagentItem,
 };
+#[allow(unused_imports)]
+pub use crate::session::transcript_main::{get_main_session_file_ops, MainSessionOps};
 
 pub struct JsonlTracker {
     pub jpath: Option<PathBuf>,
@@ -28,14 +29,26 @@ pub struct JsonlTracker {
     pub done_from_tail: bool,
 }
 
-pub struct MainSessionOps {
-    pub tool: String,
-    pub file: String,
-    pub line: usize,
-    pub span: usize,
-    pub model: String,
-    pub model_mtime: SystemTime,
-    pub seq: usize,
+impl JsonlTracker {
+    pub fn from_tail(jpath: Option<PathBuf>) -> Self {
+        let sz = jpath
+            .as_ref()
+            .and_then(|p| fs::metadata(p).ok())
+            .map(|m| m.len())
+            .unwrap_or(0);
+        Self {
+            jpath,
+            offset: sz.saturating_sub(262_144),
+            last_tool: String::new(),
+            last_file: String::new(),
+            last_line: 0,
+            last_span: 0,
+            last_model: String::new(),
+            last_model_mtime: UNIX_EPOCH,
+            seq: 0,
+            done_from_tail: false,
+        }
+    }
 }
 
 fn resolve_valid_project_file(cand: &str, target_cwd: &str, home: &str) -> Option<String> {
@@ -142,7 +155,7 @@ pub fn update_jsonl_tracker(
     };
     let len = meta.len();
     let is_initial_scan = tracker.offset == 0 || tracker.last_model.is_empty();
-    let file_mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let file_mt = meta.modified().unwrap_or(UNIX_EPOCH);
     if len < tracker.offset {
         tracker.offset = 0;
         tracker.seq = 0;
@@ -174,11 +187,8 @@ pub fn update_jsonl_tracker(
                     let m = m.trim().to_string();
                     if is_valid_model_name(&m) {
                         tracker.last_model = m;
-                        tracker.last_model_mtime = if is_initial_scan {
-                            SystemTime::UNIX_EPOCH
-                        } else {
-                            file_mt
-                        };
+                        tracker.last_model_mtime =
+                            if is_initial_scan { UNIX_EPOCH } else { file_mt };
                     }
                 }
             } else if line.contains("\"role\":\"assistant\"")
@@ -189,11 +199,8 @@ pub fn update_jsonl_tracker(
                         tracker.last_model = m;
                         // Assistant turn models serve as baseline fallback (`UNIX_EPOCH`) unless
                         // a new turn just streamed live after initial load.
-                        tracker.last_model_mtime = if is_initial_scan {
-                            SystemTime::UNIX_EPOCH
-                        } else {
-                            file_mt
-                        };
+                        tracker.last_model_mtime =
+                            if is_initial_scan { UNIX_EPOCH } else { file_mt };
                     }
                 }
             }
@@ -215,103 +222,4 @@ pub fn update_jsonl_tracker(
         }
         tracker.offset += consumed;
     }
-}
-
-fn find_session_jsonl(home: &str, session_id: &str) -> Option<PathBuf> {
-    let pdir = format!("{}/.claude/projects", home);
-    if let Ok(rd) = fs::read_dir(&pdir) {
-        for entry in rd.flatten() {
-            let cand = entry.path().join(format!("{}.jsonl", session_id));
-            if cand.is_file() {
-                return Some(cand);
-            }
-        }
-    }
-    None
-}
-
-pub fn get_main_session_file_ops(
-    home: &str,
-    session_id: &str,
-    tab_yazi_id: &str,
-    target_cwd: &str,
-    main_tracker: &mut HashMap<String, JsonlTracker>,
-) -> MainSessionOps {
-    let mut out = MainSessionOps {
-        tool: String::new(),
-        file: String::new(),
-        line: 0,
-        span: 0,
-        model: String::new(),
-        model_mtime: SystemTime::UNIX_EPOCH,
-        seq: 0,
-    };
-    let mut jsonl_mtime = SystemTime::UNIX_EPOCH;
-
-    if !session_id.is_empty() {
-        let tr = main_tracker
-            .entry(session_id.to_string())
-            .or_insert_with(|| {
-                let jp = find_session_jsonl(home, session_id);
-                let sz = jp
-                    .as_ref()
-                    .and_then(|p| fs::metadata(p).ok())
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                JsonlTracker {
-                    jpath: jp,
-                    offset: sz.saturating_sub(262_144),
-                    last_tool: String::new(),
-                    last_file: String::new(),
-                    last_line: 0,
-                    last_span: 0,
-                    last_model: String::new(),
-                    last_model_mtime: SystemTime::UNIX_EPOCH,
-                    seq: 0,
-                    done_from_tail: false,
-                }
-            });
-        if tr.jpath.as_ref().map(|p| !p.is_file()).unwrap_or(true) {
-            tr.jpath = find_session_jsonl(home, session_id);
-            tr.offset = 0;
-            tr.last_model.clear();
-            tr.last_model_mtime = SystemTime::UNIX_EPOCH;
-        }
-        if let Some(ref jp) = tr.jpath.clone() {
-            if let Ok(m) = fs::metadata(jp).and_then(|m| m.modified()) {
-                jsonl_mtime = m;
-            }
-            update_jsonl_tracker(jp, target_cwd, home, tr);
-            out.tool = tr.last_tool.clone();
-            out.file = tr.last_file.clone();
-            out.line = tr.last_line;
-            out.span = tr.last_span;
-            out.model = tr.last_model.clone();
-            out.model_mtime = tr.last_model_mtime;
-            out.seq = tr.seq;
-        }
-    }
-
-    if !tab_yazi_id.is_empty() {
-        let cpath = format!("{}/.cache/cc-ide/main_last_file_{}.json", home, tab_yazi_id);
-        let cache_mtime = fs::metadata(&cpath)
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        if cache_mtime >= jsonl_mtime || out.file.is_empty() {
-            if let Ok(txt) = fs::read_to_string(&cpath) {
-                let fp = extract_json_str(&txt, "file").unwrap_or_default();
-                let tl = extract_json_str(&txt, "tool").unwrap_or_else(|| "active".to_string());
-                let ln = extract_json_u64(&txt, "line").unwrap_or(0) as usize;
-                let sp = extract_json_u64(&txt, "span").unwrap_or(0) as usize;
-                if !fp.is_empty() && Path::new(&fp).is_file() {
-                    out.tool = tl;
-                    out.file = fp;
-                    out.line = ln;
-                    out.span = sp;
-                }
-            }
-        }
-    }
-
-    out
 }

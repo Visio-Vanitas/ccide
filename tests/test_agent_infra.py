@@ -80,7 +80,18 @@ class IssueTemplateAndAgentInfraTests(unittest.TestCase):
         brief2 = atc.parse_issue_to_brief(issue_form)
         self.assertEqual(brief2["kind"], "feat")
         self.assertIn("area:workspace", brief2["areas"])
+        self.assertIn("src/commands/workspace/", brief2["relevant_paths"])
         self.assertEqual(brief2["acceptance_criteria"], ["Splits 30% | 54% | 16% in Ghostty"])
+
+        issue_ws_dir = {
+            "number": 55,
+            "title": "fix(workspace): harden src/commands/workspace/ ghostty probe",
+            "labels": [],
+            "body": "### Acceptance Criteria\n- [ ] Passes Ghostty tests\n",
+        }
+        brief3 = atc.parse_issue_to_brief(issue_ws_dir)
+        self.assertIn("area:workspace", brief3["areas"])
+        self.assertIn("src/commands/workspace/", brief3["relevant_paths"])
 
     def test_extract_closing_numbers_and_line_budget(self):
         refs = atc.extract_closing_numbers("Summary\nCloses #6, fixes #7 and RESOLVED #12.")
@@ -97,6 +108,118 @@ class IssueTemplateAndAgentInfraTests(unittest.TestCase):
             self.assertEqual(rep["checked_count"], 2)
             self.assertEqual(rep["over_budget_count"], 1)
             self.assertEqual(rep["over_budget"][0]["path"], "scripts/big.py")
+
+    def test_rust_layering_and_line_budget_invariants(self):
+        src_root = os.path.join(REPO_ROOT, "src")
+        non_command_modules = (
+            "ffi",
+            "telemetry",
+            "session",
+            "tui",
+            "orchestrator",
+            "json",
+            "budget",
+            "model_id",
+            "platform",
+            "proto",
+        )
+
+        def iter_rs_files(base_path: str):
+            if os.path.isfile(base_path) and base_path.endswith(".rs"):
+                yield base_path
+            elif os.path.isdir(base_path):
+                for root, _, files in os.walk(base_path):
+                    for fn in sorted(files):
+                        if fn.endswith(".rs"):
+                            yield os.path.join(root, fn)
+
+        def read_non_comment_code(rs_file: str) -> str:
+            with open(rs_file, encoding="utf-8") as f:
+                return "\n".join(
+                    line for line in f if not line.lstrip().startswith("//")
+                )
+
+        for mod_name in non_command_modules:
+            for candidate in (
+                os.path.join(src_root, mod_name),
+                os.path.join(src_root, f"{mod_name}.rs"),
+            ):
+                for rs_file in iter_rs_files(candidate):
+                    rel = os.path.relpath(rs_file, REPO_ROOT)
+                    txt = read_non_comment_code(rs_file)
+                    self.assertNotIn(
+                        "crate::commands",
+                        txt,
+                        msg=f"Layering violation: {rel} must not depend on crate::commands",
+                    )
+
+        for rs_file in iter_rs_files(os.path.join(src_root, "session")):
+            rel = os.path.relpath(rs_file, REPO_ROOT)
+            txt = read_non_comment_code(rs_file)
+            self.assertNotIn(
+                "crate::orchestrator",
+                txt,
+                msg=f"Cycle violation: {rel} must not depend on crate::orchestrator",
+            )
+
+        for candidate in (
+            os.path.join(src_root, "orchestrator"),
+            os.path.join(src_root, "orchestrator.rs"),
+        ):
+            for rs_file in iter_rs_files(candidate):
+                rel = os.path.relpath(rs_file, REPO_ROOT)
+                txt = read_non_comment_code(rs_file)
+                self.assertNotIn(
+                    "crate::session",
+                    txt,
+                    msg=f"Cycle violation: {rel} must not depend on crate::session",
+                )
+
+        over_budget = []
+        for rs_file in iter_rs_files(src_root):
+            rel = os.path.relpath(rs_file, REPO_ROOT)
+            with open(rs_file, encoding="utf-8") as f:
+                line_count = sum(1 for _ in f)
+            if line_count > 300:
+                over_budget.append(f"{rel} ({line_count} lines)")
+        self.assertEqual(
+            over_budget,
+            [],
+            msg=f"Rust files exceeding 300-line budget: {', '.join(over_budget)}",
+        )
+
+    def test_release_version_parity_and_arch_contract_exist(self):
+        import json
+        import re
+
+        self.assertTrue(
+            os.path.isfile(os.path.join(REPO_ROOT, "docs", "ARCH_v0.10.md"))
+        )
+        with open(os.path.join(REPO_ROOT, "Cargo.toml"), encoding="utf-8") as f:
+            cargo_ver = re.search(r'(?m)^version\s*=\s*"([^"]+)"', f.read()).group(1)
+        with open(os.path.join(REPO_ROOT, "Cargo.lock"), encoding="utf-8") as f:
+            lock_ver = re.search(
+                r'(?ms)name\s*=\s*"ccide-core"\s*\nversion\s*=\s*"([^"]+)"', f.read()
+            ).group(1)
+        with open(
+            os.path.join(REPO_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8"
+        ) as f:
+            plugin_ver = json.load(f)["version"]
+        with open(
+            os.path.join(REPO_ROOT, ".claude-plugin", "marketplace.json"),
+            encoding="utf-8",
+        ) as f:
+            mkt = json.load(f)
+            mkt_ver = mkt["version"]
+            mkt_p0_ver = mkt["plugins"][0]["version"]
+        with open(os.path.join(REPO_ROOT, "install.sh"), encoding="utf-8") as f:
+            inst_ver = re.search(r'(?m)^PLUGIN_VERSION="([^"]+)"', f.read()).group(1)
+        with open(os.path.join(REPO_ROOT, "install.ps1"), encoding="utf-8") as f:
+            ps1_ver = re.search(r'(?m)^\$PluginVersion\s*=\s*"([^"]+)"', f.read()).group(1)
+        self.assertEqual(
+            {cargo_ver, lock_ver, plugin_ver, mkt_ver, mkt_p0_ver, inst_ver, ps1_ver},
+            {cargo_ver},
+        )
 
 
 if __name__ == "__main__":

@@ -36,11 +36,27 @@ except ModuleNotFoundError:
             os.execv(cand, [cand] + sys.argv)
     raise
 
-IPC_DIR = "/tmp/.cc-ide"
-SOCK_PATH = "/tmp/.cc-ide/iterm_daemon.sock"
-PID_PATH = "/tmp/.cc-ide/iterm_daemon.pid"
+IPC_DIR = os.environ.get("CCIDE_IPC_DIR") or f"/tmp/.cc-ide-{os.getuid()}"
+SOCK_PATH = os.path.join(IPC_DIR, "iterm_daemon.sock")
+PID_PATH = os.path.join(IPC_DIR, "iterm_daemon.pid")
 YAZI_SESSION_CACHE: dict[str, str] = {}
 LAST_TAB_TITLES: dict[str, str] = {}
+
+
+def write_tab_shell_pid(cache_dir: str, yid: str, shell_pid) -> None:
+    if not yid or not shell_pid:
+        return
+    sp_str = str(shell_pid)
+    path = os.path.join(cache_dir, f"tab_shell_{yid}.txt")
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                if f.read().strip().startswith(f"{sp_str}:"):
+                    return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(sp_str)
+    except Exception:
+        pass
 
 
 def write_center_title_and_wake(yid: str, raw_name: str) -> None:
@@ -52,7 +68,7 @@ def write_center_title_and_wake(yid: str, raw_name: str) -> None:
     LAST_TAB_TITLES[yid] = val
     title_path = os.path.join(IPC_DIR, f"tab_title_{yid}.txt")
     try:
-        os.makedirs(IPC_DIR, exist_ok=True)
+        os.makedirs(IPC_DIR, mode=0o700, exist_ok=True)
         tmp_path = f"{title_path}.tmp.{os.getpid()}"
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(val + "\n")
@@ -64,7 +80,8 @@ def write_center_title_and_wake(yid: str, raw_name: str) -> None:
         return
     try:
         with open(sb_pf, encoding="utf-8") as pf:
-            sb_pid = int(pf.read().strip() or "0")
+            raw = pf.read().strip()
+            sb_pid = int(raw.split(":")[0] or "0")
     except (OSError, ValueError):
         return
     if sb_pid <= 1:
@@ -341,7 +358,7 @@ async def handle_open(
     local_shell_pid = await claude_sess.async_get_variable("pid") or 0
     cache_dir = os.path.expanduser("~/.cache/cc-ide")
     os.makedirs(cache_dir, exist_ok=True)
-    os.makedirs(IPC_DIR, exist_ok=True)
+    os.makedirs(IPC_DIR, mode=0o700, exist_ok=True)
 
     # Check if this is an SSH session requesting client-side native split panes
     ssh_transport = None
@@ -386,11 +403,7 @@ async def handle_open(
             else local_shell_pid
         ) or local_shell_pid
         if yazi_id and shell_pid:
-            try:
-                with open(os.path.join(cache_dir, f"tab_shell_{yazi_id}.txt"), "w", encoding="utf-8") as f:
-                    f.write(str(shell_pid))
-            except Exception:
-                pass
+            write_tab_shell_pid(cache_dir, str(yazi_id), shell_pid)
         if remote_ssh_spec is not None:
             # Local `--osc` test mode: touch the ACK file immediately
             try:
@@ -529,11 +542,7 @@ async def handle_rebalance(app: iterm2.App):
                 if yid and spid:
                     YAZI_SESSION_CACHE[str(yid)] = s.session_id
                     write_center_title_and_wake(str(yid), s.name or "")
-                    try:
-                        with open(os.path.join(cache_dir, f"tab_shell_{yid}.txt"), "w", encoding="utf-8") as f:
-                            f.write(str(spid))
-                    except Exception:
-                        pass
+                    write_tab_shell_pid(cache_dir, str(yid), spid)
             for s in t.sessions:
                 name = s.name or ""
                 if any(tag in name for tag in ("[TREE] yazi", "[GIT] lazygit", "[AI] Companion")):
@@ -582,7 +591,7 @@ async def handle_focus_or_switch(
 
 async def main(connection):
     app = await iterm2.async_get_app(connection)
-    os.makedirs(IPC_DIR, exist_ok=True)
+    os.makedirs(IPC_DIR, mode=0o700, exist_ok=True)
 
     # 1. Subscribe to `OSC 1337;Custom=id=ccide:<json>` across ALL sessions (local & SSH)
     async def on_custom_escape(_conn, notification):
@@ -907,7 +916,7 @@ async def main(connection):
 
 
 if __name__ == "__main__":
-    os.makedirs(IPC_DIR, exist_ok=True)
+    os.makedirs(IPC_DIR, mode=0o700, exist_ok=True)
     if is_existing_daemon_alive():
         sys.exit(0)
     try:

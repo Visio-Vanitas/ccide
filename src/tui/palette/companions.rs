@@ -8,9 +8,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::platform::find_executable;
+use crate::platform::{atomic_write, find_executable};
 
-use super::syntax::atomic_write;
 use super::Palette;
 
 pub(crate) fn build_yazi_theme_toml(pal: &Palette, tm_path: &Path) -> String {
@@ -206,7 +205,7 @@ fn try_sync_bat_cache(home: &str, tm_content: &str) -> bool {
     if fs::create_dir_all(&themes_dir).is_err() {
         return false;
     }
-    if !same_tm && atomic_write(&tm_dest, tm_content).is_err() {
+    if !same_tm && atomic_write(&tm_dest, tm_content.as_bytes()).is_err() {
         return false;
     }
     run_bat_timeout(&bat, &["cache", "--build"], false)
@@ -242,8 +241,12 @@ pub(crate) fn sync_companion_themes(
     tm_content: &str,
 ) -> (&'static str, bool) {
     let yazi_toml = build_yazi_theme_toml(pal, tm_path);
-    let cfg_ok = atomic_write(&cfg_dir.join("yazi-theme.toml"), &yazi_toml).is_ok()
-        && atomic_write(&cfg_dir.join("lazygit.yml"), &build_lazygit_yml(pal)).is_ok();
+    let cfg_ok = atomic_write(&cfg_dir.join("yazi-theme.toml"), yazi_toml.as_bytes()).is_ok()
+        && atomic_write(
+            &cfg_dir.join("lazygit.yml"),
+            build_lazygit_yml(pal).as_bytes(),
+        )
+        .is_ok();
 
     let explicit_override = env::var("CCIDE_PALETTE_FILE")
         .map(|s| !s.trim().is_empty())
@@ -261,7 +264,7 @@ pub(crate) fn sync_companion_themes(
             if let Some(p) = yt.parent() {
                 let _ = fs::create_dir_all(p);
             }
-            let _ = atomic_write(&yt, &yazi_toml);
+            let _ = atomic_write(&yt, yazi_toml.as_bytes());
         }
     }
 

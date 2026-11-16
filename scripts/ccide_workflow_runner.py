@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
 """Headless Native Claude Code Workflow CLI & macro-expanding runner (stdlib-only)."""
 
-import argparse
-import json
-import os
-import re
-import shutil
-import subprocess
-import sys
-import tempfile
+import argparse, json, os, re, shutil, subprocess, sys, tempfile
 
 _DEFAULT_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -118,15 +111,20 @@ def workflow_search_dirs(cwd: str | None = None, repo_root: str = _DEFAULT_REPO_
 def discover_workflows(cwd: str | None = None, repo_root: str = _DEFAULT_REPO_ROOT) -> list:
     seen, found = set(), []
     for d in workflow_search_dirs(cwd, repo_root):
-        if not os.path.isdir(d):
+        try:
+            entries = sorted(os.listdir(d))
+        except OSError:
             continue
-        for fn in sorted(os.listdir(d)):
+        for fn in entries:
             if not fn.endswith(".js") or fn[:-3] in seen:
                 continue
             name, path = fn[:-3], os.path.join(d, fn)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    meta = extract_meta(f.read(), name)
+            except OSError:
+                continue
             seen.add(name)
-            with open(path, encoding="utf-8") as f:
-                meta = extract_meta(f.read(), name)
             found.append({"name": meta["name"], "id": name, "path": path, **meta})
     return found
 
@@ -260,15 +258,13 @@ def main(argv=None) -> int:
     p_run = sub.add_parser("run", help="Run a native workflow")
     p_run.add_argument("workflow", nargs="?", default=None)
     p_run.add_argument("--file", dest="file_path", default=None)
-    p_run.add_argument("--script", default=None)
     p_run.add_argument("--args", default="{}")
-    p_run.add_argument("--preset", default=None)
     p_run.add_argument("--role", action="append", default=[])
     p_run.add_argument("--resume", dest="resume_id", default=None)
-    p_run.add_argument("--cwd", default=None)
-    p_run.add_argument("--dispatcher-model", default=None)
-    p_run.add_argument("--stream", action="store_true")
-    p_run.add_argument("--json", action="store_true")
+    for flag in ("--script", "--preset", "--cwd", "--dispatcher-model"):
+        p_run.add_argument(flag, default=None)
+    for flag in ("--stream", "--json"):
+        p_run.add_argument(flag, action="store_true")
 
     ns = p.parse_args(argv)
     if ns.cmd == "list":

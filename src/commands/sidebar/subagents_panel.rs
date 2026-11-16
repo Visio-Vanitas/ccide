@@ -58,6 +58,7 @@ pub fn build_subagents_panel(
     subagents: &[SubagentItem],
     cached_cfg: &ConfigModels,
     active_preset: &str,
+    status_notice: Option<&str>,
     tick: usize,
     pal: &Palette,
 ) -> SubagentPanelOutput {
@@ -129,22 +130,28 @@ pub fn build_subagents_panel(
         tag: Some((1, 0)),
     });
 
+    let show_notice = status_notice.filter(|s| !s.is_empty()).is_some() && mid_interior >= 4;
+    if let Some(notice) = status_notice.filter(|_| show_notice) {
+        sub_rows.push(BoxRow {
+            text: row_fmt.split(&format!(" {amber}! {notice}{RESET}"), "", 0),
+            bg: String::new(),
+            tag: None,
+        });
+    }
+
     let mut all_agent_rows = Vec::with_capacity(subagents.len() * 2);
     for (i_ag, ag) in subagents.iter().enumerate() {
         let is_viewed = ag.full_id == active_view_id;
         let is_cur = cursor_idx == Some(i_ag + 1);
         let row_bg = resolve_row_bg(is_viewed, is_cur, pal);
         let (r1_rail, r2_rail) = format_rails(is_viewed, is_cur, pal);
-        let is_done = ag.status != "running";
-        let fallback_tag = if !is_done {
-            "run"
-        } else if ag.status == "stopped" {
-            "stop"
-        } else {
-            "done"
+        let (is_done, tag_str) = match ag.status {
+            "running" => (false, "run"),
+            "stopped" => (true, "stop"),
+            _ => (true, "done"),
         };
         let eff_tag = if ag.tool.is_empty() {
-            fallback_tag
+            tag_str
         } else {
             ag.tool.as_str()
         };
@@ -179,8 +186,7 @@ pub fn build_subagents_panel(
             }
         }
         let right_close = if is_done {
-            let x_col = if is_cur { amber } else { dim };
-            format!("{x_col}×{RESET}")
+            format!("{}×{RESET}", if is_cur { amber } else { dim })
         } else if is_viewed {
             format!("{cyan}●{RESET}")
         } else {
@@ -220,8 +226,9 @@ pub fn build_subagents_panel(
         });
     }
 
-    let show_clear_bar = done_cnt > 0 && mid_interior >= 5;
-    let viewport_h = mid_interior.saturating_sub(2 + usize::from(show_clear_bar));
+    let show_clear_bar = done_cnt > 0 && mid_interior >= 5 + usize::from(show_notice);
+    let reserved = 2 + usize::from(show_notice) + usize::from(show_clear_bar);
+    let viewport_h = mid_interior.saturating_sub(reserved);
     let max_scroll = all_agent_rows.len().saturating_sub(viewport_h);
     *sub_scroll_offset = (*sub_scroll_offset).min(max_scroll);
     sub_rows.extend(
@@ -255,16 +262,14 @@ pub fn build_subagents_panel(
     }
 
     let base_badge = if max_scroll > 0 {
-        let first_item = (*sub_scroll_offset / 2) + 1;
-        let last_item = (first_item + (viewport_h / 2).max(1) - 1).min(subagents.len());
-        if running_cnt > 0 {
-            format!(
-                "{running_cnt}run · ↕{first_item}-{last_item}/{}",
-                subagents.len()
-            )
+        let first = (*sub_scroll_offset / 2) + 1;
+        let last = (first + (viewport_h / 2).max(1) - 1).min(subagents.len());
+        let pfx = if running_cnt > 0 {
+            format!("{running_cnt}run · ↕")
         } else {
-            format!("↕ {first_item}-{last_item}/{}", subagents.len())
-        }
+            "↕ ".to_string()
+        };
+        format!("{pfx}{first}-{last}/{}", subagents.len())
     } else if running_cnt == 0 {
         format!("main+{}", subagents.len())
     } else {

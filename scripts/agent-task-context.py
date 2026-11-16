@@ -32,8 +32,8 @@ AREA_MAP = {
         "color": "0e8a16",
     },
     "area:workspace": {
-        "keywords": ("workspace.rs", "ccide_daemon", "iterm2_workspace", "osc 1337", "tmux"),
-        "paths": ["src/commands/workspace.rs", "scripts/ccide_daemon.py", "scripts/iterm2_workspace.py"],
+        "keywords": ("src/commands/workspace/", "ccide_daemon", "iterm2_workspace", "osc 1337", "tmux"),
+        "paths": ["src/commands/workspace/", "scripts/ccide_daemon.py", "scripts/iterm2_workspace.py"],
         "color": "1d76db",
     },
     "area:hscroll": {

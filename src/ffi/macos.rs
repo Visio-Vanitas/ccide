@@ -141,6 +141,21 @@ pub fn get_ppid_of(pid: u32) -> Option<u32> {
     }
 }
 
+/// Returns process creation timestamp in epoch milliseconds via `proc_pidinfo(PROC_PIDTBSDINFO)`.
+pub fn proc_start_ms(pid: u32) -> Option<u64> {
+    if pid <= 1 {
+        return None;
+    }
+    unsafe {
+        let mut buf = [0u64; 17]; // 136 bytes: [15] = pbi_start_tvsec, [16] = pbi_start_tvusec
+        let ret = proc_pidinfo(pid as c_int, 3, 0, buf.as_mut_ptr() as *mut c_void, 136);
+        if ret < 136 || buf[15] == 0 {
+            return None;
+        }
+        Some(buf[15].saturating_mul(1000).saturating_add(buf[16] / 1000))
+    }
+}
+
 pub fn sysctl_string(name: &str) -> Option<String> {
     unsafe {
         let c_name = CString::new(name).ok()?;

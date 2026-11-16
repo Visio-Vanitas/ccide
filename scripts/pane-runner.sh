@@ -18,10 +18,12 @@ INSTANCE_ID="${5:-}"
 shift_count=$(( $# >= 5 ? 5 : $# ))
 shift "$shift_count" || true
 
-mkdir -p /tmp/.cc-ide "$HOME/.cache/cc-ide" 2>/dev/null || true
+CCIDE_IPC_DIR="${CCIDE_IPC_DIR:-/tmp/.cc-ide-$(id -u)}"
+mkdir -p "$HOME/.cache/cc-ide" 2>/dev/null || true
+mkdir -p -m 700 "$CCIDE_IPC_DIR" 2>/dev/null || mkdir -p "$CCIDE_IPC_DIR" 2>/dev/null || true
 # Acknowledge client-side native split over SSH (`OSC 1337` Tier 2 handshake)
 if [[ -n "$CLIENT_ID" ]]; then
-  printf 'ok' > "/tmp/.cc-ide/osc_ack_${CLIENT_ID}" 2>/dev/null || true
+  printf 'ok' > "$CCIDE_IPC_DIR/osc_ack_${CLIENT_ID}" 2>/dev/null || true
 fi
 
 [[ -d "$TARGET_DIR" ]] && cd "$TARGET_DIR"
@@ -90,7 +92,7 @@ case "$ROLE" in
     while true; do
       clear_terminal_buffers
       if [[ -f "$HSCROLL_BRIDGE" && -x "$PYTHON_BIN" ]]; then
-        "$PYTHON_BIN" "$HSCROLL_BRIDGE" "$LAZYGIT_BIN" "${LG_ARGS[@]}" || true
+        "$PYTHON_BIN" -I "$HSCROLL_BRIDGE" "$LAZYGIT_BIN" "${LG_ARGS[@]}" || true
       else
         "$LAZYGIT_BIN" "${LG_ARGS[@]}" || true
       fi
@@ -119,8 +121,8 @@ case "$ROLE" in
     export CC_YAZI_ID="$CLIENT_ID"
     export CC_INSTANCE_ID="$INSTANCE_ID"
     claude --dangerously-skip-permissions "$@" || true
-    if [[ "$KEEP_PANES" == "0" && -x "$HOME/.local/bin/cc-close" && -n "$INSTANCE_ID" ]]; then
-      "$HOME/.local/bin/cc-close" "$INSTANCE_ID" >/dev/null 2>&1 || true
+    if [[ "$KEEP_PANES" == "0" && -x "$CCIDE_CORE_BIN" && -n "$INSTANCE_ID" ]]; then
+      "$CCIDE_CORE_BIN" workspace close "$INSTANCE_ID" "$CLIENT_ID" >/dev/null 2>&1 || true
     fi
     exec "${SHELL:-/bin/zsh}" -l
     ;;

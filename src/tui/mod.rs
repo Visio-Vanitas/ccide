@@ -5,6 +5,7 @@
 
 pub mod context;
 pub mod grid;
+pub(crate) mod grid_render;
 pub mod layout;
 pub mod logo;
 pub mod palette;
