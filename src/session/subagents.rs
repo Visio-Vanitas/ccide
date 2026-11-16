@@ -1,14 +1,18 @@
 //! Session-Isolated Subagent Discovery, Per-Agent Model/Effort & `stoppedByUser` Tracking.
 
-use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::fs;
 use std::time::UNIX_EPOCH;
 
 use crate::json::{extract_json_bool, extract_json_str};
+use crate::model_id::model_from_shim_agent_type;
+use crate::session::subagent_state::{load_id_set, load_parent_task_states};
 use crate::session::transcript::{update_jsonl_tracker, JsonlTracker};
 use crate::session::{is_valid_model_name, map_alias_with_settings, short_model_label};
+
+pub use crate::session::subagent_state::{
+    append_dismissed_subagents, find_session_dir, load_dismissed_subagents,
+};
 
 #[derive(Clone)]
 pub struct SubagentItem {
@@ -27,106 +31,6 @@ pub struct SubagentItem {
     pub file_op_seq: usize,
     pub ctime: u64,
     pub footer_rank: usize,
-}
-
-pub fn find_session_dir(home: &str, session_id: &str) -> Option<PathBuf> {
-    if session_id.is_empty() {
-        return None;
-    }
-    let projects_dir = format!("{}/.claude/projects", home);
-    let rd = fs::read_dir(projects_dir).ok()?;
-    for entry in rd.flatten() {
-        let cand = entry.path().join(session_id);
-        if cand.is_dir() {
-            return Some(cand);
-        }
-    }
-    None
-}
-
-fn load_id_set(path: &str) -> HashSet<String> {
-    fs::read_to_string(path)
-        .map(|t| {
-            t.lines()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-pub fn load_dismissed_subagents(home: &str, session_id: &str) -> HashSet<String> {
-    if session_id.is_empty() {
-        return HashSet::new();
-    }
-    load_id_set(&format!(
-        "{}/.cache/cc-ide/dismissed_{}.txt",
-        home, session_id
-    ))
-}
-
-fn load_parent_task_states(parent_jsonl: &Path) -> HashMap<String, &'static str> {
-    let mut states = HashMap::new();
-    let Ok(mut f) = File::open(parent_jsonl) else {
-        return states;
-    };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let _ = f.seek(SeekFrom::Start(len.saturating_sub(524_288)));
-    let mut raw = Vec::new();
-    if f.read_to_end(&mut raw).is_err() {
-        return states;
-    }
-    for line in String::from_utf8_lossy(&raw).lines() {
-        let task_id = line
-            .find("<task-id>")
-            .and_then(|s| line[s + 9..].split("</task-id>").next())
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        if line.contains("was resumed by the user") {
-            if let Some(id) = task_id {
-                states.remove(id);
-            }
-            states.retain(|k: &String, _| !line.contains(k.as_str()));
-            continue;
-        }
-        if let Some(id) = task_id {
-            if line.contains("<status>killed</status>") {
-                states.insert(id.to_string(), "stopped");
-            } else if line.contains("<status>completed</status>")
-                || line.contains("<status>failed</status>")
-            {
-                states.insert(id.to_string(), "done");
-            }
-        }
-        if let Some(pos) = line.find("Successfully stopped task: ") {
-            let id: String = line[pos + 27..]
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
-            if !id.is_empty() {
-                states.insert(id, "stopped");
-            }
-        }
-    }
-    states
-}
-
-pub fn append_dismissed_subagents(home: &str, session_id: &str, ids: &[String]) {
-    if session_id.is_empty() || ids.is_empty() {
-        return;
-    }
-    let dir = format!("{}/.cache/cc-ide", home);
-    let _ = fs::create_dir_all(&dir);
-    let existing = load_dismissed_subagents(home, session_id);
-    let p = format!("{}/dismissed_{}.txt", dir, session_id);
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(p) {
-        for id in ids {
-            if !id.is_empty() && !existing.contains(id) {
-                let _ = writeln!(f, "{}", id);
-            }
-        }
-    }
 }
 
 pub fn get_session_subagents(
@@ -194,21 +98,9 @@ pub fn get_session_subagents(
 
         let jpath = mpath.with_file_name(format!("agent-{}.jsonl", agent_id));
         let tracker_key = format!("{session_id}:{agent_id}");
-        let tr = trackers.entry(tracker_key).or_insert_with(|| {
-            let sz = fs::metadata(&jpath).map(|m| m.len()).unwrap_or(0);
-            JsonlTracker {
-                jpath: Some(jpath.clone()),
-                offset: sz.saturating_sub(262_144),
-                last_tool: String::new(),
-                last_file: String::new(),
-                last_line: 0,
-                last_span: 0,
-                last_model: String::new(),
-                last_model_mtime: UNIX_EPOCH,
-                seq: 0,
-                done_from_tail: false,
-            }
-        });
+        let tr = trackers
+            .entry(tracker_key)
+            .or_insert_with(|| JsonlTracker::from_tail(Some(jpath.clone())));
         update_jsonl_tracker(&jpath, &agent_cwd, home, tr);
 
         let parent_st = parent_states.get(&agent_id).copied();
@@ -232,7 +124,7 @@ pub fn get_session_subagents(
 
         let raw_type =
             extract_json_str(&mtxt, "agentType").unwrap_or_else(|| "general-purpose".to_string());
-        let shim_resolved = crate::orchestrator::model_from_shim_agent_type(home, &raw_type);
+        let shim_resolved = model_from_shim_agent_type(home, &raw_type);
         let meta_model = extract_json_str(&mtxt, "model")
             .filter(|m| is_valid_model_name(m))
             .or_else(|| {
@@ -293,6 +185,8 @@ pub fn get_session_subagents(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
+    use std::io::Write;
 
     #[test]
     fn task_stop_killed_and_resumed_transitions_status() {

@@ -12,39 +12,12 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ffi::{current_ppid, get_ppid_of, notify_sidebar};
-use crate::json::{extract_json_bool, extract_json_object, extract_json_str};
-use crate::platform::{cache_dir, ipc_path, is_internal_or_temp_path, user_home_dir};
+use crate::json::{extract_json_bool, extract_json_object, extract_json_str, json_escape};
+use crate::platform::{atomic_write, cache_dir, ipc_path, is_internal_or_temp_path, user_home_dir};
 use crate::session::{
     emit_yazi_reveal_at, extract_tool_line_target, is_valid_model_name, normalize_path_under_cwd,
     resolve_live_yazi_tab,
 };
-
-/// Writes `dir/name` atomically via a PID-scoped temp file + `rename` (Windows retries after an
-/// unlink when a concurrent reader holds the destination open).
-fn atomic_write(dir: &Path, name: &str, data: &[u8]) {
-    let dst = dir.join(name);
-    let tmp = dir.join(format!(".{}.tmp.{}", name, std::process::id()));
-    if fs::write(&tmp, data).is_ok() && fs::rename(&tmp, &dst).is_ok() {
-        return;
-    }
-    #[cfg(windows)]
-    {
-        let _ = fs::remove_file(&dst);
-        if fs::rename(&tmp, &dst).is_ok() {
-            return;
-        }
-    }
-    let _ = fs::write(&dst, data);
-    let _ = fs::remove_file(&tmp);
-}
-
-fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
-}
 
 fn extract_first_filename_from_array(src: &str) -> Option<String> {
     let mut from = 0;
@@ -94,13 +67,13 @@ pub fn run() {
     let home = user_home_dir();
     let cdir = cache_dir(&home);
     let cdir_str = cdir.to_string_lossy().into_owned();
-    let _ = fs::create_dir_all(cdir.join("status"));
+    let status_dir = cdir.join("status");
+    let _ = fs::create_dir_all(&status_dir);
 
     // Always persist `permission_mode` upfront on EVERY hook (`SessionStart`, `SubagentStart`, `PostToolUse`, etc.)
     if !perm_mode.is_empty() && !session_id.is_empty() {
-        atomic_write(
-            &cdir.join("status"),
-            &format!("mode_{}.cache", session_id),
+        let _ = atomic_write(
+            &status_dir.join(format!("mode_{}.cache", session_id)),
             perm_mode.as_bytes(),
         );
     }
@@ -111,9 +84,8 @@ pub fn run() {
             .or_else(|| extract_json_str(&input, "model"))
             .unwrap_or_default();
         if is_valid_model_name(&switched_model) {
-            atomic_write(
-                &cdir.join("status"),
-                &format!("model_{}.cache", session_id),
+            let _ = atomic_write(
+                &status_dir.join(format!("model_{}.cache", session_id)),
                 switched_model.trim().as_bytes(),
             );
         }
@@ -121,9 +93,8 @@ pub fn run() {
 
     let (target_yazi_id, tab_cwd) = resolve_live_yazi_tab(&cdir_str, &session_id, &cwd_path);
     if !target_yazi_id.is_empty() && !session_id.is_empty() {
-        atomic_write(
-            &cdir,
-            &format!("session_{}.yazi", session_id),
+        let _ = atomic_write(
+            &cdir.join(format!("session_{}.yazi", session_id)),
             target_yazi_id.as_bytes(),
         );
     }
@@ -143,11 +114,7 @@ pub fn run() {
 
     if hook_event == "SessionStart" {
         let _ = crate::orchestrator::OrchestratorWatcher::new(&home);
-        let agents_dir = Path::new(&home)
-            .join(".claude/agents")
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
+        let agents_dir = json_escape(&Path::new(&home).join(".claude/agents").to_string_lossy());
         println!(
             "{{\"hookSpecificOutput\":{{\"hookEventName\":\"SessionStart\",\"watchPaths\":[\"{}\"],\"additionalContext\":\"cc-ide Orchestrator active: prefix Agent description/prompt with [@<model>:<effort>] (e.g. [@kimi-k3:high], [@:low]) to override routing, and use '@scout'/'@coder'/'@reviewer'/'@plan' macros in Workflow scripts.\"}}}}",
             agents_dir
@@ -224,9 +191,8 @@ pub fn run() {
             "{{\"file\":\"{}\",\"tool\":\"{}\",\"line\":{},\"span\":{},\"ts\":{}}}\n",
             safe_fp, safe_tool, target_line, target_span, now_s
         );
-        atomic_write(
-            &cdir,
-            &format!("main_last_file_{}.json", target_yazi_id),
+        let _ = atomic_write(
+            &cdir.join(format!("main_last_file_{}.json", target_yazi_id)),
             main_json.as_bytes(),
         );
     }

@@ -1,6 +1,6 @@
 //! POSIX (`macOS` + `Linux`) Terminal Raw Mode, `poll()`, `TIOCGWINSZ`, & `SIGUSR2` Bindings.
 
-use std::ffi::{c_double, c_int, c_void};
+use std::ffi::{c_double, c_int, c_uint, c_void};
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::Ordering;
 
@@ -72,8 +72,6 @@ impl Termios {
     pub fn make_raw(&mut self) {
         #[cfg(target_os = "macos")]
         {
-            // Clear ISIG (0x80) | ICANON (0x100) | ECHO (0x08) | IEXTEN (0x400),
-            // plus IXON (0x200) | ICRNL (0x100) so Ctrl+C/Z/S never signals or freezes TUI panes.
             self.c_iflag &= !(0x0000_0200 | 0x0000_0100);
             self.c_lflag &= !(0x0000_0080 | 0x0000_0100 | 0x0000_0008 | 0x0000_0400);
             self.c_cc[16] = 1;
@@ -81,8 +79,6 @@ impl Termios {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            // Clear ISIG (0x01) | ICANON (0x02) | ECHO (0x08) | IEXTEN (0x8000),
-            // plus IXON (0x400) | ICRNL (0x100).
             self.c_iflag &= !(0x0000_0400 | 0x0000_0100);
             self.c_lflag &= !(0x0000_0001 | 0x0000_0002 | 0x0000_0008 | 0x0000_8000);
             self.c_cc[6] = 1;
@@ -108,7 +104,14 @@ extern "C" {
     pub fn signal(sig: c_int, handler: extern "C" fn(c_int)) -> usize;
     pub fn kill(pid: c_int, sig: c_int) -> c_int;
     pub fn getppid() -> c_int;
+    pub fn geteuid() -> c_uint;
     pub fn getloadavg(loadavg: *mut c_double, nelem: c_int) -> c_int;
+    #[cfg(not(target_os = "macos"))]
+    pub fn sysconf(name: c_int) -> std::ffi::c_long;
+}
+
+pub fn current_euid() -> u32 {
+    unsafe { geteuid() }
 }
 
 pub fn install_signal_handlers(enable_wakeup_sig: bool) {
@@ -152,44 +155,42 @@ impl ConsoleRawSession {
             events: 1,
             revents: 0,
         };
-        let ready = unsafe { poll(&mut pfd, 1 as NfdsT, timeout_ms as c_int) };
-        if ready > 0 {
-            if (pfd.revents & (0x0008 | 0x0010 | 0x0020)) != 0 {
-                RUNNING.store(false, Ordering::SeqCst);
-                return None;
-            }
-            if (pfd.revents & 1) != 0 {
-                let n = unsafe { read(self.stdin_fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
-                if n == 0 {
-                    RUNNING.store(false, Ordering::SeqCst);
-                    return None;
-                }
-                if n > 0 {
-                    let mut total = n as usize;
-                    // Reassemble split escape sequences already sitting in the TTY buffer.
-                    while total < buf.len() && ends_with_incomplete_esc(&buf[..total]) {
-                        pfd.revents = 0;
-                        let more = unsafe { poll(&mut pfd, 1 as NfdsT, 2) };
-                        if more <= 0 || (pfd.revents & 1) == 0 {
-                            break;
-                        }
-                        let extra = unsafe {
-                            read(
-                                self.stdin_fd,
-                                buf[total..].as_mut_ptr() as *mut c_void,
-                                buf.len() - total,
-                            )
-                        };
-                        if extra <= 0 {
-                            break;
-                        }
-                        total += extra as usize;
-                    }
-                    return Some(total);
-                }
-            }
+        if unsafe { poll(&mut pfd, 1 as NfdsT, timeout_ms as c_int) } <= 0 {
+            return None;
         }
-        None
+        if (pfd.revents & (0x0008 | 0x0010 | 0x0020)) != 0 {
+            RUNNING.store(false, Ordering::SeqCst);
+            return None;
+        }
+        if (pfd.revents & 1) == 0 {
+            return None;
+        }
+        let n = unsafe { read(self.stdin_fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
+        if n <= 0 {
+            if n == 0 {
+                RUNNING.store(false, Ordering::SeqCst);
+            }
+            return None;
+        }
+        let mut total = n as usize;
+        while total < buf.len() && ends_with_incomplete_esc(&buf[..total]) {
+            pfd.revents = 0;
+            if unsafe { poll(&mut pfd, 1 as NfdsT, 2) } <= 0 || (pfd.revents & 1) == 0 {
+                break;
+            }
+            let extra = unsafe {
+                read(
+                    self.stdin_fd,
+                    buf[total..].as_mut_ptr() as *mut c_void,
+                    buf.len() - total,
+                )
+            };
+            if extra <= 0 {
+                break;
+            }
+            total += extra as usize;
+        }
+        Some(total)
     }
 }
 
@@ -198,13 +199,7 @@ fn ends_with_incomplete_esc(bytes: &[u8]) -> bool {
         return false;
     };
     let tail = &bytes[esc_pos..];
-    if tail.len() == 1 {
-        return true;
-    }
-    if tail[1] == b'[' {
-        return !tail[2..].iter().any(|&b| (0x40..=0x7e).contains(&b));
-    }
-    false
+    tail.len() == 1 || (tail[1] == b'[' && !tail[2..].iter().any(|&b| (0x40..=0x7e).contains(&b)))
 }
 
 impl Drop for ConsoleRawSession {
@@ -226,8 +221,7 @@ pub fn query_terminal_winsize() -> Option<(usize, usize, f64, f64)> {
             ws_ypixel: 0,
         };
         if ioctl(1, TIOCGWINSZ, &mut ws as *mut Winsize) == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
-            let cols = ws.ws_col as usize;
-            let rows = ws.ws_row as usize;
+            let (cols, rows) = (ws.ws_col as usize, ws.ws_row as usize);
             let cw = if ws.ws_xpixel > 0 {
                 (ws.ws_xpixel as f64) / (cols as f64)
             } else {
@@ -245,10 +239,7 @@ pub fn query_terminal_winsize() -> Option<(usize, usize, f64, f64)> {
 }
 
 pub fn is_pid_alive(pid: u32) -> bool {
-    if pid == 0 || pid > i32::MAX as u32 {
-        return false;
-    }
-    unsafe { kill(pid as c_int, 0) == 0 }
+    pid > 0 && pid <= i32::MAX as u32 && unsafe { kill(pid as c_int, 0) == 0 }
 }
 
 pub fn current_ppid() -> u32 {
@@ -262,17 +253,48 @@ pub fn current_ppid() -> u32 {
 
 #[cfg(not(target_os = "macos"))]
 pub fn get_ppid_of(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
-    let close = stat.rfind(')')?;
-    let mut fields = stat.get(close + 1..)?.split_whitespace();
-    let _state = fields.next()?;
-    fields.next()?.parse::<u32>().ok()
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.get(stat.rfind(')')? + 1..)?
+        .split_whitespace()
+        .nth(1)?
+        .parse::<u32>()
+        .ok()
 }
 
-pub fn wake_pid(pid: u32) {
-    if pid > 1 && pid <= i32::MAX as u32 {
-        unsafe {
-            let _ = kill(pid as c_int, SIGUSR2);
-        }
+#[cfg(not(target_os = "macos"))]
+pub fn proc_start_ms(pid: u32) -> Option<u64> {
+    static BTIME_S: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    if pid <= 1 {
+        return None;
     }
+    let btime = *BTIME_S.get_or_init(|| {
+        std::fs::read_to_string("/proc/stat")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok())
+            })
+            .unwrap_or(0)
+    });
+    if btime == 0 {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let ticks: u64 = stat
+        .get(stat.rfind(')')? + 1..)?
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()?;
+    let hz = unsafe { sysconf(2) };
+    let clk = if hz > 0 { hz as u64 } else { 100 };
+    Some(
+        btime
+            .saturating_mul(1000)
+            .saturating_add(ticks.saturating_mul(1000) / clk),
+    )
+}
+
+pub(crate) fn wake_pid(pid: u32) -> bool {
+    pid > 1 && pid <= i32::MAX as u32 && unsafe { kill(pid as c_int, SIGUSR2) == 0 }
 }

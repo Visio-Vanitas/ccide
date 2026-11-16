@@ -3,10 +3,9 @@
 use std::env;
 use std::fs;
 
-use crate::json::{extract_json_object, extract_json_str};
-use crate::orchestrator::router::{json_esc, push_opt_str};
+use crate::json::{extract_json_array_slice, extract_json_object, extract_json_str, json_escape};
+use crate::orchestrator::router::push_opt_str;
 use crate::orchestrator::{OrchestratorConfig, ALL_ROLES};
-use crate::tui::context::json_scan::extract_json_array_slice;
 
 fn js_str_esc(s: &str, quote: char) -> String {
     let mut out = String::with_capacity(s.len());
@@ -77,20 +76,20 @@ fn build_ccide_meta(cfg: &OrchestratorConfig) -> String {
             let pool: Vec<String> = s
                 .models
                 .iter()
-                .map(|m| format!("\"{}\"", json_esc(m)))
+                .map(|m| format!("\"{}\"", json_escape(m)))
                 .collect();
             format!(
                 "\"{}\":{{\"model\":\"{}\",\"effort\":\"{}\",\"pool\":[{}]}}",
                 r.key(),
-                json_esc(s.primary_model()),
-                json_esc(&s.effort),
+                json_escape(s.primary_model()),
+                json_escape(&s.effort),
                 pool.join(",")
             )
         })
         .collect();
     format!(
         "{{\"preset\":\"{}\",\"roles\":{{{}}}}}",
-        json_esc(&prof.name),
+        json_escape(&prof.name),
         roles.join(",")
     )
 }
@@ -113,7 +112,7 @@ pub(crate) fn route_workflow(tool_in: &str, perm_mode: &str, home: &str) -> Opti
     if let Some(script) = extract_json_str(tool_in, "script") {
         fields.push(format!(
             "\"script\":\"{}\"",
-            json_esc(&expand_workflow_macros(&script, &cfg))
+            json_escape(&expand_workflow_macros(&script, &cfg))
         ));
     }
     for k in ["scriptPath", "resumeFromRunId"] {

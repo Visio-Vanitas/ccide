@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::ffi::{is_pid_alive, wake_pid};
+use crate::ffi::{is_pid_alive, wake_token, ProcToken};
 use crate::json::{extract_json_str, extract_json_u64};
 use crate::platform::{find_executable, ipc_dir};
 use crate::session::transcript::{append_dismissed_subagents, get_session_subagents};
@@ -21,13 +21,13 @@ pub fn wake_all_sidebars() {
             let name = fname.to_string_lossy();
             if name.starts_with("sb_") && name.ends_with(".pid") {
                 if let Ok(ptxt) = fs::read_to_string(entry.path()) {
-                    if let Ok(pid) = ptxt.trim().parse::<u32>() {
-                        if is_pid_alive(pid) {
-                            wake_pid(pid);
-                        } else {
-                            let _ = fs::remove_file(entry.path());
+                    if let Some(tok) = ProcToken::parse(&ptxt) {
+                        if tok.is_alive_match() {
+                            let _ = wake_token(&tok);
+                            continue;
                         }
                     }
+                    let _ = fs::remove_file(entry.path());
                 }
             }
         }
@@ -35,6 +35,7 @@ pub fn wake_all_sidebars() {
 }
 
 pub fn refresh_open_yazi_previews(home: &str) {
+    let _ = crate::commands::workspace::spec::prune_dead_specs(home);
     let Some(ya) = find_executable("ya", home) else {
         return;
     };
@@ -180,7 +181,7 @@ pub fn run_theme_command(home: &str, sub: &str) {
                 }
                 let _ = fs::write(&cfg_path, render_palette_template("default"));
             }
-            sync_syntax_artifacts(home, &Palette::load(home));
+            let _ = sync_syntax_artifacts(home, &Palette::load(home));
             println!("{}", cfg_path.display());
         }
         "reset" => {
@@ -188,13 +189,13 @@ pub fn run_theme_command(home: &str, sub: &str) {
                 let _ = fs::create_dir_all(parent);
             }
             let _ = fs::write(&cfg_path, render_palette_template("default"));
-            sync_syntax_artifacts(home, &Palette::load(home));
+            let _ = sync_syntax_artifacts(home, &Palette::load(home));
             wake_all_sidebars();
             crate::commands::workspace::reload::reload_companion_panes(home);
             println!("Reset palette to default -> {}", cfg_path.display());
         }
         "sync" => {
-            sync_syntax_artifacts(home, &Palette::load(home));
+            let _ = sync_syntax_artifacts(home, &Palette::load(home));
         }
         "list" | "" => {
             let active = Palette::load(home);
@@ -242,7 +243,7 @@ pub fn run_theme_command(home: &str, sub: &str) {
                 render_palette_template(&probe.preset)
             };
             let _ = fs::write(&cfg_path, updated);
-            sync_syntax_artifacts(home, &Palette::load(home));
+            let _ = sync_syntax_artifacts(home, &Palette::load(home));
             wake_all_sidebars();
             crate::commands::workspace::reload::reload_companion_panes(home);
             println!(

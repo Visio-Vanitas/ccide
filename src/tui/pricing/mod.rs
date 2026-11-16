@@ -9,13 +9,13 @@
 pub mod lookup;
 
 use std::collections::HashMap;
-use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::SystemTime;
 
-use crate::json::extract_json_object;
-use lookup::{lookup_in_maps, normalize_model_key, parse_section_into, strip_jsonc};
+use crate::json::{extract_json_object, strip_jsonc};
+pub use lookup::resolve_pricing_path;
+use lookup::{lookup_in_maps, normalize_model_key, parse_section_into};
 
 const BUILTIN_PRICING_JSONC: &str = include_str!("../../../assets/pricing.json");
 
@@ -238,25 +238,6 @@ impl PricingCatalog {
             long_cache_read: 0.30,
         })
     }
-}
-
-pub fn resolve_pricing_path(home: &str) -> PathBuf {
-    if let Ok(explicit) = env::var("CCIDE_PRICING_FILE") {
-        let t = explicit.trim();
-        if !t.is_empty() {
-            return PathBuf::from(t);
-        }
-    }
-    if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
-        let t = xdg.trim();
-        if !t.is_empty() {
-            let p = Path::new(t).join("cc-ide/pricing.json");
-            if p.exists() {
-                return p;
-            }
-        }
-    }
-    Path::new(home).join(".config/cc-ide/pricing.json")
 }
 
 #[cfg(test)]

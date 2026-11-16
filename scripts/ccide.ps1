@@ -6,6 +6,7 @@ $ShowMon = "0"
 $ShowRight = "1"
 $LeftPct = "30"
 $KeepPanes = $false
+$IsWtChild = $false
 $Backend = if ($env:CCIDE_BACKEND) { $env:CCIDE_BACKEND } else { "auto" }
 $TargetDir = (Get-Location).Path
 $ClaudeArgs = New-Object System.Collections.Generic.List[string]
@@ -13,10 +14,28 @@ $ClaudeArgs = New-Object System.Collections.Generic.List[string]
 $HomeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $RepoRoot = Split-Path -Parent $ScriptDir
+$ResolverMjs = Join-Path $HomeDir ".claude\scripts\ensure-ccide-core.mjs"
+if (-not (Test-Path $ResolverMjs)) { $ResolverMjs = Join-Path $ScriptDir "ensure-ccide-core.mjs" }
+if ((Test-Path $ResolverMjs) -and (Get-Command node -ErrorAction SilentlyContinue)) {
+    & node $ResolverMjs --version *> $null
+}
 $CoreBin = Join-Path $HomeDir ".claude\bin\ccide-core.exe"
 if (-not (Test-Path $CoreBin)) {
     $AltBin = Join-Path $RepoRoot "bin\ccide-core.exe"
     if (Test-Path $AltBin) { $CoreBin = $AltBin }
+}
+if (Test-Path $CoreBin) { $env:CCIDE_CORE_BIN = $CoreBin }
+if (-not $env:CCIDE_IPC_DIR) {
+    $ResolvedIpc = ""
+    if (Test-Path $CoreBin) {
+        $CandIpc = (& $CoreBin ipc-dir 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -eq 0 -and $CandIpc) { $ResolvedIpc = $CandIpc.Trim() }
+    }
+    if (-not $ResolvedIpc) {
+        $WinTmp = if ($env:TEMP) { $env:TEMP } elseif ($env:TMP) { $env:TMP } else { [System.IO.Path]::GetTempPath() }
+        $ResolvedIpc = Join-Path $WinTmp.TrimEnd('\', '/') ".cc-ide"
+    }
+    $env:CCIDE_IPC_DIR = $ResolvedIpc
 }
 
 function Resolve-PyExe {
@@ -39,6 +58,8 @@ while ($i -lt $args.Count) {
     $arg = [string]$args[$i]
     switch -Regex ($arg) {
         "^(--no-git|--tree-only)$" { $ShowGit = "0"; $i++; continue }
+        "^--mon$"                  { $ShowMon = "1"; $i++; continue }
+        "^(--no-mon|--2|--3)$"     { $ShowMon = "0"; $i++; continue }
         "^--no-right$"             { $ShowRight = "0"; $i++; continue }
         "^--wezterm$"              { $Backend = "wezterm"; $i++; continue }
         "^--wt$"                   { $Backend = "wt"; $i++; continue }
@@ -51,6 +72,7 @@ while ($i -lt $args.Count) {
             continue
         }
         "^--keep-panes$"           { $KeepPanes = $true; $i++; continue }
+        "^--wt-child$"             { $IsWtChild = $true; $i++; continue }
         "^(--clear-subagents|--clear-done)$" {
             Assert-CoreBin
             $sid = if ($i + 1 -lt $args.Count) { [string]$args[$i + 1] } else { "" }
@@ -143,9 +165,21 @@ Commands & Maintenance:
     }
 }
 
-# If launched from plain `cmd.exe` / console outside WT or WezTerm, bootstrap inside `wt.exe`
-# automatically — unless the user explicitly requested the `wezterm` backend.
-if ($Backend -ne "wezterm" -and -not $env:WEZTERM_PANE -and -not $env:WT_SESSION -and -not $env:CLAUDECODE) {
+# Detect workspace backend canonically via `ccide-core workspace detect` (treating failure/pre-0.10 as `none`).
+$DetectedBackend = "none"
+if (Test-Path $CoreBin) {
+    $CandDet = (& $CoreBin workspace detect 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -eq 0 -and $CandDet) {
+        $TrimDet = $CandDet.Trim()
+        if ($TrimDet -in @("iterm", "osc", "wezterm", "wt", "ghostty", "tmux", "none")) {
+            $DetectedBackend = $TrimDet
+        }
+    }
+}
+
+# If launched from plain `cmd.exe` / console without a native backend, bootstrap inside `wt.exe`
+# automatically — unless the user explicitly requested `wezterm` or we already relaunched via `--wt-child`.
+if ($Backend -ne "wezterm" -and -not $IsWtChild -and $DetectedBackend -eq "none" -and -not $env:CLAUDECODE) {
     $WtCmd = Get-Command wt.exe -ErrorAction SilentlyContinue
     if ($WtCmd) {
         $SelfPs1 = $MyInvocation.MyCommand.Definition
@@ -157,7 +191,7 @@ if ($Backend -ne "wezterm" -and -not $env:WEZTERM_PANE -and -not $env:WT_SESSION
         # `wt.exe` parses `;` as a subcommand separator, so escape it inside paths.
         $WtDir = $TargetDir.Replace(";", "\;")
         $WtSelf = $SelfPs1.Replace(";", "\;")
-        & $WtCmd.Source -d $WtDir $SelfShell -ExecutionPolicy Bypass -File $WtSelf @args
+        & $WtCmd.Source -d $WtDir $SelfShell -ExecutionPolicy Bypass -File $WtSelf @args "--wt-child"
         $WtExit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
         exit $WtExit
     }
@@ -179,6 +213,19 @@ $PaneSpec = ""
 if (Test-Path $CoreBin) {
     $GitRootArg = if ($GitRoot) { $GitRoot } else { "-" }
     $PaneSpec = (& $CoreBin workspace open $TargetDir $YaziId $ShowGit $ShowMon $LeftPct $GitRootArg $ShowRight $Backend 2>$null | Select-Object -First 1)
+}
+
+if ($env:CLAUDECODE) {
+    if ($env:CLAUDE_CODE_SESSION_ID) {
+        $CacheDir = Join-Path $HomeDir ".cache\cc-ide"
+        $IpcDir = if ($env:CCIDE_IPC_DIR) { $env:CCIDE_IPC_DIR } else { Join-Path ([System.IO.Path]::GetTempPath()) ".cc-ide" }
+        New-Item -ItemType Directory -Force -Path $CacheDir, $IpcDir | Out-Null
+        $SessFile = "session_$($env:CLAUDE_CODE_SESSION_ID).yazi"
+        Set-Content -LiteralPath (Join-Path $CacheDir $SessFile) -Value $YaziId -NoNewline -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $IpcDir $SessFile) -Value $YaziId -NoNewline -Encoding ASCII
+    }
+    Write-Host "Workspace panes ready ($PaneSpec, Yazi ID: $YaziId)."
+    exit 0
 }
 
 function Resolve-ClaudeExe {
@@ -205,7 +252,7 @@ function Invoke-AutoEnsureClaudePatched {
     $StampFile = Join-Path $CacheDir "claude_bin.stamp"
     $Fi = Get-Item -LiteralPath $TargetExe -ErrorAction SilentlyContinue
     if (-not $Fi) { return }
-    $CurStamp = "$($Fi.Length):$($Fi.LastWriteTimeUtc.Ticks)"
+    $CurStamp = "r2:$($Fi.Length):$($Fi.LastWriteTimeUtc.Ticks)"
     if ((Test-Path $StampFile) -and ((Get-Content -LiteralPath $StampFile -Raw -ErrorAction SilentlyContinue).Trim() -eq $CurStamp)) {
         return
     }
@@ -218,7 +265,7 @@ function Invoke-AutoEnsureClaudePatched {
         if ($LASTEXITCODE -eq 0) {
             $FiAfter = Get-Item -LiteralPath $TargetExe -ErrorAction SilentlyContinue
             if ($FiAfter) {
-                Set-Content -LiteralPath $StampFile -Value "$($FiAfter.Length):$($FiAfter.LastWriteTimeUtc.Ticks)" -NoNewline -Encoding ASCII
+                Set-Content -LiteralPath $StampFile -Value "r2:$($FiAfter.Length):$($FiAfter.LastWriteTimeUtc.Ticks)" -NoNewline -Encoding ASCII
             }
         }
     }

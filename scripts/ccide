@@ -32,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     --iterm) BACKEND="iterm"; shift ;;
     --ghostty) BACKEND="ghostty"; shift ;;
     --wezterm) BACKEND="wezterm"; shift ;;
+    --wt) BACKEND="wt"; shift ;;
     --backend)
       BACKEND="${2:-auto}"
       if [[ $# -ge 2 ]]; then shift 2; else shift; fi
@@ -131,6 +132,8 @@ Adaptive 3-Tier Workspace Backends:
   --iterm          Force Tier 1: Local iTerm2 native Metal split panes
   --osc            Force Tier 2: OSC 1337 passthrough to client iTerm2 native split panes
   --ghostty        Force Ghostty 1.3+ native Metal split panes
+  --wezterm        Force WezTerm native CLI 3-column split panes
+  --wt             Force Windows Terminal (`wt.exe -w 0`) 3-column split panes
   --tmux           Force Tier 3: Universal tmux 3-column layout (`tmux -L ccide`)
   --ssh <host>     Connect to <host> with SSH ControlMaster ready for native iTerm2 splits
 
@@ -156,42 +159,44 @@ EOF
   esac
 done
 
-# Resolve `ccide-core` early so Ghostty native-split capability can be probed before tmux bootstrap.
+# Always verify/upgrade `ccide-core` via resolver (fast when `.ccide-core.version` cache matches) before `ipc-dir` / `workspace detect`.
 SCRIPT_DIR="${0:A:h}"
 REPO_ROOT="${SCRIPT_DIR:h}"
+_resolver_sh="$HOME/.claude/scripts/ensure-ccide-core.sh"
+[[ -f "$_resolver_sh" ]] || _resolver_sh="$SCRIPT_DIR/ensure-ccide-core.sh"
+if [[ -f "$_resolver_sh" ]]; then
+  sh "$_resolver_sh" --version >/dev/null 2>&1 || true
+fi
 CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
 [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
-if [[ ! -x "$CCIDE_CORE_BIN" && -f "$SCRIPT_DIR/ensure-ccide-core.sh" ]]; then
-  sh "$SCRIPT_DIR/ensure-ccide-core.sh" --help >/dev/null 2>&1 || true
-  [[ -x "$HOME/.claude/bin/ccide-core" ]] && CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
+export CCIDE_CORE_BIN
+if [[ -z "${CCIDE_IPC_DIR:-}" && -x "$CCIDE_CORE_BIN" ]]; then
+  _ipc_dir="$("$CCIDE_CORE_BIN" ipc-dir 2>/dev/null || true)"
+  [[ -n "$_ipc_dir" && -d "$_ipc_dir" ]] && CCIDE_IPC_DIR="$_ipc_dir"
+fi
+export CCIDE_IPC_DIR="${CCIDE_IPC_DIR:-/tmp/.cc-ide-$(id -u)}"
+
+# Detect workspace backend canonically via `ccide-core workspace detect` (treating failure/pre-0.10 as `none`).
+DETECTED_BACKEND="none"
+if [[ -x "$CCIDE_CORE_BIN" ]]; then
+  _det="$("$CCIDE_CORE_BIN" workspace detect 2>/dev/null | head -n 1 || true)"
+  case "$_det" in
+    iterm|osc|wezterm|wt|ghostty|tmux|none) DETECTED_BACKEND="$_det" ;;
+  esac
 fi
 
-# If `--tmux` is requested (or running without a native split backend and without `$TMUX`),
-# bootstrap inside a dedicated `tmux -L ccide` server if not already inside `tmux`.
-IS_ITERM=0
-if [[ "${TERM_PROGRAM:-}" == "iTerm.app" || "${LC_TERMINAL:-}" == "iTerm2" || -n "${ITERM_SESSION_ID:-}" ]]; then
-  IS_ITERM=1
-fi
-NATIVE_SPLIT_OK=0
-if [[ "$IS_ITERM" -eq 1 || -n "${WEZTERM_PANE:-}" ]]; then
-  NATIVE_SPLIT_OK=1
-elif [[ "${TERM_PROGRAM:-}" == "ghostty" || -n "${GHOSTTY_RESOURCES_DIR:-}" ]]; then
-  if [[ -x "$CCIDE_CORE_BIN" ]] && "$CCIDE_CORE_BIN" workspace probe-ghostty >/dev/null 2>&1; then
-    NATIVE_SPLIT_OK=1
-  fi
-fi
-
-if [[ -z "${TMUX:-}" && ( "$BACKEND" == "tmux" || ( "$BACKEND" == "auto" && "$NATIVE_SPLIT_OK" -eq 0 ) ) ]]; then
+if [[ -z "${TMUX:-}" && ( "$BACKEND" == "tmux" || ( "$BACKEND" == "auto" && "$DETECTED_BACKEND" == "none" ) ) ]]; then
   if command -v tmux >/dev/null 2>&1 && [[ -z "${CLAUDECODE:-}" ]]; then
     SESSION_NAME="ccide-${PWD:t}-$$"
     QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
     exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-      "export CCIDE_BACKEND=tmux; exec ${(q)0} ${QUOTED_ORIG} --tmux"
+      "export CCIDE_BACKEND=tmux CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
   fi
 fi
 
 CACHE_DIR="$HOME/.cache/cc-ide"
-mkdir -p "$CACHE_DIR" /tmp/.cc-ide 2>/dev/null || true
+mkdir -p "$CACHE_DIR" 2>/dev/null || true
+mkdir -p -m 700 "$CCIDE_IPC_DIR" 2>/dev/null || mkdir -p "$CCIDE_IPC_DIR" 2>/dev/null || true
 
 # Deterministic numeric Yazi client ID
 YAZI_CLIENT_ID="$(( ($$ * 65537 + RANDOM * 257 + ${#TARGET_DIR}) & 0x7fffffff ))"
@@ -221,7 +226,7 @@ if [[ -z "$PANE_SPEC" && -z "${TMUX:-}" && "$BACKEND" == "auto" && -z "${CLAUDEC
   SESSION_NAME="ccide-${PWD:t}-$$"
   QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
   exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-    "export CCIDE_BACKEND=tmux; exec ${(q)0} ${QUOTED_ORIG} --tmux"
+    "export CCIDE_BACKEND=tmux CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
 fi
 
 if [[ -n "${CLAUDECODE:-}" ]]; then
@@ -236,7 +241,7 @@ export CC_YAZI_ID="$YAZI_CLIENT_ID"
 
 # Auto-repatch Claude Code binary seamlessly if it was auto-updated since last launch
 auto_ensure_claude_patched() {
-  local c_cli real_c target_exe cur_stamp stamp_file patcher py_bin
+  local c_cli real_c target_exe cur_stamp raw_stat stamp_file patcher py_bin
   c_cli="$(command -v claude || true)"
   [[ -n "$c_cli" ]] || return 0
   real_c="$(realpath "$c_cli" 2>/dev/null || readlink -f "$c_cli" 2>/dev/null || echo "$c_cli")"
@@ -245,7 +250,8 @@ auto_ensure_claude_patched() {
   [[ -f "$target_exe" && -w "$target_exe" ]] || return 0
 
   stamp_file="$CACHE_DIR/claude_bin.stamp"
-  cur_stamp="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
+  raw_stat="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
+  cur_stamp="${raw_stat:+r2:$raw_stat}"
   if [[ -n "$cur_stamp" && -f "$stamp_file" && "$(cat "$stamp_file" 2>/dev/null)" == "$cur_stamp" ]]; then
     return 0
   fi
@@ -255,8 +261,8 @@ auto_ensure_claude_patched() {
   py_bin="$(command -v python3 || true)"
   if [[ -f "$patcher" && -n "$py_bin" ]]; then
     if "$py_bin" -I "$patcher" --binary "$target_exe" >/dev/null 2>&1; then
-      cur_stamp="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
-      [[ -n "$cur_stamp" ]] && printf '%s' "$cur_stamp" > "$stamp_file"
+      raw_stat="$(stat -f '%i:%z:%m' "$target_exe" 2>/dev/null || stat -c '%i:%s:%Y' "$target_exe" 2>/dev/null || echo "")"
+      [[ -n "$raw_stat" ]] && printf 'r2:%s' "$raw_stat" > "$stamp_file"
     fi
   fi
 }

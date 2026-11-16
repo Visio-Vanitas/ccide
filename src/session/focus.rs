@@ -3,15 +3,21 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::json::{extract_json_object, extract_json_str, extract_json_u64};
 use crate::platform::{
-    clean_canonicalize, find_executable, ipc_dir, ipc_path, normalize_slashes, yazi_config_dir,
+    atomic_write, clean_canonicalize, find_executable, ipc_dir, ipc_path, normalize_slashes,
+    yazi_config_dir,
 };
 use crate::session::normalize_path_under_cwd;
 
 const MAX_SNIPPET_SCAN_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_YA_WAITERS: usize = 4;
+const YA_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+
+static YA_WAITERS: AtomicUsize = AtomicUsize::new(0);
 
 /// Matches `url_hash(s)` in `assets/yazi-hscroll.lua` bit-for-bit across Unix and Windows (`/` normalized).
 pub fn yazi_url_hash(s: &str) -> String {
@@ -131,11 +137,6 @@ fn write_focus_marker(path_key: &str, line: usize, span: usize, pending: bool, n
         let _ = fs::remove_file(&fpath);
         return;
     }
-    let tmp = ipc_path(&format!(
-        "yf_{}.txt.tmp.{}",
-        yazi_url_hash(path_key),
-        std::process::id()
-    ));
     let body = format!(
         "{}\n{}\n{}\n{}\n",
         line,
@@ -143,9 +144,52 @@ fn write_focus_marker(path_key: &str, line: usize, span: usize, pending: bool, n
         u8::from(pending),
         now_s
     );
-    if fs::write(&tmp, &body).is_ok() && fs::rename(&tmp, &fpath).is_err() {
-        let _ = fs::write(&fpath, &body);
-        let _ = fs::remove_file(&tmp);
+    let _ = atomic_write(&fpath, body.as_bytes());
+}
+
+fn spawn_bounded_ya_emit(mut cmd: Command) {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut cur = YA_WAITERS.load(Ordering::Relaxed);
+    while cur < MAX_YA_WAITERS {
+        match YA_WAITERS.compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => {
+                struct WaiterGuard;
+                impl Drop for WaiterGuard {
+                    fn drop(&mut self) {
+                        YA_WAITERS.fetch_sub(1, Ordering::AcqRel);
+                    }
+                }
+                let guard = WaiterGuard;
+                let Ok(mut child) = cmd.spawn() else {
+                    return;
+                };
+                if std::thread::Builder::new()
+                    .name("ccide-ya-wait".into())
+                    .spawn(move || {
+                        let _guard = guard;
+                        let deadline = Instant::now() + YA_WAIT_TIMEOUT;
+                        loop {
+                            match child.try_wait() {
+                                Ok(Some(_)) | Err(_) => break,
+                                Ok(None) if Instant::now() >= deadline => {
+                                    let _ = child.kill();
+                                    let _ = child.wait();
+                                    break;
+                                }
+                                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                            }
+                        }
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                return;
+            }
+            Err(actual) => cur = actual,
+        }
     }
 }
 
@@ -192,14 +236,7 @@ pub fn emit_yazi_reveal_at(
     } else {
         cmd.args(["emit-to", tab_yazi_id, "reveal", &mapped]);
     }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Ok(mut c) = cmd.spawn() {
-        let _ = std::thread::spawn(move || {
-            let _ = c.wait();
-        });
-    }
+    spawn_bounded_ya_emit(cmd);
 }
 
 /// Clears Yazi's file-list selection bar (`blur`) when keyboard/mouse focus moves to another column.
@@ -213,15 +250,8 @@ pub fn emit_yazi_blur(home: &str, tab_yazi_id: &str) {
     }
     if let Some(ya_bin) = find_executable("ya", home) {
         let mut cmd = Command::new(ya_bin);
-        cmd.args(["emit-to", tab_yazi_id, "plugin", "hscroll", "blur"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Ok(mut c) = cmd.spawn() {
-            let _ = std::thread::spawn(move || {
-                let _ = c.wait();
-            });
-        }
+        cmd.args(["emit-to", tab_yazi_id, "plugin", "hscroll", "blur"]);
+        spawn_bounded_ya_emit(cmd);
     }
 }
 

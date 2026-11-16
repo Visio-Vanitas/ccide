@@ -1,14 +1,21 @@
 //! Environment, Companion Tool & Binary Patch Health Diagnostics (`ccide-core doctor [--json]`).
 
+#[path = "doctor_probes.rs"]
+mod doctor_probes;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use crate::commands::setup::doctor_render::{format_doctor_json, print_doctor_tui};
-use crate::json::{extract_json_bool, extract_json_str};
-use crate::platform::{clean_canonicalize, find_executable, ipc_path, user_home_dir};
-use crate::tui::width::trunc_to_width;
+use crate::commands::workspace::ghostty::{probe_ghostty, GhosttyCap};
+use crate::json::extract_json_str;
+use crate::platform::{clean_canonicalize, find_executable, ipc_dir, user_home_dir};
+
+use doctor_probes::{
+    cmd_first_line, probe_claude_and_orchestrator, probe_companion_tools, probe_legacy_patch_proto,
+    probe_macos_iterm,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckStatus {
@@ -28,31 +35,15 @@ pub struct DoctorItem {
 pub struct DoctorReport {
     pub os_arch: String,
     pub backend_tier: String,
+    pub ipc_dir: String,
+    pub ghostty_cap: &'static str,
+    pub legacy_patch: bool,
     pub items: Vec<DoctorItem>,
     pub missing_hint: String,
 }
 
-fn cmd_first_line(bin: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new(bin)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .ok()?;
-    let txt = if !out.stdout.is_empty() {
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    } else {
-        String::from_utf8_lossy(&out.stderr).into_owned()
-    };
-    txt.lines()
-        .map(|l| l.trim())
-        .find(|l| !l.is_empty())
-        .map(String::from)
-}
-
 /// Shorthand for a `DoctorItem`.
-fn item(status: CheckStatus, label: &str, detail: String) -> DoctorItem {
+pub(super) fn item(status: CheckStatus, label: &str, detail: String) -> DoctorItem {
     DoctorItem {
         status,
         label: label.to_string(),
@@ -99,6 +90,7 @@ pub fn resolve_project_root(explicit_arg: Option<&str>, home: &str) -> PathBuf {
 
 pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     let os_arch = format!("{}/{}", env::consts::OS, env::consts::ARCH);
+    let ipc_dir_s = ipc_dir().to_string_lossy().into_owned();
     let is_ssh = env::var("SSH_CONNECTION").is_ok() || env::var("SSH_TTY").is_ok();
     let is_tmux = env::var("TMUX").is_ok();
     let is_wezterm =
@@ -113,10 +105,13 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         || env::var("GHOSTTY_RESOURCES_DIR")
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false);
-    let ghostty_native = is_ghostty
-        && !is_tmux
-        && !is_ssh
-        && crate::commands::workspace::ghostty::probe_ghostty_native_capable(home);
+    let ghostty_cap_enum = if is_ghostty && !is_tmux && !is_ssh {
+        probe_ghostty(home)
+    } else {
+        GhosttyCap::None
+    };
+    let ghostty_cap = ghostty_cap_enum.as_str();
+    let ghostty_native = ghostty_cap_enum == GhosttyCap::MacOsAppleScript;
 
     let backend_tier = if cfg!(windows) {
         if is_wezterm {
@@ -136,7 +131,6 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         if ghostty_native {
             "Ghostty · Native Metal Split Engine + Kitty APC Sprites".to_string()
         } else if cfg!(target_os = "macos") {
-            // The `Ghostty 1.3+` native split path is macOS-only.
             "Ghostty · Tier 3 tmux Engine + Kitty Sprites (Ghostty 1.3+ enables native splits)"
                 .to_string()
         } else {
@@ -147,73 +141,11 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     };
 
     let mut items = Vec::new();
-    let mut missing_pkgs: Vec<&str> = Vec::new();
+    let mut missing_pkgs: Vec<&'static str> = Vec::new();
     let is_macos = cfg!(target_os = "macos");
 
-    let claude_bin = find_executable("claude", home);
-    let patcher_py = [
-        project_root.join("scripts/patch_claude_binary.py"),
-        Path::new(home).join(".claude/scripts/patch_claude_binary.py"),
-    ]
-    .into_iter()
-    .find(|p| p.is_file());
-    let python_bin = find_executable("python3", home).or_else(|| find_executable("python", home));
-
-    match (&claude_bin, &patcher_py, &python_bin) {
-        (Some(cbin), Some(ppy), Some(py)) => {
-            let ver = cmd_first_line(cbin, &["--version"]).unwrap_or_else(|| "found".to_string());
-            let req_ok = Command::new(py)
-                .args(["-I", ppy.to_str().unwrap_or(""), "--verify"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .output()
-                .ok()
-                .and_then(|o| extract_json_bool(&String::from_utf8_lossy(&o.stdout), "required_ok"))
-                .unwrap_or(false);
-            let st = if req_ok {
-                CheckStatus::Ok
-            } else {
-                CheckStatus::Warn
-            };
-            let d = if req_ok {
-                format!("{ver} · structural anchors verified")
-            } else {
-                format!("{ver} · patch anchors need update")
-            };
-            items.push(item(st, "Claude Code", d));
-        }
-        (Some(cbin), _, _) => {
-            let d = cmd_first_line(cbin, &["--version"]).unwrap_or_else(|| "found".to_string());
-            items.push(item(CheckStatus::Ok, "Claude Code", d));
-        }
-        (None, _, _) => {
-            let d = "not found (npm i -g @anthropic-ai/claude-code)".to_string();
-            items.push(item(CheckStatus::Warn, "Claude Code", d));
-        }
-    }
-
-    let settings_txt =
-        fs::read_to_string(Path::new(home).join(".claude/settings.json")).unwrap_or_default();
-    let locked_vars: Vec<&str> = [
-        "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL",
-        "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
-    ]
-    .into_iter()
-    .filter(|k| {
-        env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false)
-            || extract_json_str(&settings_txt, k)
-                .map(|v| !v.trim().is_empty())
-                .unwrap_or(false)
-    })
-    .collect();
-    if !locked_vars.is_empty() {
-        let d = format!(
-            "{} set (locks Workflow per-agent model overrides)",
-            locked_vars.join(", ")
-        );
-        items.push(item(CheckStatus::Warn, "Orchestrator", d));
-    }
+    probe_claude_and_orchestrator(home, project_root, &mut items);
+    let legacy_patch = probe_legacy_patch_proto(home, &mut items);
 
     if cfg!(windows) {
         let wez = find_executable("wezterm", home);
@@ -235,75 +167,24 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         };
         items.push(item(st, "Split Engine", det.to_string()));
     } else if is_macos && is_iterm {
-        let iterm_app = [
-            PathBuf::from("/Applications/iTerm.app"),
-            Path::new(home).join("Applications/iTerm.app"),
-        ]
-        .into_iter()
-        .find(|p| p.is_dir());
-        let sock_live = ipc_path("iterm_daemon.sock").exists();
-        let pyenv_py = Path::new(home).join(".local/share/cc-ide/pyenv/bin/python3");
-        let rec_py = fs::read_to_string(Path::new(home).join(".cache/cc-ide/python_bin"))
-            .ok()
-            .map(|s| PathBuf::from(s.trim()))
-            .filter(|p| p.is_file());
-        let py_cand = if pyenv_py.is_file() {
-            Some(pyenv_py)
-        } else {
-            rec_py
-        };
-        let py_iterm_ok = py_cand
-            .as_ref()
-            .and_then(|py| {
-                Command::new(py)
-                    .args(["-I", "-c", "import iterm2"])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .ok()
-            })
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        if sock_live {
-            let d = "warm socket active (/tmp/.cc-ide/iterm_daemon.sock)".to_string();
-            items.push(item(CheckStatus::Ok, "iTerm2 Daemon", d));
-        } else if iterm_app.is_some() && py_iterm_ok {
-            items.push(item(
-                CheckStatus::Info,
-                "iTerm2 Daemon",
-                "iterm2 venv ready · socket starts on install / launch".to_string(),
-            ));
-        } else if iterm_app.is_some() {
-            items.push(item(
-                CheckStatus::Warn,
-                "iTerm2 API",
-                "run ./install.sh to provision ~/.local/share/cc-ide/pyenv + API".to_string(),
-            ));
-        } else if let Some(tbin) = find_executable("tmux", home) {
-            let tv = cmd_first_line(&tbin, &["-V"]).unwrap_or_else(|| "tmux".to_string());
-            items.push(item(
-                CheckStatus::Ok,
-                "Split Engine",
-                format!("{tv} (iTerm2 not found · Tier 3 active)"),
-            ));
-        }
+        probe_macos_iterm(home, &mut items);
     } else if is_wezterm && !is_tmux {
         let wv = find_executable("wezterm", home)
             .and_then(|b| cmd_first_line(&b, &["--version"]))
             .unwrap_or_else(|| "wezterm".to_string());
-        let det = format!("{wv} (native CLI split engine)");
-        items.push(item(CheckStatus::Ok, "Split Engine", det));
+        items.push(item(
+            CheckStatus::Ok,
+            "Split Engine",
+            format!("{wv} (native CLI split engine)"),
+        ));
     } else if is_ghostty && !is_tmux && !is_ssh {
         let det = if ghostty_native {
             "Ghostty · Native Metal Split Engine + Kitty APC Sprites".to_string()
         } else if cfg!(target_os = "macos") {
-            // The `Ghostty 1.3+` native split path is macOS-only.
             "Ghostty · Tier 3 tmux Engine + Kitty Sprites (Ghostty 1.3+ enables native splits)"
                 .to_string()
         } else {
-            "Ghostty · Tier 3 tmux Engine + Kitty APC Sprites".to_string()
+            format!("Ghostty ({ghostty_cap}) · Tier 3 tmux Engine + Kitty APC Sprites")
         };
         let status = if ghostty_native || find_executable("tmux", home).is_some() {
             CheckStatus::Ok
@@ -328,75 +209,7 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
         ));
     }
 
-    match (find_executable("yazi", home), find_executable("ya", home)) {
-        (Some(yb), Some(_)) => items.push(item(
-            CheckStatus::Ok,
-            "Yazi + ya",
-            cmd_first_line(&yb, &["--version"]).unwrap_or_else(|| "installed".to_string()),
-        )),
-        _ => {
-            missing_pkgs.push(if cfg!(windows) { "sxyazi.yazi" } else { "yazi" });
-            items.push(item(
-                CheckStatus::Warn,
-                "Yazi + ya",
-                "missing (left-top file tree pane)".to_string(),
-            ));
-        }
-    }
-
-    if let Some(lgb) = find_executable("lazygit", home) {
-        let lv = cmd_first_line(&lgb, &["--version"]).unwrap_or_else(|| "installed".to_string());
-        let short_lv = lv
-            .split(',')
-            .find(|s| s.trim_start().starts_with("version="))
-            .map(|s| format!("lazygit {}", s.trim().trim_start_matches("version=")))
-            .unwrap_or(lv);
-        items.push(item(
-            CheckStatus::Ok,
-            "Lazygit",
-            trunc_to_width(&short_lv, 44),
-        ));
-    } else {
-        missing_pkgs.push(if cfg!(windows) {
-            "JesseDuffield.lazygit"
-        } else {
-            "lazygit"
-        });
-        items.push(item(
-            CheckStatus::Warn,
-            "Lazygit",
-            "missing (left-bottom Git diff/graph pane)".to_string(),
-        ));
-    }
-
-    let has_delta = find_executable("delta", home).is_some();
-    let has_glow = find_executable("glow", home).is_some();
-    if !has_delta {
-        missing_pkgs.push(if cfg!(windows) {
-            "dandavison.delta"
-        } else {
-            "git-delta"
-        });
-    }
-    if !has_glow {
-        missing_pkgs.push(if cfg!(windows) {
-            "charmbracelet.glow"
-        } else {
-            "glow"
-        });
-    }
-    let dg_status = if has_delta && has_glow {
-        CheckStatus::Ok
-    } else {
-        CheckStatus::Info
-    };
-    let dg_detail = match (has_delta, has_glow) {
-        (true, true) => "delta + glow active",
-        (true, false) => "delta active · glow using Python fallback",
-        (false, true) => "glow active · diff using Python fallback",
-        (false, false) => "using built-in zero-dep Python ANSI renderers",
-    };
-    items.push(item(dg_status, "Delta & Glow", dg_detail.to_string()));
+    probe_companion_tools(home, &mut items, &mut missing_pkgs);
 
     let joined = missing_pkgs.join(" ");
     let missing_hint = if missing_pkgs.is_empty() {
@@ -412,6 +225,9 @@ pub fn collect_doctor_report(home: &str, project_root: &Path) -> DoctorReport {
     DoctorReport {
         os_arch,
         backend_tier,
+        ipc_dir: ipc_dir_s,
+        ghostty_cap,
+        legacy_patch,
         items,
         missing_hint,
     }
@@ -443,6 +259,9 @@ mod tests {
         let rep = DoctorReport {
             os_arch: "windows/x86_64".to_string(),
             backend_tier: "Tier 1 (Win) · WezTerm".to_string(),
+            ipc_dir: "C:/Temp/.cc-ide".to_string(),
+            ghostty_cap: "none",
+            legacy_patch: false,
             items: vec![item(
                 CheckStatus::Ok,
                 "Claude Code",
@@ -454,5 +273,10 @@ mod tests {
         assert!(js.contains("\"schema_version\": 1"));
         assert!(js.contains("\"healthy\": true"));
         assert!(js.contains("2.1.323 \\\"ok\\\""));
+        assert!(js.contains("\"ipc_dir\": \"C:/Temp/.cc-ide\""));
+        assert!(js.contains("\"ipc_proto\": 1"));
+        assert!(js.contains("\"patch_proto\": 1"));
+        assert!(js.contains("\"ghostty_cap\": \"none\""));
+        assert!(js.contains("\"legacy_patch\": false"));
     }
 }

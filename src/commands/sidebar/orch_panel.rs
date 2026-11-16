@@ -231,6 +231,7 @@ mod tests {
             main_span: 0,
             viewport_h: 8,
             cost_max_scroll: 6,
+            switch_signal_ok: std::cell::Cell::new(None),
             hit_mask: SidebarGeomMask {
                 cols: 40,
                 top_h: 11,

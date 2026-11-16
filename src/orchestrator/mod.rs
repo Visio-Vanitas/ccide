@@ -10,12 +10,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::json::{extract_json_object, extract_json_str};
-use crate::session::is_valid_model_name;
-use crate::tui::context::json_scan::{extract_json_array_slice, extract_string_list_in_array};
-use crate::tui::palette::strip_jsonc_comments;
+use crate::json::{
+    extract_json_array_slice, extract_json_object, extract_json_str, extract_string_list_in_array,
+    strip_jsonc,
+};
+use crate::model_id::is_valid_model_name;
 
-pub use shims::{gp_shim_name, model_from_shim_agent_type, ro_shim_name, sync_agent_shims};
+#[allow(unused_imports)]
+pub use crate::model_id::{gp_shim_name, model_from_shim_agent_type, ro_shim_name};
+pub use shims::sync_agent_shims;
 
 pub const EFFORT_TIERS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "inherit"];
 
@@ -154,7 +157,7 @@ impl OrchestratorConfig {
         let Ok(raw) = fs::read_to_string(resolve_orchestrator_path(home)) else {
             return cfg;
         };
-        let clean = strip_jsonc_comments(&raw);
+        let clean = strip_jsonc(&raw);
         if let Some(ap) = extract_json_str(&clean, "active_preset").filter(|s| !s.is_empty()) {
             cfg.active_preset = ap;
         }

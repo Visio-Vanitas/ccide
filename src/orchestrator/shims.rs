@@ -6,72 +6,14 @@
 use std::fs;
 use std::path::Path;
 
+use crate::json::json_escape;
+pub use crate::model_id::{gp_shim_name, ro_shim_name};
+#[allow(unused_imports)]
+pub use crate::model_id::{model_from_shim_agent_type, model_slug};
 use crate::orchestrator::{
     resolve_orchestrator_path, OrchestratorConfig, RoleKind, ALL_ROLES, EFFORT_TIERS,
 };
-
-pub fn model_slug(model_id: &str) -> String {
-    let mut out = String::with_capacity(model_id.len());
-    let mut prev_dash = false;
-    for ch in model_id.trim().chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            prev_dash = false;
-        } else if !prev_dash && !out.is_empty() {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    if out.is_empty() {
-        "inherit".to_string()
-    } else {
-        out
-    }
-}
-
-pub fn gp_shim_name(model_id: &str) -> String {
-    format!("ccide-gp--{}", model_slug(model_id))
-}
-
-pub fn ro_shim_name(model_id: &str) -> String {
-    format!("ccide-ro--{}", model_slug(model_id))
-}
-
-/// Resolves `(clean_role_badge, model_id)` if `agent_type` is a managed `ccide-{gp,ro}--<slug>` shim.
-pub fn model_from_shim_agent_type(home: &str, agent_type: &str) -> Option<(&'static str, String)> {
-    let clean_name = agent_type.rsplit(':').next().unwrap_or(agent_type);
-    if clean_name.contains('/') || clean_name.contains('\\') || clean_name.contains("..") {
-        return None;
-    }
-    let role_badge = if clean_name.starts_with("ccide-ro--") {
-        "scout"
-    } else if clean_name.starts_with("ccide-gp--") {
-        "worker"
-    } else {
-        return None;
-    };
-    let md_path = Path::new(home)
-        .join(".claude")
-        .join("agents")
-        .join(format!("{}.md", clean_name));
-    if let Ok(txt) = fs::read_to_string(md_path) {
-        for line in txt.lines().take(12) {
-            if let Some(rest) = line.trim().strip_prefix("model:") {
-                let m = rest.trim().trim_matches('"').trim_matches('\'');
-                if !m.is_empty() {
-                    return Some((role_badge, m.to_string()));
-                }
-            }
-        }
-    }
-    let slug = clean_name
-        .strip_prefix("ccide-gp--")
-        .or_else(|| clean_name.strip_prefix("ccide-ro--"))?;
-    Some((role_badge, slug.to_string()))
-}
+use crate::platform::atomic_write;
 
 fn write_if_changed(path: &Path, content: &str) {
     if let Ok(existing) = fs::read_to_string(path) {
@@ -79,11 +21,7 @@ fn write_if_changed(path: &Path, content: &str) {
             return;
         }
     }
-    let tmp = path.with_extension(format!("md.tmp.{}", std::process::id()));
-    if fs::write(&tmp, content).is_ok() && fs::rename(&tmp, path).is_err() {
-        let _ = fs::write(path, content);
-        let _ = fs::remove_file(&tmp);
-    }
+    let _ = atomic_write(path, content.as_bytes());
 }
 
 /// Synchronizes `~/.claude/agents/ccide-{gp,ro}--<slug>.md` shims for every model in `pool`.
@@ -131,22 +69,6 @@ pub fn sync_agent_shims(home: &str, pool: &[String]) {
             }
         }
     }
-}
-
-fn esc_json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 8);
-    for ch in s.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 impl OrchestratorConfig {
@@ -206,7 +128,7 @@ impl OrchestratorConfig {
         );
         out.push_str(&format!(
             "  \"active_preset\": \"{}\",\n  \"model_pool\": [\n",
-            esc_json(&self.active_preset)
+            json_escape(&self.active_preset)
         ));
         for (i, m) in self.model_pool.iter().enumerate() {
             let comma = if i + 1 < self.model_pool.len() {
@@ -214,24 +136,24 @@ impl OrchestratorConfig {
             } else {
                 ""
             };
-            out.push_str(&format!("    \"{}\"{}\n", esc_json(m), comma));
+            out.push_str(&format!("    \"{}\"{}\n", json_escape(m), comma));
         }
         out.push_str("  ],\n  \"presets\": {\n");
         for (pi, prof) in self.presets.iter().enumerate() {
-            out.push_str(&format!("    \"{}\": {{\n", esc_json(&prof.name)));
+            out.push_str(&format!("    \"{}\": {{\n", json_escape(&prof.name)));
             for (ri, role) in ALL_ROLES.iter().enumerate() {
                 let slot = prof.slot(*role);
                 let ms: Vec<String> = slot
                     .models
                     .iter()
-                    .map(|m| format!("\"{}\"", esc_json(m)))
+                    .map(|m| format!("\"{}\"", json_escape(m)))
                     .collect();
                 let rcomma = if ri + 1 < ALL_ROLES.len() { "," } else { "" };
                 out.push_str(&format!(
                     "      \"{}\": {{ \"models\": [{}], \"effort\": \"{}\" }}{}\n",
                     role.key(),
                     ms.join(", "),
-                    esc_json(&slot.effort),
+                    json_escape(&slot.effort),
                     rcomma
                 ));
             }
@@ -244,15 +166,8 @@ impl OrchestratorConfig {
 
     pub fn save(&self, home: &str) {
         let dst = resolve_orchestrator_path(home);
-        if let Some(parent) = dst.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
         let body = self.to_jsonc_string();
-        let tmp = dst.with_extension(format!("json.tmp.{}", std::process::id()));
-        if fs::write(&tmp, &body).is_ok() && fs::rename(&tmp, &dst).is_err() {
-            let _ = fs::write(&dst, &body);
-            let _ = fs::remove_file(&tmp);
-        }
+        let _ = atomic_write(&dst, body.as_bytes());
         sync_agent_shims(home, &self.model_pool);
     }
 }

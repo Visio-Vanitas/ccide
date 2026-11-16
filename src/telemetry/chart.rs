@@ -27,13 +27,10 @@ pub fn render_multirow_curve<'a>(
     col_high: &'a str,
     grid_dot: &str,
 ) -> Vec<String> {
-    let height = height.max(1);
-    let width = width.max(8);
-    let start = samples.len().saturating_sub(width);
-    let sliced = &samples[start..];
+    let (height, width) = (height.max(1), width.max(8));
+    let sliced = &samples[samples.len().saturating_sub(width)..];
     let pad_n = width.saturating_sub(sliced.len());
     let first_v = sliced.first().copied().unwrap_or(0.0);
-
     let total_eighths = (height * 8) as f64;
     let mut rows_out = Vec::with_capacity(height);
 
@@ -61,7 +58,6 @@ pub fn render_multirow_curve<'a>(
                 fill_8 = 1;
             }
             let rem = fill_8 - row_from_bottom * 8;
-
             if rem <= 0 {
                 if !active_color.is_empty() {
                     s.push_str(RESET);
@@ -73,8 +69,7 @@ pub fn render_multirow_curve<'a>(
                     s.push(' ');
                 }
             } else {
-                let lvl = (rem.min(8)) as usize;
-                let ch = SPARK_BLOCKS[lvl];
+                let ch = SPARK_BLOCKS[(rem.min(8)) as usize];
                 let c_use = if v >= 80.0 {
                     col_high
                 } else if v >= 45.0 {
@@ -107,29 +102,61 @@ pub fn build_telemetry_panel_rows(
     let avail = panel_height.saturating_sub(2).max(8);
     let curve_w = inner_w.saturating_sub(2).max(10);
     let use_dividers = avail >= 15;
-    let overhead = if use_dividers { 7 } else { 4 };
-    let curve_budget = avail.saturating_sub(overhead).max(4);
+    let curve_budget = avail
+        .saturating_sub(if use_dividers { 7 } else { 4 })
+        .max(4);
 
     let h_cpu = (curve_budget / 4 + usize::from(curve_budget % 4 >= 1)).max(1);
     let h_gpu = (curve_budget / 4 + usize::from(curve_budget % 4 >= 2)).max(1);
     let h_mem = (curve_budget / 4 + usize::from(curve_budget % 4 >= 3)).max(1);
     let h_net = curve_budget.saturating_sub(h_cpu + h_gpu + h_mem).max(1);
 
-    let white = &pal.text;
-    let dim = &pal.dim;
-    let cyan = &pal.cyan;
-    let green = &pal.green;
-    let amber = &pal.amber;
-    let coral = &pal.coral;
-    let blue = &pal.blue;
-    let mint = &pal.mint;
-    let lavender = &pal.lavender;
-    let grid_dot = &pal.grid_dot;
-
+    let (white, dim, cyan, green, amber, coral, blue, mint, lavender, grid_dot) = (
+        &pal.text,
+        &pal.dim,
+        &pal.cyan,
+        &pal.green,
+        &pal.amber,
+        &pal.coral,
+        &pal.blue,
+        &pal.mint,
+        &pal.lavender,
+        &pal.grid_dot,
+    );
     let div_str = format!(" {}{}{RESET}", pal.divider, "┄".repeat(curve_w));
+    let row_fmt = RowLayout::new(inner_w + 2);
     let mut rows = Vec::with_capacity(avail);
 
-    // 1. CPU
+    let push_sec = |rows: &mut Vec<BoxRow>,
+                    left: String,
+                    right: String,
+                    hist: &[f64],
+                    h: usize,
+                    c_lo: &str,
+                    c_md: &str,
+                    c_hi: &str,
+                    div: Option<&str>| {
+        rows.push(BoxRow {
+            text: row_fmt.split(&left, &right, 1),
+            bg: String::new(),
+            tag: None,
+        });
+        for cl in render_multirow_curve(hist, curve_w, h, c_lo, c_md, c_hi, grid_dot) {
+            rows.push(BoxRow {
+                text: format!(" {cl}"),
+                bg: String::new(),
+                tag: None,
+            });
+        }
+        if let Some(d) = div {
+            rows.push(BoxRow {
+                text: d.to_string(),
+                bg: String::new(),
+                tag: None,
+            });
+        }
+    };
+
     let cpu_c = if sampler.cpu_pct >= 80.0 {
         coral
     } else if sampler.cpu_pct >= 45.0 {
@@ -137,43 +164,22 @@ pub fn build_telemetry_panel_rows(
     } else {
         mint
     };
-    let row_fmt = RowLayout::new(inner_w + 2);
-    rows.push(BoxRow {
-        text: row_fmt.split(
-            &format!(
-                "{cpu_c}●{RESET} {BOLD}{white}CPU{RESET} {dim}{}C{RESET}  {BOLD}{cpu_c}{:4.1}%{RESET}",
-                sampler.cpu_cores, sampler.cpu_pct
-            ),
-            &format!("{dim}load {:.2}{RESET}", sampler.load_1m),
-            1,
+    let div_opt = use_dividers.then_some(div_str.as_str());
+    push_sec(
+        &mut rows,
+        format!(
+            "{cpu_c}●{RESET} {BOLD}{white}CPU{RESET} {dim}{}C{RESET}  {BOLD}{cpu_c}{:4.1}%{RESET}",
+            sampler.cpu_cores, sampler.cpu_pct
         ),
-        bg: String::new(),
-        tag: None,
-    });
-    for cl in render_multirow_curve(
+        format!("{dim}load {:.2}{RESET}", sampler.load_1m),
         &sampler.cpu_hist,
-        curve_w,
         h_cpu,
         mint,
         cyan,
         coral,
-        grid_dot,
-    ) {
-        rows.push(BoxRow {
-            text: format!(" {}", cl),
-            bg: String::new(),
-            tag: None,
-        });
-    }
-    if use_dividers {
-        rows.push(BoxRow {
-            text: div_str.clone(),
-            bg: String::new(),
-            tag: None,
-        });
-    }
+        div_opt,
+    );
 
-    // 2. GPU
     let gpu_c = if sampler.gpu_pct >= 80.0 {
         coral
     } else if sampler.gpu_pct >= 45.0 {
@@ -185,42 +191,21 @@ pub fn build_telemetry_panel_rows(
     let gpu_tag = "AGX";
     #[cfg(not(target_os = "macos"))]
     let gpu_tag = "DEV";
-    rows.push(BoxRow {
-        text: row_fmt.split(
-            &format!(
-                "{gpu_c}●{RESET} {BOLD}{white}GPU{RESET} {dim}{gpu_tag}{RESET}  {BOLD}{gpu_c}{:4.1}%{RESET}",
-                sampler.gpu_pct
-            ),
-            &format!("{dim}vram {:.1}G{RESET}", sampler.gpu_vram_gb),
-            1,
+    push_sec(
+        &mut rows,
+        format!(
+            "{gpu_c}●{RESET} {BOLD}{white}GPU{RESET} {dim}{gpu_tag}{RESET}  {BOLD}{gpu_c}{:4.1}%{RESET}",
+            sampler.gpu_pct
         ),
-        bg: String::new(),
-        tag: None,
-    });
-    for cl in render_multirow_curve(
+        format!("{dim}vram {:.1}G{RESET}", sampler.gpu_vram_gb),
         &sampler.gpu_hist,
-        curve_w,
         h_gpu,
         blue,
         cyan,
         amber,
-        grid_dot,
-    ) {
-        rows.push(BoxRow {
-            text: format!(" {}", cl),
-            bg: String::new(),
-            tag: None,
-        });
-    }
-    if use_dividers {
-        rows.push(BoxRow {
-            text: div_str.clone(),
-            bg: String::new(),
-            tag: None,
-        });
-    }
+        div_opt,
+    );
 
-    // 3. MEM
     let mem_c = if sampler.mem_pct >= 85.0 {
         coral
     } else if sampler.mem_pct >= 70.0 {
@@ -228,71 +213,36 @@ pub fn build_telemetry_panel_rows(
     } else {
         lavender
     };
-    rows.push(BoxRow {
-        text: row_fmt.split(
-            &format!(
-                "{mem_c}●{RESET} {BOLD}{white}MEM{RESET} {dim}{:.0}G{RESET}  {BOLD}{mem_c}{:4.1}%{RESET}",
-                sampler.total_mem_gb, sampler.mem_pct
-            ),
-            &format!("{dim}{:.1}/{:.0}G{RESET}", sampler.mem_used_gb, sampler.total_mem_gb),
-            1,
+    push_sec(
+        &mut rows,
+        format!(
+            "{mem_c}●{RESET} {BOLD}{white}MEM{RESET} {dim}{:.0}G{RESET}  {BOLD}{mem_c}{:4.1}%{RESET}",
+            sampler.total_mem_gb, sampler.mem_pct
         ),
-        bg: String::new(),
-        tag: None,
-    });
-    for cl in render_multirow_curve(
+        format!("{dim}{:.1}/{:.0}G{RESET}", sampler.mem_used_gb, sampler.total_mem_gb),
         &sampler.mem_hist,
-        curve_w,
         h_mem,
         lavender,
         amber,
         coral,
-        grid_dot,
-    ) {
-        rows.push(BoxRow {
-            text: format!(" {}", cl),
-            bg: String::new(),
-            tag: None,
-        });
-    }
-    if use_dividers {
-        rows.push(BoxRow {
-            text: div_str,
-            bg: String::new(),
-            tag: None,
-        });
-    }
+        div_opt,
+    );
 
-    // 4. NET
-    let rx_s = fmt_rate(sampler.net_rx_bps);
-    let tx_s = fmt_rate(sampler.net_tx_bps);
-    rows.push(BoxRow {
-        text: row_fmt.split(
-            &format!(
-                "{cyan}●{RESET} {BOLD}{white}NET{RESET} {green}▼{:>4}{RESET} {amber}▲{:>4}{RESET}",
-                rx_s, tx_s
-            ),
-            &format!("{dim}pk {}/s{RESET}", fmt_rate(sampler.net_peak_bps)),
-            1,
+    push_sec(
+        &mut rows,
+        format!(
+            "{cyan}●{RESET} {BOLD}{white}NET{RESET} {green}▼{:>4}{RESET} {amber}▲{:>4}{RESET}",
+            fmt_rate(sampler.net_rx_bps),
+            fmt_rate(sampler.net_tx_bps)
         ),
-        bg: String::new(),
-        tag: None,
-    });
-    for cl in render_multirow_curve(
+        format!("{dim}pk {}/s{RESET}", fmt_rate(sampler.net_peak_bps)),
         &sampler.net_hist,
-        curve_w,
         h_net,
         cyan,
         mint,
         green,
-        grid_dot,
-    ) {
-        rows.push(BoxRow {
-            text: format!(" {}", cl),
-            bg: String::new(),
-            tag: None,
-        });
-    }
+        None,
+    );
 
     rows.truncate(avail);
     rows

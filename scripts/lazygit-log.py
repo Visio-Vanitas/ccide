@@ -17,6 +17,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -67,7 +68,12 @@ def visible_width(s: str) -> int:
 
 def get_ipc_dir() -> str:
     return os.environ.get("CCIDE_IPC_DIR") or (
-        os.path.join(tempfile.gettempdir(), ".cc-ide") if os.name == "nt" else "/tmp/.cc-ide"
+        os.path.join(
+            os.environ.get("TEMP") or os.environ.get("TMP") or tempfile.gettempdir(),
+            ".cc-ide",
+        )
+        if os.name == "nt"
+        else f"/tmp/.cc-ide-{os.getuid()}"
     )
 
 
@@ -80,7 +86,7 @@ def get_sid_str() -> str:
 def write_full_lines_cache(sid_str: str, panel_w: int, full_lines: list[str]) -> None:
     try:
         ipc_dir = get_ipc_dir()
-        os.makedirs(ipc_dir, exist_ok=True)
+        os.makedirs(ipc_dir, mode=0o700, exist_ok=True)
         dst = os.path.join(ipc_dir, f"lg_full_{sid_str}.json")
         h = hashlib.blake2s(f"{panel_w}\0".encode("utf-8"), digest_size=12)
         for ln in full_lines:

@@ -30,7 +30,24 @@ except ModuleNotFoundError:
             os.execv(cand, [cand] + sys.argv)
     raise
 
-DAEMON_SOCK = "/tmp/.cc-ide/iterm_daemon.sock"
+IPC_DIR = os.environ.get("CCIDE_IPC_DIR") or f"/tmp/.cc-ide-{os.getuid()}"
+DAEMON_SOCK = os.path.join(IPC_DIR, "iterm_daemon.sock")
+
+
+def write_tab_shell_pid(cache_dir: str, yid: str, shell_pid) -> None:
+    if not yid or not shell_pid:
+        return
+    sp_str = str(shell_pid)
+    path = os.path.join(cache_dir, f"tab_shell_{yid}.txt")
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                if f.read().strip().startswith(f"{sp_str}:"):
+                    return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(sp_str)
+    except Exception:
+        pass
 
 
 def try_daemon_fastpath(action: str) -> bool:
@@ -271,11 +288,7 @@ async def cmd_open(connection):
     cache_dir = os.path.expanduser("~/.cache/cc-ide")
     os.makedirs(cache_dir, exist_ok=True)
     if yazi_id and shell_pid:
-        try:
-            with open(os.path.join(cache_dir, f"tab_shell_{yazi_id}.txt"), "w", encoding="utf-8") as f:
-                f.write(str(shell_pid))
-        except Exception:
-            pass
+        write_tab_shell_pid(cache_dir, str(yazi_id), shell_pid)
 
     runner = shlex.quote(os.path.expanduser("~/.claude/scripts/pane-runner.sh"))
     q_dir = shlex.quote(target_dir)
@@ -349,11 +362,7 @@ async def cmd_rebalance(connection):
                 yid = await s.async_get_variable("user.cc_yazi_id")
                 spid = await s.async_get_variable("pid")
                 if yid and spid:
-                    try:
-                        with open(os.path.join(cache_dir, f"tab_shell_{yid}.txt"), "w", encoding="utf-8") as f:
-                            f.write(str(spid))
-                    except Exception:
-                        pass
+                    write_tab_shell_pid(cache_dir, str(yid), spid)
                 name = s.name or ""
                 if any(tag in name for tag in ("[TREE] yazi", "[GIT] lazygit", "[AI] Companion")):
                     await lock_tui_pane_no_scrollback(s)
@@ -458,14 +467,14 @@ async def cmd_switch_subagent(connection):
 
     await target_claude.async_activate()
 
-    if glob.glob("/tmp/.cc-ide/cur_pid_*.txt"):
+    if glob.glob(os.path.join(IPC_DIR, "cur_pid_*.txt")):
         for _ in range(7):
-            if not glob.glob("/tmp/.cc-ide/req_pid_*.json"):
+            if not glob.glob(os.path.join(IPC_DIR, "req_pid_*.json")):
                 break
             await asyncio.sleep(0.05)
         return
 
-    req_file = f"/tmp/.cc-ide/req_{session_id}.json" if session_id else ""
+    req_file = os.path.join(IPC_DIR, f"req_{session_id}.json") if session_id else ""
     if req_file:
         for _ in range(7):
             await asyncio.sleep(0.05)

@@ -20,9 +20,69 @@ const homeDir = isWin
 const claudeBinDir = path.join(homeDir, ".claude", "bin");
 const targetBin = path.join(claudeBinDir, binName);
 const repoSlug = process.env.CCIDE_GITHUB_REPO || "Visio-Vanitas/ccide";
+const versionCacheFile = path.join(claudeBinDir, ".ccide-core.version");
 const cliArgs = process.argv.slice(2);
 const lockDir = path.join(claudeBinDir, ".ensure-ccide-core.lock");
 const ownerPidFile = path.join(lockDir, "owner.pid");
+
+function parseMajorMinor(raw) {
+  const m = String(raw || "").match(/(\d+)\.(\d+)/);
+  return m ? [Number(m[1]), Number(m[2])] : null;
+}
+
+function resolveReleaseMeta() {
+  let plugVer = "";
+  try {
+    const raw = fs.readFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), "utf8");
+    plugVer = String(JSON.parse(raw).version || "");
+  } catch {}
+  const customTag = (process.env.CCIDE_RELEASE_TAG || "").trim();
+  const mm = parseMajorMinor(plugVer) || parseMajorMinor(customTag);
+  const tag = customTag || (mm ? `v${mm[0]}.${mm[1]}.0` : "");
+  const ua = mm ? `ccide-bootstrap/${mm[0]}.${mm[1]}` : "ccide-bootstrap/0.10";
+  return { mm, tag, ua };
+}
+
+function readBinaryVersion(binPath) {
+  let key = "";
+  try {
+    const st = fs.statSync(binPath);
+    key = `${st.size}:${Math.floor(st.mtimeMs / 1000) * 1000}`;
+  } catch {
+    return null;
+  }
+  try {
+    const cached = fs.readFileSync(versionCacheFile, "utf8").trim();
+    if (cached.startsWith(`${key}:`)) {
+      const ver = cached.slice(key.length + 1).trim();
+      const mm = parseMajorMinor(ver);
+      if (mm) return mm;
+    }
+  } catch {}
+  try {
+    const res = spawnSync(binPath, ["--version"], { encoding: "utf8", timeout: 2000, windowsHide: true });
+    const out = String(res.stdout || "").trim();
+    const m = out.match(/\bccide-core\s+v?(\d+\.\d+(?:\.\d+)?)/i);
+    if (!m) return null;
+    const ver = m[1];
+    try {
+      fs.mkdirSync(claudeBinDir, { recursive: true });
+      const tmp = `${versionCacheFile}.tmp.${process.pid}`;
+      fs.writeFileSync(tmp, `${key}:${ver}\n`);
+      fs.renameSync(tmp, versionCacheFile);
+    } catch {}
+    return parseMajorMinor(ver);
+  } catch {
+    return null;
+  }
+}
+
+function isSkewed(binPath, plugMm) {
+  if (!plugMm) return false;
+  const binMm = readBinaryVersion(binPath);
+  if (!binMm) return true;
+  return binMm[0] < plugMm[0] || (binMm[0] === plugMm[0] && binMm[1] < plugMm[1]);
+}
 
 function isRunnable(filePath) {
   try {
@@ -70,12 +130,12 @@ function resolveTriple() {
   }
 }
 
-function fetchBytes(url, redirects = 5) {
+function fetchBytes(url, userAgent, redirects = 5) {
   return new Promise((resolve, reject) => {
     if (redirects <= 0) return reject(new Error("too many redirects"));
     const req = https.get(
       url,
-      { headers: { "User-Agent": "ccide-bootstrap/0.5" }, timeout: 20000 },
+      { headers: { "User-Agent": userAgent }, timeout: 20000 },
       (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
@@ -86,7 +146,7 @@ function fetchBytes(url, redirects = 5) {
             return reject(new Error("bad redirect"));
           }
           if (next.protocol !== "https:") return reject(new Error("insecure redirect"));
-          return resolve(fetchBytes(next.toString(), redirects - 1));
+          return resolve(fetchBytes(next.toString(), userAgent, redirects - 1));
         }
         if (res.statusCode !== 200) {
           res.resume();
@@ -143,29 +203,31 @@ function releaseLock() {
 }
 
 async function main() {
+  const { mm: plugMm, tag, ua } = resolveReleaseMeta();
   const existing = findEngine();
+  const failOpen = () => (existing && isRunnable(existing) ? { run: existing } : { code: 0 });
   // Resolve the engine path but let the caller launch it *after* `finally` released
   // the lock, so a long-running Claude session never pins the install lock.
-  if (existing) return { run: existing };
+  if (existing && !isSkewed(existing, plugMm)) return { run: existing };
 
   const triple = resolveTriple();
-  if (!triple) return { code: 0 };
+  if (!triple || !tag) return failOpen();
 
-  if (!(await acquireLock())) return { code: 0 };
+  if (!(await acquireLock())) return failOpen();
 
   let tmpDir = "";
   let stagedBin = "";
   let plugStaged = "";
   try {
-    // A concurrent run may have installed the binary while we waited for the lock.
-    if (isRunnable(targetBin)) return { run: targetBin };
+    // A concurrent run may have installed a matching binary while we waited for the lock.
+    if (isRunnable(targetBin) && !isSkewed(targetBin, plugMm)) return { run: targetBin };
 
     const archive = `ccide-core-${triple}.tar.gz`;
-    const baseUrl = `https://github.com/${repoSlug}/releases/latest/download`;
+    const baseUrl = `https://github.com/${repoSlug}/releases/download/${tag}`;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccide-dl-"));
     const [tarBuf, sumsBuf] = await Promise.all([
-      fetchBytes(`${baseUrl}/${archive}`),
-      fetchBytes(`${baseUrl}/SHA256SUMS.txt`),
+      fetchBytes(`${baseUrl}/${archive}`, ua),
+      fetchBytes(`${baseUrl}/SHA256SUMS.txt`, ua),
     ]);
 
     const match = sumsBuf
@@ -173,10 +235,10 @@ async function main() {
       .split(/\r?\n/)
       .map((l) => l.trim().split(/\s+/))
       .find((parts) => parts.length >= 2 && parts[1].replace(/^\*/, "") === archive);
-    if (!match) return { code: 0 };
+    if (!match) return failOpen();
 
     const actual = createHash("sha256").update(tarBuf).digest("hex").toLowerCase();
-    if (actual !== match[0].toLowerCase()) return { code: 0 };
+    if (actual !== match[0].toLowerCase()) return failOpen();
 
     const archivePath = path.join(tmpDir, archive);
     fs.writeFileSync(archivePath, tarBuf);
@@ -185,10 +247,10 @@ async function main() {
       stdio: "ignore",
       windowsHide: true,
     });
-    if (ext.status !== 0) return { code: 0 };
+    if (ext.status !== 0) return failOpen();
 
     const extracted = path.join(tmpDir, binName);
-    if (!fs.existsSync(extracted)) return { code: 0 };
+    if (!fs.existsSync(extracted)) return failOpen();
 
     fs.mkdirSync(claudeBinDir, { recursive: true });
     stagedBin = `${targetBin}.tmp.${process.pid}`;
@@ -197,8 +259,21 @@ async function main() {
     if (process.platform === "darwin") {
       spawnSync("codesign", ["-f", "-s", "-", stagedBin], { stdio: "ignore" });
     }
+    if (isWin) {
+      try {
+        for (const fn of fs.readdirSync(claudeBinDir)) {
+          if (fn.startsWith(`${binName}.old.`)) {
+            try { fs.rmSync(path.join(claudeBinDir, fn), { force: true }); } catch {}
+          }
+        }
+      } catch {}
+      if (fs.existsSync(targetBin)) {
+        try { fs.renameSync(targetBin, `${targetBin}.old.${process.pid}`); } catch {}
+      }
+    }
     fs.renameSync(stagedBin, targetBin);
     stagedBin = "";
+    readBinaryVersion(targetBin);
 
     try {
       const plugBinDir = path.join(pluginRoot, "bin");
@@ -215,7 +290,7 @@ async function main() {
 
     return { run: targetBin };
   } catch {
-    return { code: 0 };
+    return failOpen();
   } finally {
     if (stagedBin) {
       try { fs.rmSync(stagedBin, { force: true }); } catch {}

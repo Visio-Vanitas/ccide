@@ -9,6 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-11-16
+
+### Added & Changed
+- **Unified `PaneSpec` v2, `LayoutPlan` & Real Multi-Backend `rebalance` (`src/commands/workspace/{spec,layout,rebalance,open,mod,tmux,wezterm,wt,iterm}.rs`)**:
+  - Replaced ad-hoc `<backend>:<sides>` strings with typed `PaneSpec` v2 (`v2;b=...;k=...;c=...;y=...;l=...;m=...;s=...;lp=...;f=gmr`) plus v1 backwards-compatible parsing and automatic dead-tab spec pruning (`prune_dead_specs`), written exclusively by `workspace/open.rs`.
+  - Introduced `LayoutPlan::compute` (`22 / 48 / 28` column floors, right collapse `< 100` cols, left collapse `< 76` cols, `left_pct` `12..=45`) and `run_rebalance` with deterministic exit codes (`0` Applied/Reopened, `3` Unsupported, `1` error) — enabling live `tmux resize-pane -x` and WezTerm `adjust-pane-size` rebalances plus accurate `/rebalance-panes` exit-code toasts in `hooks/register.ts` (iTerm's Python daemon retains `56/80/38` floors until `v1.0`).
+- **Ghostty Caller Targeting, Live Width Rebalance & Opt-In Linux Probe (`src/commands/workspace/{ghostty,ghostty_script,ghostty_linux}.rs`)**:
+  - Fixed macOS Ghostty targeting (`F1`) via `OSC 2` `ccide-<yid>` title markers and `$GHOSTTY_SURFACE_ID` lookup (gated front-window fallback behind `CCIDE_GHOSTTY_FRONT_FALLBACK=1`), removed the `"1"` sentinel cache bug (`F3`), and drove `rebalance_ghostty` (`F2`) from live `geom_<yid>_*` pixel widths + `spec.left_pct`/`spec.show_right`.
+  - Added `GhosttyCap` and `ghostty_linux.rs` (`CCIDE_GHOSTTY_LINUX=1` opt-in `150 ms`-bounded `+list-actions` CLI and `gdbus` D-Bus probes), continuing to fall through cleanly to `tmux` in `v0.10.0`.
+- **Canonical `workspace detect`, `src/proto.rs`, Milestone-Pinned Bootstrap & Cross-OS Companion Reload (`src/proto.rs`, `src/main.rs`, `src/commands/{pane_runner,setup/doctor*}.rs`, `scripts/`)**:
+  - Added `ccide-core workspace detect [--json]` (replacing inline env sniffing in `scripts/ccide` and `scripts/ccide.ps1`), `ccide-core --version`, and `src/proto.rs` (`ccide-core proto [--json]`, `ipc_proto=1`, `patch_proto=1`, `patch_rules_version="2"`, `spec_version=2`).
+  - Added live `geom_<yid>_<role>.txt` reporting and cross-OS `reload_lg_<yid>` Lazygit theme hot-reload in `pane_runner.rs` + `workspace/reload.rs`, `doctor` `ipc_dir`/`ipc_proto`/`patch_proto`/`ghostty_cap`/`legacy_patch` (`IPC Patch Proto`) reporting, and milestone-tag pinning (`v<major>.<minor>.0`, dropping `releases/latest`) with `.ccide-core.version` skew detection in `scripts/ensure-ccide-core.{mjs,sh}`.
+
+### Compatibility Notes
+- **Pre-0.10 Running Sidebars**: Sidebars already running a pre-`0.10.0` binary cannot parse `v2` `panes_<yid>.txt` specs, so click-to-focus on newly opened tabs degrades until those tabs are reopened (`close` and `rebalance` use the new binary and are unaffected).
+- **`legacy_ipc_dir()` Retention**: Read-only fallback to legacy `/tmp/.cc-ide` (`claude_signalable`, `cur_pid`, `req_pid`) is retained in `v0.10.0` (surfaced via `doctor`'s `IPC Patch Proto` warning) and scheduled for removal in `v0.11.0`.
+
+---
+
+## [0.9.4] - 2026-11-15
+
+### Security & IPC Hardening
+- **Generation-Guarded `ProcToken` (`<pid>:<start_ms>`) (`src/ffi/`, `src/commands/sidebar/`, `src/session/`, `scripts/`)**:
+  - Replaced bare-PID signalling and ownership checks with `ProcToken { pid, start_ms }` backed by kernel start timestamps (`macOS proc_pidinfo`, Linux `/proc/<pid>/stat` + `btime`, Win32 `GetProcessTimes`), eliminating PID-reuse mis-signalling hazards (`SIGUSR2` & cleanup).
+  - Updated `wake-pid`, `notify_sidebar`, `sb_*.pid`, `sidebar_tab_*.json`, `tab_shell_*.txt`, `wake_all_sidebars`, `hooks/register.ts`, and `ccide_daemon.py` with startup and 30 s stale-token sweeps via `platform::atomic_write`.
+- **`ready_pid_<pid>` Patch Handshake & `ipc_guard` (`scripts/cc_patch_rules.py`, `assets/cc-schema.json`, `src/commands/sidebar/ipc_guard.rs`)**:
+  - Bumped `PATCH_RULES_VERSION = "2"` and `claude_bin.stamp` (`r2:`) so patched `claude.exe` binaries atomically write `ready_pid_<pid>`, enforce Linux `/proc/<k>/stat` generation verification before `SIGUSR2`, and pass full tokens on Windows.
+  - Added `claude_signalable(pid)` proof verification (`lstat` regular file, same UID, `mtime + 1000 >= start_ms`) before firing `SIGUSR2`, surfacing `repatch needed (ccide doctor)` in the sidebar when unverified.
+- **Per-UID `0700` `ipc_dir()` Convergence (`src/platform/ipc.rs`, `src/main.rs`, `scripts/`, `hooks/register.ts`, `assets/yazi-hscroll.lua`)**:
+  - Split `src/platform.rs` into `src/platform/{mod,ipc}.rs` with `OnceLock`-memoized `ipc_dir()` resolving `$CCIDE_IPC_DIR` -> Unix `/tmp/.cc-ide-<euid>` (`0700`, symlink/ownership checked, fallback `~/.cache/cc-ide/ipc`) -> Windows `%TEMP%`/`%TMP%`/`.cc-ide`, plus legacy `/tmp/.cc-ide` fallback reader and `ccide-core ipc-dir` CLI subcommand exported by `ccide` / `ccide.ps1` and aligned across all companion scripts.
+
+---
+
+## [0.9.3] - 2026-11-15
+
+### Changed & Fixed
+- **Zero-Cycle Layered Architecture & 100% `<= 300`-Line Rust Modules (`src/budget/`, `src/model_id.rs`, `src/json/`, `src/session/`, `src/tui/`, `src/commands/`)**:
+  - Extracted leaf modules `src/budget/{mod,config}.rs` and `src/model_id.rs`, split `src/json.rs` into `src/json/{mod,extract,scan,jsonc}.rs` (deduplicating 2 JSONC strippers and 5 JSON escapers), and eliminated every `crate::commands` reverse dependency and `orchestrator <-> session` cycle, guarded by CI-grade assertions in `tests/test_agent_infra.py`.
+  - Split every oversized Rust source file below `300` lines (`src/session/{mod,binding,scan,model,model_compact,subagents,subagent_state,transcript,transcript_main,focus}.rs`, `src/tui/{grid,grid_render}.rs`, `src/tui/logo/{mod,ansi}.rs`, `src/commands/setup/{doctor,doctor_probes}.rs`, `src/commands/statusline/{mod,git_info}.rs`, `src/commands/yazi_hook.rs`).
+- **Session Isolation, Theme Leader Election & Telemetry Hardening (`src/platform.rs`, `src/session/`, `src/tui/palette/`, `src/telemetry/`)**:
+  - Unified atomic writes into `platform::atomic_write` and added case-insensitive Windows cwd matching via `platform::paths_equal_ci`, separated pure `choose_binding()` + `commit_binding()` with `dir_mtime` session-scan caching, and fixed `compact_model_for_width` non-ASCII tail glyph measurement.
+  - Added `SyncOutcome` / `PaletteReload { changed, synced_leader }` so only the sidebar winning `.sync.lock` triggers companion Yazi preview refreshes, bounded `ya emit-to` waiter threads (`<= 4`, `2 s` timeout), bounded Linux/Windows `nvidia-smi` waits to `5 s`, and handled 32-bit `MibIfRow` `wrapping_sub` rollover on Windows.
+
+---
+
+## [0.9.2] - 2026-11-15
+
+### Fixed
+- **In-Process Mod (`hooks/register.ts`), Manifests & Skills Drift (`.claude-plugin/{plugin,marketplace}.json`, `skills/*/SKILL.md`)**:
+  - Aligned Windows IPC directory lookup in `register.ts` to `TMP || TEMP` (matching Win32 `GetTempPathW` / Rust `std::env::temp_dir()`), bounded `perfBuffers` to the last `256` lines and capped per-session caches at `64` entries for `O(1)` memory/I/O, made `/rebalance-panes` toast reflect the real exit code/support status, and made `syncSessionModel` parse leading numeric PIDs from future `pid:start_time` tokens.
+  - Added `"workflows": "./assets/workflows"` to `.claude-plugin/plugin.json`, added explicit `0.9.2` version fields to `.claude-plugin/marketplace.json` (checked via 5-way CI parity), and updated `skills/{ccide,clear,rebalance,theme}/SKILL.md` to invoke cross-OS `ensure-ccide-core.mjs` without stale `v0.5.0` or Unix-only references.
+- **Python `-I` Isolation, Windows Companion Config & Launcher Parity (`scripts/`, `install.ps1`, `install.sh`, `assets/yazi-hscroll.lua`, `src/commands/workspace/iterm.rs`)**:
+  - Added `import tempfile` (fixing Windows `NameError`) and `TMP`/`TEMP` alignment in `scripts/lazygit-log.py`, prepended script directory to `sys.path` in `scripts/cc_patch_rules.py` and `scripts/cc_schema_inspector.py` for standalone `python3 -I`, caught `OSError` in `ccide_workflow_runner.py` `discover_workflows()`, enforced `-I` across `pane-runner.sh`, `yazi-hscroll.lua`, and `iterm.rs`, and deleted dead `scripts/cc_tui_lib.py`.
+  - Added `yazi.toml` (`touch` mouse events + `hscroll` previewer) and `keymap.toml` setup to `install.ps1`, added `--mon`/`--no-mon` and `CLAUDECODE` session binding to `scripts/ccide.ps1`, added `--wt` and backend help flags to `scripts/ccide`, and updated `area:workspace` mapping to `src/commands/workspace/` in CI/triage helpers.
+
+---
+
 ## [0.9.1] - 2026-11-15
 
 ### Fixed
@@ -173,7 +230,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shared Cross-Platform Hardware Oscilloscope & Quadrant Model Logos (`src/telemetry/`, `src/tui/logo.rs`)**:
   - Single-instance `500 ms` `/tmp/.cc-ide/hw_telemetry_v1.bin` binary snapshot shared across all open tabs (`< 2 µs` read) rendering sub-pixel `CPU`, `GPU` (`IOKit AGX` / Linux `sysfs` & `nvidia-smi`), `MEM`, and `NET` curves alongside dynamic 2×2 Quadrant vector model logos (`CLAUDE`, `GEMINI`, `DEEPSEEK`, `OPENAI`, `GROK`).
 
-[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.4...v0.10.0
+[0.9.4]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.3...v0.9.4
+[0.9.3]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.2...v0.9.3
+[0.9.2]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.7.0...v0.8.0

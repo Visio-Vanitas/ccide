@@ -279,6 +279,9 @@ mod tests {
             os_arch: "d".into(),
             backend_tier: "t".into(),
             missing_hint: "OK".into(),
+            ipc_dir: "/tmp/.cc-ide-501".into(),
+            ghostty_cap: "none",
+            legacy_patch: false,
             items,
         };
         for c in 0..TOTAL_SETUP_ROWS {

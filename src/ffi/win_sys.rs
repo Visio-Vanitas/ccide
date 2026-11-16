@@ -1,6 +1,7 @@
 //! Raw Win32 `kernel32.dll` Constants, `#[repr(C)]` Records & `extern "system"` Bindings.
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub type Handle = *mut c_void;
 pub const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
@@ -23,6 +24,13 @@ pub const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
 pub const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
 pub const ENABLE_PROCESSED_OUTPUT: u32 = 0x0001;
 pub const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FileTime {
+    pub dw_low_date_time: u32,
+    pub dw_high_date_time: u32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -85,6 +93,61 @@ pub struct InputRecord {
     pub event: InputRecordEvent,
 }
 
+impl InputRecord {
+    pub unsafe fn append_vt(&self, out: &mut String, dirty: &AtomicBool) {
+        if self.event_type == 0x0001 {
+            let ke = self.event.key;
+            if ke.key_down != 0 {
+                if ke.u_char != 0 {
+                    if let Some(ch) = char::from_u32(u32::from(ke.u_char)) {
+                        out.push(ch);
+                    }
+                } else {
+                    match ke.virtual_key_code {
+                        0x26 => out.push_str("\x1b[A"),
+                        0x28 => out.push_str("\x1b[B"),
+                        0x27 => out.push_str("\x1b[C"),
+                        0x25 => out.push_str("\x1b[D"),
+                        0x21 => out.push_str("\x1b[5~"),
+                        0x22 => out.push_str("\x1b[6~"),
+                        0x24 => out.push_str("\x1b[H"),
+                        0x23 => out.push_str("\x1b[F"),
+                        0x2E => out.push_str("\x1b[3~"),
+                        _ => {}
+                    }
+                }
+            }
+        } else if self.event_type == 0x0002 {
+            let me = self.event.mouse;
+            if me.event_flags == 0x0001 && me.button_state == 0 {
+                return;
+            }
+            let (col, row) = (
+                (me.mouse_pos.x.max(0) as usize) + 1,
+                (me.mouse_pos.y.max(0) as usize) + 1,
+            );
+            if (me.event_flags & 0x0004) != 0 {
+                let btn = if ((me.button_state >> 16) as i16) > 0 {
+                    64
+                } else {
+                    65
+                };
+                out.push_str(&format!("\x1b[<{btn};{col};{row}M"));
+            } else if me.event_flags == 0 {
+                if (me.button_state & 0x0001) != 0 {
+                    out.push_str(&format!("\x1b[<0;{col};{row}M"));
+                } else if (me.button_state & 0x0002) != 0 {
+                    out.push_str(&format!("\x1b[<2;{col};{row}M"));
+                } else {
+                    out.push_str(&format!("\x1b[<0;{col};{row}m"));
+                }
+            }
+        } else if self.event_type == 0x0004 {
+            dirty.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 #[repr(C)]
 pub struct ProcessEntry32W {
     pub dw_size: u32,
@@ -136,6 +199,13 @@ extern "system" {
     pub fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32)
         -> Handle;
     pub fn GetExitCodeProcess(h_process: Handle, lp_exit_code: *mut u32) -> i32;
+    pub fn GetProcessTimes(
+        h_process: Handle,
+        lp_creation_time: *mut FileTime,
+        lp_exit_time: *mut FileTime,
+        lp_kernel_time: *mut FileTime,
+        lp_user_time: *mut FileTime,
+    ) -> i32;
     pub fn CloseHandle(h_object: Handle) -> i32;
     pub fn CreateToolhelp32Snapshot(dw_flags: u32, th32_process_id: u32) -> Handle;
     pub fn Process32FirstW(h_snapshot: Handle, lppe: *mut ProcessEntry32W) -> i32;

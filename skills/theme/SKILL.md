@@ -15,17 +15,17 @@ description: Inspect, switch, or customize the independent cc-ide color palette 
 
 ```bash
 # List active palette file, current preset, and all built-in preset swatches
-~/.claude/bin/ccide-core workspace theme list
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace theme list
 
 # Switch to a built-in preset while preserving any custom slot overrides
 # Presets: default | catppuccin-mocha | tokyo-night | nord | gruvbox-dark | dracula
-~/.claude/bin/ccide-core workspace theme catppuccin-mocha
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace theme catppuccin-mocha
 
 # Force-regenerate companion syntax themes (.tmTheme, glow-style.json, syntax_resolved.json)
-~/.claude/bin/ccide-core workspace theme sync
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace theme sync
 
 # Reset ~/.config/cc-ide/palette.json back to the commented default template
-~/.claude/bin/ccide-core workspace theme reset
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-ccide-core.mjs" workspace theme reset
 ```
 
 ## Customizing Individual Colors (`~/.config/cc-ide/palette.json`)

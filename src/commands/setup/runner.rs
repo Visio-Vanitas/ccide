@@ -94,7 +94,7 @@ pub fn write_user_preferences(home: &str, opts: &SetupOptions) {
         opts.cost_lines.clamp(1, 3)
     );
     let _ = fs::write(cfg_dir.join("viewer.json"), viewer_json);
-    sync_syntax_artifacts(home, &Palette::load(home));
+    let _ = sync_syntax_artifacts(home, &Palette::load(home));
 }
 
 fn strip_ansi_simple(s: &str) -> String {

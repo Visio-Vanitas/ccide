@@ -214,6 +214,9 @@ mod tests {
                 detail: "verified".to_string(),
             }],
             missing_hint: "OK".to_string(),
+            ipc_dir: "/tmp/.cc-ide-501".to_string(),
+            ghostty_cap: "none",
+            legacy_patch: false,
         };
         let panels = build_setup_panels(80, 24, &rep, &SetupOptions::default(), 8, &[], None, &pal);
         assert_eq!(panels.len(), 3);

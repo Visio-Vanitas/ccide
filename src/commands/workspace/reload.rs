@@ -1,4 +1,4 @@
-//! Live Hot-Reload for Open `Yazi` & `Lazygit` Companion Panes on Theme Switch (`<= 300` lines).
+//! Live Hot-Reload for Open `Yazi` & `Lazygit` Companion Panes on Theme Switch (`src/commands/workspace/reload.rs`).
 
 use std::fs;
 use std::path::Path;
@@ -6,7 +6,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use crate::platform::{cache_dir, find_executable, ipc_dir};
+use crate::commands::workspace::spec::prune_dead_specs;
+use crate::platform::{atomic_write, cache_dir, find_executable, ipc_dir, ipc_path};
 use crate::session::focus::emit_yazi_reveal_at;
 use crate::session::resolve_isolated_session_id;
 
@@ -15,6 +16,7 @@ type SavedFocus = (String, usize, usize);
 /// Hot-reloads all open `Yazi` and `Lazygit` panes managed by `pane-runner` so new
 /// `theme.toml`, `ccide.tmTheme`, and `lazygit.yml` (`gui.theme` + `delta`) take effect in `< 120ms`.
 pub fn reload_companion_panes(home: &str) {
+    let _ = prune_dead_specs(home);
     let cdir = cache_dir(home);
     let mut yids: Vec<(String, Option<SavedFocus>)> = Vec::new();
 
@@ -26,7 +28,7 @@ pub fn reload_companion_panes(home: &str) {
                 .strip_prefix("panes_")
                 .and_then(|s| s.strip_suffix(".txt"))
             {
-                if yid.is_empty() || !yid.chars().all(|c| c.is_ascii_digit()) {
+                if yid.is_empty() {
                     continue;
                 }
                 let (sid, _) = resolve_isolated_session_id(home, ".", yid, 0);
@@ -57,8 +59,10 @@ pub fn reload_companion_panes(home: &str) {
         }
     }
 
+    let all_yids: Vec<String> = yids.iter().map(|(y, _)| y.clone()).collect();
+
     if let Some(ya) = find_executable("ya", home) {
-        for (yid, _) in &yids {
+        for yid in &all_yids {
             if let Ok(mut ch) = Command::new(&ya)
                 .args(["emit-to", yid, "quit"])
                 .stdin(Stdio::null())
@@ -66,7 +70,6 @@ pub fn reload_companion_panes(home: &str) {
                 .stderr(Stdio::null())
                 .spawn()
             {
-                // Reap immediately so short-lived CLI invocations never leave zombies behind
                 let _ = ch.wait();
             }
         }
@@ -75,8 +78,6 @@ pub fn reload_companion_panes(home: &str) {
             .filter_map(|(yid, sv)| sv.map(|(p, ln, sp)| (yid, p, ln, sp)))
             .collect();
         if !restore_list.is_empty() {
-            // Join the restore thread (bounded `< ~350ms` total) so a short-lived `ccide --theme`
-            // process never exits before Yazi's revealed file & line range are written back.
             let home_owned = home.to_string();
             let handle = thread::spawn(move || {
                 thread::sleep(Duration::from_millis(180));
@@ -85,7 +86,6 @@ pub fn reload_companion_panes(home: &str) {
                     emit_yazi_reveal_at(&home_owned, &yid, ".", &path, ln, sp);
                     pending.push((yid, path, ln, sp));
                 }
-                // Second bounded retry for panes still booting after the `quit` round-trip
                 thread::sleep(Duration::from_millis(140));
                 for (yid, path, ln, sp) in pending {
                     emit_yazi_reveal_at(&home_owned, &yid, ".", &path, ln, sp);
@@ -122,5 +122,9 @@ pub fn reload_companion_panes(home: &str) {
                 }
             }
         }
+    }
+
+    for yid in &all_yids {
+        let _ = atomic_write(&ipc_path(&format!("reload_lg_{yid}")), b"1\n");
     }
 }

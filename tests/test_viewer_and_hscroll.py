@@ -66,10 +66,9 @@ class TestViewerWrapAndHScroll(unittest.TestCase):
         env = os.environ.copy()
         env.pop("CCIDE_WRAP", None)
         env["CCIDE_LG_SID"] = sid
-        cache_file = f"/tmp/.cc-ide/lg_full_{sid}.json"
-        try:
-            if os.path.exists(cache_file):
-                os.unlink(cache_file)
+        with tempfile.TemporaryDirectory() as tmp_ipc:
+            env["CCIDE_IPC_DIR"] = tmp_ipc
+            cache_file = os.path.join(tmp_ipc, f"lg_full_{sid}.json")
             res_p0 = subprocess.run(
                 [sys.executable, pager_path, "--col-width=14", "--no-wrap"],
                 input=sample_diff,
@@ -96,9 +95,6 @@ class TestViewerWrapAndHScroll(unittest.TestCase):
                 check=True,
             )
             self.assertIn("↪", res_wrapped.stdout)
-        finally:
-            if os.path.exists(cache_file):
-                os.unlink(cache_file)
 
     def test_md_render_headings_and_unwrapped_default(self) -> None:
         md_path = os.path.join(REPO_ROOT, "scripts", "md-render.py")

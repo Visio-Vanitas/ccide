@@ -38,6 +38,10 @@ import unicodedata
 SGR_MOUSE_RE = re.compile(rb"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
 COMPLETE_CSI_PREFIX_RE = re.compile(rb"^\x1b(?:\[[0-9;<=>?]*[@-~]|[\(\)\*\+][A-Za-z0-9]|[78=>M])")
 FOCUS_EVENT_RE = re.compile(rb"\x1b\[[IO]")
+
+
+def get_ipc_dir() -> str:
+    return os.environ.get("CCIDE_IPC_DIR") or f"/tmp/.cc-ide-{os.getuid()}"
 KEY_HLEFT_RE = re.compile(rb"\x1b\[1;[23]D")
 KEY_HRIGHT_RE = re.compile(rb"\x1b\[1;[23]C")
 PANEL_HDR_RE = re.compile(r"[╭┌]─\[([0-5])\]")
@@ -466,7 +470,7 @@ class VtScreen:
     def load_cache_if_updated(self) -> bool:
         if self.sid <= 0:
             return False
-        p = f"/tmp/.cc-ide/lg_full_{self.sid}.json"
+        p = os.path.join(get_ipc_dir(), f"lg_full_{self.sid}.json")
         try:
             st = os.stat(p)
         except OSError:
@@ -1089,9 +1093,10 @@ def get_winsize_packed(fd: int) -> bytes:
 
 def write_geom_file(sid: int, rows: int, cols: int, main_inner_w: int = 0) -> None:
     try:
-        os.makedirs("/tmp/.cc-ide", exist_ok=True)
-        tmp = f"/tmp/.cc-ide/lg_geom_{sid}.txt.tmp.{os.getpid()}"
-        dst = f"/tmp/.cc-ide/lg_geom_{sid}.txt"
+        ipc_dir = get_ipc_dir()
+        os.makedirs(ipc_dir, mode=0o700, exist_ok=True)
+        tmp = os.path.join(ipc_dir, f"lg_geom_{sid}.txt.tmp.{os.getpid()}")
+        dst = os.path.join(ipc_dir, f"lg_geom_{sid}.txt")
         with open(tmp, "w", encoding="utf-8") as f:
             if main_inner_w > 0:
                 f.write(f"{rows} {cols} {main_inner_w}\n")
@@ -1543,9 +1548,10 @@ def main() -> int:
                 os.close(wfd)
             except OSError:
                 pass
+        ipc_dir = get_ipc_dir()
         for stale_p in (
-            f"/tmp/.cc-ide/lg_geom_{child_pid}.txt",
-            f"/tmp/.cc-ide/lg_full_{child_pid}.json",
+            os.path.join(ipc_dir, f"lg_geom_{child_pid}.txt"),
+            os.path.join(ipc_dir, f"lg_full_{child_pid}.json"),
         ):
             try:
                 os.unlink(stale_p)

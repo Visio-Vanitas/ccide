@@ -426,6 +426,7 @@ local function load_ccide_syntax()
 	return res
 end
 
+local _cached_unix_ipc_dir = nil
 local function ipc_dir()
 	local custom = os.getenv("CCIDE_IPC_DIR")
 	if custom and custom ~= "" then
@@ -435,7 +436,18 @@ local function ipc_dir()
 		local t = os.getenv("TEMP") or os.getenv("TMP") or "."
 		return (t:gsub("[/\\]+$", "")) .. "\\.cc-ide"
 	end
-	return "/tmp/.cc-ide"
+	if not _cached_unix_ipc_dir then
+		local uid = os.getenv("UID")
+		if not uid or not uid:match("^%d+$") then
+			local f = io.popen("id -u 2>/dev/null")
+			if f then
+				uid = (f:read("*l") or ""):match("^%d+$")
+				f:close()
+			end
+		end
+		_cached_unix_ipc_dir = uid and ("/tmp/.cc-ide-" .. uid) or "/tmp/.cc-ide"
+	end
+	return _cached_unix_ipc_dir
 end
 
 local _ipc_dir_ensured = false
@@ -453,7 +465,7 @@ local function ensure_ipc_dir()
 	else
 		pcall(function()
 			Command("mkdir")
-				:arg({ "-p", dir })
+				:arg({ "-p", "-m", "700", dir })
 				:stdout(Command.NULL)
 				:stderr(Command.NULL)
 				:status()
@@ -1316,7 +1328,7 @@ local function peek_markdown(job, url_str)
 		local home = os.getenv("HOME") or os.getenv("USERPROFILE") or ""
 		local script = home .. (IS_WIN and "\\.claude\\scripts\\md-render.py" or "/.claude/scripts/md-render.py")
 		local py_cmd = IS_WIN and "python" or "python3"
-		local out = Command(py_cmd):arg({ script, "-w", tostring(area_w), tostring(job.file.path) }):stdout(Command.PIPED):stderr(Command.NULL):output()
+		local out = Command(py_cmd):arg({ "-I", script, "-w", tostring(area_w), tostring(job.file.path) }):stdout(Command.PIPED):stderr(Command.NULL):output()
 		raw_all = (out and out.stdout) or ""
 		if raw_all ~= "" then
 			write_cached_block(cache_path, key, raw_all)
