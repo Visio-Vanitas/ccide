@@ -166,7 +166,13 @@ pub fn run_with_agent(forced: Option<AgentKind>) {
         let _ = std::io::stdout().flush();
     }
 
-    if extract_json_bool(&input, "staged") == Some(true) {
+    if extract_json_bool(&input, "staged") == Some(true)
+        || (ev.agent == AgentKind::Agy
+            && matches!(
+                ev.tool_name.as_str(),
+                "swarm" | "post_message" | "invoke_subagent" | "swarm_wait"
+            ))
+    {
         return;
     }
 

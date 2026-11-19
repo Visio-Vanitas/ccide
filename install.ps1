@@ -23,7 +23,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$PluginVersion = "0.11.0"
+$PluginVersion = "0.11.1"
 $HomeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 $ClaudeDir = Join-Path $HomeDir ".claude"
 $CacheDir = Join-Path $HomeDir ".cache\cc-ide"

@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use crate::commands::sidebar::orch_panel::{TAG_ORCH_PRESET, TAG_ORCH_ROLE};
+use crate::session::is_subagent_alive;
 use crate::session::transcript::SubagentItem;
 use crate::tui::context::TAG_CTX_TOGGLE;
 
@@ -115,7 +116,7 @@ impl SidebarGeomMask {
                 let can_dismiss = col >= self.cols.saturating_sub(4)
                     && subagents
                         .get(idx)
-                        .map(|a| a.status != "running")
+                        .map(|a| !is_subagent_alive(a.status))
                         .unwrap_or(false);
                 if can_dismiss {
                     HitZone::SubagentDismiss(idx)

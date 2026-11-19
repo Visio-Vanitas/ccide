@@ -34,6 +34,12 @@ pub fn to_claude_shape(ev: &HookEvent) -> Option<(String, String)> {
     match ev.agent {
         AgentKind::Claude => (!ev.tool_name.is_empty()).then(|| (ev.tool_name.clone(), ti.clone())),
         AgentKind::Agy => {
+            if matches!(
+                ev.tool_name.as_str(),
+                "swarm" | "post_message" | "invoke_subagent" | "swarm_wait"
+            ) {
+                return None;
+            }
             let keys = ["Path", "AbsolutePath", "TargetFile", "file_path", "path"];
             let ef = json_escape(&first_str(ti, &keys)?);
             let (kind, body) = match ev.tool_name.as_str() {

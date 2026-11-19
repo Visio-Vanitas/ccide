@@ -9,7 +9,8 @@ use crate::ffi::{is_pid_alive, ProcToken};
 use crate::json::{extract_json_str, extract_json_u64};
 use crate::platform::cache_dir;
 use crate::session::agent::{is_safe_id, AgentKind};
-use crate::session::agy::{agy_cid_for_cwd, agy_settings_model, agy_transcript_path};
+use crate::session::agy::{agy_settings_model, agy_transcript_for_cid, agy_transcript_path};
+use crate::session::agy_swarm::agy_resolve_cid;
 use crate::session::binding::{commit_binding, SessionBinding};
 use crate::session::codex::{
     codex_config, find_rollout_by_id, find_rollout_for_cwd, rollout_session_id,
@@ -119,11 +120,11 @@ pub fn resolve_agent_session(
 
     match kind {
         AgentKind::Agy => {
-            let cid = agy_cid_for_cwd(cwd).filter(|s| is_safe_id(s))?;
+            let cid = agy_resolve_cid(home, yid, cwd).filter(|s| is_safe_id(s))?;
             if is_claimed_by_live_sibling(&cdir, &cid, yid) {
                 return None;
             }
-            let tpath = agy_transcript_path(&cid);
+            let tpath = agy_transcript_for_cid(&cid).unwrap_or_else(|| agy_transcript_path(&cid));
             let mt = fs::metadata(&tpath).and_then(|m| m.modified()).ok()?;
             if SystemTime::now().duration_since(mt).unwrap_or_default()
                 > Duration::from_secs(86_400)

@@ -82,8 +82,8 @@ pub fn update_agy_ctx(path: &Path, tr: &mut AgentCtxTracker) {
                     tr.s.cum_input = tr.s.cum_input.saturating_add(occ);
                     tr.s.cum_cached = tr.s.cum_cached.saturating_add(cr_t);
                     tr.s.cum_output = tr.s.cum_output.saturating_add(out_t);
-                    tr.s.per_model
-                        .push((tr.s.model.clone(), uncached_in, cr_t, out_t));
+                    let m_key = tr.s.model.clone();
+                    tr.s.aggregate_per_model(&m_key, uncached_in, cr_t, out_t);
                 }
 
                 if let Some(ms) = ts_ms {

@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod agent_bind;
 pub mod agy;
+pub mod agy_swarm;
 pub mod binding;
 pub mod codex;
 pub mod codex_discover;
@@ -32,6 +33,11 @@ pub use agy::{
     agy_cid_for_cwd, agy_main_file_ops, agy_settings_model, agy_subagents, agy_transcript_path,
 };
 #[allow(unused_imports)]
+pub use agy_swarm::{
+    agy_brain_root, agy_resolve_cid, agy_sys_gen, load_agy_swarm, read_board_tail,
+    swarm_member_status, AgySwarmSnapshot,
+};
+#[allow(unused_imports)]
 pub use binding::{choose_binding, commit_binding, BindingChoice, SessionBinding};
 #[allow(unused_imports)]
 pub use codex::{
@@ -45,6 +51,8 @@ pub use model::{
     load_config_models_for, map_alias_with_settings, short_model_label, ConfigModels,
 };
 pub use scan::{resolve_live_yazi_tab, resolve_yazi_id_from_ppid};
+#[allow(unused_imports)]
+pub use subagents::is_subagent_alive;
 #[allow(unused_imports)]
 pub use transcript_main::{normalize_path_under_cwd, MainSessionOps};
 
@@ -160,14 +168,9 @@ fn read_tab_pane_title(home: &str, tab_yazi_id: &str, query_tmux: bool) -> Optio
         fs::read_to_string(ipc_path(&format!("panes_{tab_yazi_id}.txt"))).unwrap_or_default();
     let (is_tmux, center_opt) = parse_tmux_spec(&spec);
     if is_tmux {
-        if query_tmux {
-            if let Some(center_pane) = center_opt {
-                if let Some(tmux) = find_executable("tmux", home) {
-                    return query_tmux_pane_title_bounded(&tmux, center_pane);
-                }
-            }
-        }
-        return None;
+        return center_opt
+            .filter(|_| query_tmux)
+            .and_then(|cp| query_tmux_pane_title_bounded(&find_executable("tmux", home)?, cp));
     }
     let raw = fs::read_to_string(ipc_path(&format!("tab_title_{tab_yazi_id}.txt"))).ok()?;
     clean_claude_pane_title(&raw)
@@ -209,7 +212,7 @@ pub fn resolve_isolated_session_binding(
             start_ms: 0,
         })
     } else {
-        fs::read_to_string(cdir.join(format!("tab_shell_{}.txt", tab_yazi_id)))
+        fs::read_to_string(cdir.join(format!("tab_shell_{tab_yazi_id}.txt")))
             .ok()
             .filter(|_| !tab_yazi_id.is_empty())
             .and_then(|s| ProcToken::parse(&s))
@@ -237,9 +240,9 @@ pub fn resolve_isolated_session_binding(
         |qt| read_tab_pane_title(home, tab_yazi_id, qt),
         |sid| is_claimed_by_live_sibling(&cdir, sid, tab_yazi_id),
         |sid| {
-            fs::read_to_string(cdir.join(format!("session_{}.yazi", sid)))
-                .map(|s| s.trim() == tab_yazi_id)
-                .unwrap_or(false)
+            fs::read_to_string(cdir.join(format!("session_{sid}.yazi")))
+                .ok()
+                .is_some_and(|s| s.trim() == tab_yazi_id)
         },
     );
     if choice.should_commit {

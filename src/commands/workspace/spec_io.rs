@@ -27,6 +27,7 @@ pub fn remove_tab_state(yid: &str) {
     }
     let cdir = cache_dir(&user_home_dir());
     let _ = fs::remove_file(cdir.join(format!("tab_agent_{yid}.txt")));
+    let _ = fs::remove_file(cdir.join(format!("tab_conv_{yid}.txt")));
     let _ = fs::remove_file(cdir.join(format!("live_tab_{yid}.json")));
 }
 
@@ -58,6 +59,7 @@ pub fn prune_dead_specs(home: &str) -> usize {
         if !alive {
             remove_tab_state(yid);
             let _ = fs::remove_file(cdir.join(format!("tab_agent_{yid}.txt")));
+            let _ = fs::remove_file(cdir.join(format!("tab_conv_{yid}.txt")));
             let _ = fs::remove_file(cdir.join(format!("live_tab_{yid}.json")));
             pruned += 1;
         }

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Non-destructive, idempotent, reversible hook merger for agent configs (Codex hooks.json)."""
 
+from __future__ import annotations
+
 import argparse, copy, json, os, shlex, shutil, sys
 
 

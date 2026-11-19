@@ -18,6 +18,9 @@ LEFT_PCT=30
 KEEP_PANES=0
 BACKEND="${CCIDE_BACKEND:-auto}"
 CCIDE_AGENT="${CCIDE_AGENT:-claude}"
+CONV_ID="${CCIDE_AGY_CONVERSATION:-}"
+EXPLICIT_CONV=0
+CONV_ORIG_ARGS=()
 TARGET_DIR="$PWD"
 CLAUDE_ARGS=()
 ORIG_ARGS=("$@")
@@ -30,6 +33,11 @@ while [[ $# -gt 0 ]]; do
     --agent=*) CCIDE_AGENT="${1#*=}"; shift ;;
     --agy) CCIDE_AGENT="agy"; shift ;;
     --codex) CCIDE_AGENT="codex"; shift ;;
+    --conversation)
+      if [[ $# -lt 2 ]]; then echo "Error: --conversation requires an id" >&2; exit 2; fi
+      CONV_ID="$2"; EXPLICIT_CONV=1; CONV_ORIG_ARGS=("$1" "$2"); shift 2 ;;
+    --conversation=*)
+      CONV_ID="${1#*=}"; EXPLICIT_CONV=1; CONV_ORIG_ARGS=("$1"); shift ;;
     --no-git|--tree-only) SHOW_GIT=0; shift ;;
     --mon) SHOW_MON=1; shift ;;
     --no-mon|--2|--3) SHOW_MON=0; shift ;;
@@ -181,6 +189,24 @@ case "${CCIDE_AGENT:l}" in
     ;;
 esac
 export CCIDE_AGENT
+if [[ "$EXPLICIT_CONV" -eq 1 ]]; then
+  if [[ "$CONV_ID" == *$'\n'* || ! "$CONV_ID" =~ ^[A-Za-z0-9_-]{8,64}$ ]]; then
+    echo "Error: invalid --conversation id '$CONV_ID' (expected 8-64 [A-Za-z0-9_-] chars)" >&2
+    exit 2
+  fi
+  if [[ "$CCIDE_AGENT" != "agy" ]]; then
+    echo "Error: --conversation is only supported for --agent agy" >&2
+    exit 2
+  fi
+  CLAUDE_ARGS+=("${CONV_ORIG_ARGS[@]}")
+  export CCIDE_AGY_CONVERSATION="$CONV_ID"
+elif [[ "$CCIDE_AGENT" == "agy" && -n "$CONV_ID" ]]; then
+  if [[ "$CONV_ID" == *$'\n'* || ! "$CONV_ID" =~ ^[A-Za-z0-9_-]{8,64}$ ]]; then
+    echo "Error: invalid CCIDE_AGY_CONVERSATION '$CONV_ID' (expected 8-64 [A-Za-z0-9_-] chars)" >&2
+    exit 2
+  fi
+  export CCIDE_AGY_CONVERSATION="$CONV_ID"
+fi
 if ! command -v "$CCIDE_AGENT" >/dev/null 2>&1; then
   echo "Error: '$CCIDE_AGENT' CLI not found in PATH." >&2
   exit 127
@@ -217,7 +243,7 @@ if [[ -z "${TMUX:-}" && ( "$BACKEND" == "tmux" || ( "$BACKEND" == "auto" && "$DE
     SESSION_NAME="ccide-${PWD:t}-$$"
     QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
     exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-      "export CCIDE_BACKEND=tmux CCIDE_AGENT=${(q)CCIDE_AGENT} CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
+      "export CCIDE_BACKEND=tmux CCIDE_AGENT=${(q)CCIDE_AGENT} CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR} CCIDE_AGY_CONVERSATION=${(q)CONV_ID}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
   fi
 fi
 
@@ -243,6 +269,10 @@ done
 export CCIDE_SHELL_PID="$$"
 _tab_agent_tmp="$CACHE_DIR/tab_agent_${YAZI_CLIENT_ID}.txt.tmp.$$"
 printf '%s\n' "$CCIDE_AGENT" > "$_tab_agent_tmp" 2>/dev/null && mv -f "$_tab_agent_tmp" "$CACHE_DIR/tab_agent_${YAZI_CLIENT_ID}.txt" 2>/dev/null || rm -f "$_tab_agent_tmp" 2>/dev/null || true
+if [[ "$CCIDE_AGENT" == "agy" && -n "$CONV_ID" ]]; then
+  _tab_conv_tmp="$CACHE_DIR/tab_conv_${YAZI_CLIENT_ID}.txt.tmp.$$"
+  printf '%s\n' "$CONV_ID" > "$_tab_conv_tmp" 2>/dev/null && mv -f "$_tab_conv_tmp" "$CACHE_DIR/tab_conv_${YAZI_CLIENT_ID}.txt" 2>/dev/null || rm -f "$_tab_conv_tmp" 2>/dev/null || true
+fi
 
 PANE_SPEC=""
 if [[ -x "$CCIDE_CORE_BIN" ]]; then
@@ -255,7 +285,7 @@ if [[ -z "$PANE_SPEC" && -z "${TMUX:-}" && "$BACKEND" == "auto" && -z "${CLAUDEC
   SESSION_NAME="ccide-${PWD:t}-$$"
   QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
   exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-    "export CCIDE_BACKEND=tmux CCIDE_AGENT=${(q)CCIDE_AGENT} CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
+    "export CCIDE_BACKEND=tmux CCIDE_AGENT=${(q)CCIDE_AGENT} CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR} CCIDE_AGY_CONVERSATION=${(q)CONV_ID}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
 fi
 
 if [[ -n "${CLAUDECODE:-}" ]]; then

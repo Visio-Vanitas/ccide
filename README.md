@@ -2,8 +2,10 @@
 
 **Native 3-Column Tiling Terminal IDE & Real-Time Multi-Agent / Hardware Telemetry Companion (`macOS`, `Linux` & `Windows`)**
 
-`ccide` transforms **Claude Code**, **Google Antigravity CLI (`agy`)**, and **OpenAI Codex CLI (`codex`)** into a zero-polling, 3-column tiling terminal IDE (`30% Left | 54% Center | 16% Right`) powered by a zero-dependency Rust engine (`ccide-core`, **v0.11.0**) and a 3-tier adaptive workspace controller.
+`ccide` transforms **Claude Code**, **Google Antigravity CLI (`agy`)**, and **OpenAI Codex CLI (`codex`)** into a zero-polling, 3-column tiling terminal IDE (`30% Left | 54% Center | 16% Right`) powered by a zero-dependency Rust engine (`ccide-core`, **v0.11.1**) and a 3-tier adaptive workspace controller.
 
+> **v0.11.1 highlights:** Full native **Antigravity Swarm** observability (`SWARM #<board_head> · <run>run·<wait>wait`, swarm title & selected-worker latest `board.jsonl` activity row, `running`/`waiting`/`stopped`/`killed` states with `waiting` protected from dismissal and `killed` dismissible, click-to-inspect worker switching Logo + `CONTEXT` + Yazi follow without `SIGUSR2`, and multi-model Swarm `COST` aggregation across coordinator + unique worker transcripts), validated `--conversation <id>` / `CCIDE_AGY_CONVERSATION` (`^[A-Za-z0-9_-]{8,64}$`), `CCIDE_AGY_HOME`, and Python 3.9+ `merge_agent_hooks.py`.
+>
 > **v0.11.0 highlights:** Multi-agent support across **Claude Code (`[main]`)**, **Google Antigravity CLI (`[agy]`)**, and **OpenAI Codex CLI (`[codex]`)** via `--agy`, `--codex`, `--agent <claude|agy|codex>`, or `CCIDE_AGENT` — complete with live `Yazi` file-tree reveal (`read_file`/`edit_file`/`apply_patch`), disk-only fallback discovery (`last_conversations.json` / `rollout-*.jsonl`), model-family sprite & `CONTEXT`/`COST` telemetry, and non-destructive hook installation (`install.sh --with-agy --with-codex`).
 
 ```text
@@ -109,6 +111,7 @@ ccide
 
 # Launch with Google Antigravity CLI (`agy`) or OpenAI Codex CLI (`codex`)
 ccide --agy
+ccide --agy --conversation <id>        # Validated ^[A-Za-z0-9_-]{8,64}$; or CCIDE_AGY_CONVERSATION / CCIDE_AGY_HOME
 ccide --codex
 CCIDE_AGENT=agy ccide --agent codex   # CLI flag overrides CCIDE_AGENT
 
@@ -135,8 +138,9 @@ python3 -I scripts/patch_claude_binary.py --verify
 ccide doctor --json
 ```
 
-### Multi-Agent Discovery & Opt-In `agy` Routing
-- **Hooks + Disk Fallback**: Both `agy` (`SessionStart` / `PostToolUse` emitting `{}`) and `codex` (`SessionStart` / `PostToolUse` emitting empty stdout) report live sessions to `ccide-core yazi-hook`, while every sidebar feature also works without hooks via disk-only discovery (`~/.gemini/antigravity-cli/cache/last_conversations.json` -> `transcript.jsonl`, and `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`).
+### Multi-Agent Discovery, Antigravity Swarm & Opt-In `agy` Routing
+- **Hooks + Disk Fallback**: Both `agy` (`SessionStart` / `PostToolUse` emitting `{}`) and `codex` (`SessionStart` / `PostToolUse` emitting empty stdout) report live sessions to `ccide-core yazi-hook`, while every sidebar feature also works without hooks via disk-only discovery (`~/.gemini/antigravity-cli/cache/last_conversations.json` -> `transcript.jsonl`, and `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`). `scripts/merge_agent_hooks.py` supports Python 3.9+ (including stock macOS `/usr/bin/python3`).
+- **Native Antigravity Swarm Sidebar (`SWARM`)**: Automatically detects `<sys_gen>/swarm/{swarm.json,members.json,board.jsonl}` and `subagents/*.json` relative to the active `agy` transcript, displaying `SWARM #<board_head> · <run>run·<wait>wait`, the swarm title, and the selected worker's latest `board.jsonl` snippet. Worker statuses map to `running`, `waiting` (protected from dismissal), `stopped`, and `killed` (dismissible); clicking a worker switches the Top Logo, `CONTEXT` panel, and Yazi preview target without `SIGUSR2`, while `COST` aggregates across the coordinator and unique worker transcripts.
 - **Opt-In `agy` Subagent Routing (`CCIDE_AGY_ORCH=1`)**: `integrations/antigravity/hooks.json` registers **no `PreToolUse` hook by default** because Antigravity's `PreToolUse` gate is fail-closed (`allow`/`deny`/`ask`/`force_ask`). Only enable `CCIDE_AGY_ORCH=1` with an `invoke_subagent` `PreToolUse` matcher if you intentionally want `pre-tool-hook` to return `{"decision":"allow","overwrite":{"Model":"..."}}` (**warning: this auto-approves matched `invoke_subagent` calls**).
 
 Inside Claude Code, you can also invoke the built-in plugin skills:
@@ -163,14 +167,15 @@ Releases are promoted through a strict two-stage pull-request pipeline. Direct p
 
 ## Roadmap
 
-- **v0.11.0 (Current)**: Multi-agent workspace, sidebar, telemetry & hook integration across **Claude Code**, **Google Antigravity CLI (`agy`)**, and **OpenAI Codex CLI (`codex`)**.
+- **v0.11.1 (Current)**: Native Antigravity Swarm observability (`SWARM` header, board activity row, click-to-inspect worker Logo/`CONTEXT`/Yazi, multi-model Swarm `COST` aggregation, `--conversation` / `CCIDE_AGY_HOME`), plus Python 3.9+ compatibility in `scripts/merge_agent_hooks.py`.
+- **v0.11.0**: Multi-agent workspace, sidebar, telemetry & hook integration across **Claude Code**, **Google Antigravity CLI (`agy`)**, and **OpenAI Codex CLI (`codex`)**.
 - **v1.0**: First-class PowerShell (`pwsh`) Windows Terminal reopen-based rebalance, WezTerm packaging & marketplace distribution, and passing `LayoutPlan` column widths to the iTerm2 daemon (`30% | 54% | 16%`).
 
 ---
 
 ## Architecture Documentation
 
-See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md), [`docs/ARCH_v0.11_multi_agent.md`](./docs/ARCH_v0.11_multi_agent.md), and [`AGENT.md`](./AGENT.md) for the complete module breakdown, multi-agent contracts, FFI/IPC specifications, and structural binary-patching strategy.
+See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md), [`docs/ARCH_v0.11_multi_agent.md`](./docs/ARCH_v0.11_multi_agent.md), [`docs/ARCH_v0.11.1_agy_swarm.md`](./docs/ARCH_v0.11.1_agy_swarm.md), and [`AGENT.md`](./AGENT.md) for the complete module breakdown, multi-agent & Swarm contracts, FFI/IPC specifications, and structural binary-patching strategy.
 
 ---
 

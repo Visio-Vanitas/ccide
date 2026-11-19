@@ -8,6 +8,9 @@ $LeftPct = "30"
 $KeepPanes = $false
 $IsWtChild = $false
 $Agent = if ($env:CCIDE_AGENT) { $env:CCIDE_AGENT } else { "claude" }
+$ConvId = if ($env:CCIDE_AGY_CONVERSATION) { $env:CCIDE_AGY_CONVERSATION } else { "" }
+$ExplicitConv = $false
+$ConvOrigArgs = @()
 $Backend = if ($env:CCIDE_BACKEND) { $env:CCIDE_BACKEND } else { "auto" }
 $TargetDir = (Get-Location).Path
 $ClaudeArgs = New-Object System.Collections.Generic.List[string]
@@ -74,6 +77,10 @@ while ($i -lt $args.Count) {
         }
         "^--keep-panes$"           { $KeepPanes = $true; $i++; continue }
         "^--wt-child$"             { $IsWtChild = $true; $i++; continue }
+        "^--wt-conv$"              {
+            if ($i + 1 -lt $args.Count) { $ConvId = [string]$args[$i + 1]; $i += 2; continue }
+            $i++; continue
+        }
         "^--agy$"                  { $Agent = "agy"; $i++; continue }
         "^--codex$"                { $Agent = "codex"; $i++; continue }
         "^--agent$"                {
@@ -81,6 +88,14 @@ while ($i -lt $args.Count) {
             Write-Error "Error: --agent requires claude|agy|codex"; exit 2
         }
         "^--agent=(.+)$"          { $Agent = $Matches[1]; $i++; continue }
+        "^--conversation$"         {
+            if ($i + 1 -lt $args.Count) {
+                $ConvId = [string]$args[$i + 1]; $ExplicitConv = $true
+                $ConvOrigArgs = @($arg, $ConvId); $i += 2; continue
+            }
+            Write-Error "Error: --conversation requires an id"; exit 2
+        }
+        "^--conversation=(.*)$"   { $ConvId = $Matches[1]; $ExplicitConv = $true; $ConvOrigArgs = @($arg); $i++; continue }
         "^(--clear-subagents|--clear-done)$" {
             Assert-CoreBin
             $sid = if ($i + 1 -lt $args.Count) { [string]$args[$i + 1] } else { "" }
@@ -188,6 +203,24 @@ switch ($Agent.ToLowerInvariant()) {
     }
 }
 $env:CCIDE_AGENT = $Agent
+if ($ExplicitConv) {
+    if ($ConvId -cnotmatch '\A[A-Za-z0-9_-]{8,64}\z') {
+        Write-Error "Error: invalid --conversation id '$ConvId' (expected 8-64 [A-Za-z0-9_-] chars)"
+        exit 2
+    }
+    if ($Agent -ne "agy") {
+        Write-Error "Error: --conversation is only supported for --agent agy"
+        exit 2
+    }
+    foreach ($ca in $ConvOrigArgs) { $ClaudeArgs.Add($ca) }
+    $env:CCIDE_AGY_CONVERSATION = $ConvId
+} elseif ($Agent -eq "agy" -and $ConvId) {
+    if ($ConvId -cnotmatch '\A[A-Za-z0-9_-]{8,64}\z') {
+        Write-Error "Error: invalid CCIDE_AGY_CONVERSATION '$ConvId' (expected 8-64 [A-Za-z0-9_-] chars)"
+        exit 2
+    }
+    $env:CCIDE_AGY_CONVERSATION = $ConvId
+}
 
 function Resolve-ClaudeExe {
     # Prefer a real `claude.exe` (patchable Bun standalone) over a `claude` shell shim.
@@ -232,7 +265,9 @@ if ($Backend -ne "wezterm" -and -not $IsWtChild -and $DetectedBackend -eq "none"
         # `wt.exe` parses `;` as a subcommand separator, so escape it inside paths.
         $WtDir = $TargetDir.Replace(";", "\;")
         $WtSelf = $SelfPs1.Replace(";", "\;")
-        & $WtCmd.Source -d $WtDir $SelfShell -ExecutionPolicy Bypass -File $WtSelf @args "--wt-child"
+        $WtExtra = @("--wt-child")
+        if ($Agent -eq "agy" -and $ConvId -and -not $ExplicitConv) { $WtExtra += @("--wt-conv", $ConvId) }
+        & $WtCmd.Source -d $WtDir $SelfShell -ExecutionPolicy Bypass -File $WtSelf @args @WtExtra
         $WtExit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
         exit $WtExit
     }
@@ -255,6 +290,12 @@ $TabAgentPath = Join-Path $CacheDir "tab_agent_$YaziId.txt"
 $TabAgentTmp = "$TabAgentPath.tmp.$PID"
 Set-Content -LiteralPath $TabAgentTmp -Value "$Agent`n" -NoNewline -Encoding ASCII
 Move-Item -LiteralPath $TabAgentTmp -Destination $TabAgentPath -Force
+if ($Agent -eq "agy" -and $ConvId) {
+    $TabConvPath = Join-Path $CacheDir "tab_conv_$YaziId.txt"
+    $TabConvTmp = "$TabConvPath.tmp.$PID"
+    Set-Content -LiteralPath $TabConvTmp -Value "$ConvId`n" -NoNewline -Encoding ASCII
+    Move-Item -LiteralPath $TabConvTmp -Destination $TabConvPath -Force
+}
 
 $PaneSpec = ""
 if (Test-Path $CoreBin) {

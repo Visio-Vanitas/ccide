@@ -1,13 +1,40 @@
-//! Row Builders for the `SUBAGENTS` Middle Panel (`src/commands/sidebar/subagents_rows.rs`).
+//! Row Builders for the `SUBAGENTS` / `SWARM` Middle Panel (`src/commands/sidebar/subagents_rows.rs`).
 
 use std::path::Path;
 
 use crate::session::transcript::SubagentItem;
-use crate::session::ConfigModels;
+use crate::session::{is_subagent_alive, AgySwarmSnapshot, ConfigModels};
 use crate::tui::grid::BoxRow;
 use crate::tui::layout::RowLayout;
 use crate::tui::palette::Palette;
 use crate::tui::{BOLD, RESET, SPINNERS};
+
+pub fn swarm_title_rows(active: bool, mid_interior: usize) -> usize {
+    usize::from(active && mid_interior >= 6)
+}
+
+pub fn resolve_swarm_title_line(
+    sw: &AgySwarmSnapshot,
+    active_view_id: &str,
+    subagents: &[SubagentItem],
+) -> String {
+    if active_view_id != "main" {
+        if let Some(ag) = subagents.iter().find(|a| a.full_id == active_view_id) {
+            if let Some((_, seq, summary)) =
+                sw.board_latest.iter().find(|(name, _, _)| name == &ag.desc)
+            {
+                return format!("#{seq} @{}: {summary}", ag.desc);
+            }
+        }
+    }
+    if !sw.title.is_empty() {
+        return sw.title.clone();
+    }
+    if let Some((name, seq, summary)) = sw.board_latest.first() {
+        return format!("#{seq} @{name}: {summary}");
+    }
+    String::new()
+}
 
 pub fn resolve_row_bg(active: bool, cursor: bool, pal: &Palette) -> &str {
     match (active, cursor) {
@@ -116,47 +143,62 @@ pub fn build_agent_item_rows(
     tick: usize,
     pal: &Palette,
 ) -> Vec<BoxRow> {
-    let (white, dim, cyan, green, amber) = (&pal.text, &pal.dim, &pal.cyan, &pal.green, &pal.amber);
+    let (white, dim, cyan, green, amber, coral) = (
+        &pal.text, &pal.dim, &pal.cyan, &pal.green, &pal.amber, &pal.coral,
+    );
     let mut all_agent_rows = Vec::with_capacity(subagents.len() * 2);
     for (i_ag, ag) in subagents.iter().enumerate() {
         let is_viewed = ag.full_id == active_view_id;
         let is_cur = cursor_idx == Some(i_ag + 1);
         let row_bg = resolve_row_bg(is_viewed, is_cur, pal);
         let (r1_rail, r2_rail) = format_rails(is_viewed, is_cur, pal);
-        let is_done = ag.status != "running";
-        let fallback_tag = if !is_done {
-            "run"
-        } else if ag.status == "stopped" {
-            "stop"
-        } else {
-            "done"
-        };
-        let eff_tag = if ag.tool.is_empty() {
-            fallback_tag
-        } else {
-            ag.tool.as_str()
-        };
-        let (icon, tag_col) = if !is_done {
-            (
+        let is_alive = is_subagent_alive(ag.status);
+        let (fallback_tag, icon, tag_col) = match ag.status {
+            "running" => (
+                "run",
                 format!("{cyan}{}{RESET}", SPINNERS[tick % SPINNERS.len()]),
                 amber.as_str(),
-            )
-        } else {
-            let ic = if ag.status == "stopped" {
-                format!("{amber}■{RESET}")
-            } else if is_viewed {
-                format!("{green}●{RESET}")
-            } else {
-                format!("{green}✓{RESET}")
-            };
-            (
-                ic,
+            ),
+            "waiting" => (
+                "wait",
+                format!("{dim}○{RESET}"),
+                if is_viewed || is_cur {
+                    cyan.as_str()
+                } else {
+                    dim.as_str()
+                },
+            ),
+            "killed" => ("kill", format!("{coral}×{RESET}"), coral.as_str()),
+            "stopped" => (
+                "stop",
+                format!("{amber}■{RESET}"),
                 if is_viewed || is_cur {
                     amber.as_str()
                 } else {
                     dim.as_str()
                 },
-            )
+            ),
+            _ => {
+                let ic = if is_viewed {
+                    format!("{green}●{RESET}")
+                } else {
+                    format!("{green}✓{RESET}")
+                };
+                (
+                    "done",
+                    ic,
+                    if is_viewed || is_cur {
+                        amber.as_str()
+                    } else {
+                        dim.as_str()
+                    },
+                )
+            }
+        };
+        let eff_tag = if ag.tool.is_empty() {
+            fallback_tag
+        } else {
+            ag.tool.as_str()
         };
 
         let mut left_hdr = format!(
@@ -170,7 +212,7 @@ pub fn build_agent_item_rows(
         {
             left_hdr.push_str(&format!(" {cyan}{bname}{RESET}"));
         }
-        let right_close = if is_done {
+        let right_close = if !is_alive {
             format!("{}×{RESET}", if is_cur { amber } else { dim })
         } else if is_viewed {
             format!("{cyan}●{RESET}")

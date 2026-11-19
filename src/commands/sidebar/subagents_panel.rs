@@ -1,15 +1,16 @@
-//! Middle Panel (`SUBAGENTS`) Renderer — Pinned `[<badge>]` + Scrollable Subagent List.
-//!
-//! Renders full-bleed 2-row selection rectangles (`active_view_bg` / `cursor_bg` / `active_cursor_bg`)
-//! with a 2-row left vertical rail (`▎` active / `┃` cursor) and inline status/action badges.
+//! Middle Panel (`SUBAGENTS` / `SWARM`) Renderer — Pinned `[<badge>]` + Scrollable Member List.
 
 use crate::commands::sidebar::hit_mask::FocusZone;
 use crate::commands::sidebar::mouse_actions::SidebarSelectState;
 use crate::commands::sidebar::orch_panel::build_orchestrator_panel;
-use crate::commands::sidebar::subagents_rows::{build_agent_item_rows, push_main_rows};
+use crate::commands::sidebar::subagents_rows::{
+    build_agent_item_rows, push_main_rows, resolve_swarm_title_line, swarm_title_rows,
+};
 use crate::orchestrator::OrchestratorConfig;
 use crate::session::transcript::SubagentItem;
-use crate::session::{classify_model_family_for, AgentKind, ConfigModels};
+use crate::session::{
+    classify_model_family_for, is_subagent_alive, AgentKind, AgySwarmSnapshot, ConfigModels,
+};
 use crate::tui::grid::{BoxRow, PanelSpec, TermGeom};
 use crate::tui::layout::RowLayout;
 use crate::tui::logo::{build_top_logo_panel, SpriteStore};
@@ -39,6 +40,7 @@ pub fn build_subagents_panel(
     cached_cfg: &ConfigModels,
     active_preset: &str,
     status_notice: Option<&str>,
+    swarm: Option<&AgySwarmSnapshot>,
     tick: usize,
     pal: &Palette,
 ) -> SubagentPanelOutput {
@@ -49,7 +51,12 @@ pub fn build_subagents_panel(
 
     let is_main_active = active_view_id == "main";
     let running_cnt = subagents.iter().filter(|a| a.status == "running").count();
-    let done_cnt = subagents.len().saturating_sub(running_cnt);
+    let waiting_cnt = subagents.iter().filter(|a| a.status == "waiting").count();
+    let alive_cnt = subagents
+        .iter()
+        .filter(|a| is_subagent_alive(a.status))
+        .count();
+    let done_cnt = subagents.len().saturating_sub(alive_cnt);
     let mut sub_rows = Vec::with_capacity(mid_interior.max(4));
 
     push_main_rows(
@@ -65,9 +72,25 @@ pub fn build_subagents_panel(
         pal,
     );
 
+    let active_swarm = swarm.filter(|s| s.active);
+    let title_line = active_swarm
+        .map(|sw| resolve_swarm_title_line(sw, active_view_id, subagents))
+        .unwrap_or_default();
+    let title_rows = swarm_title_rows(
+        active_swarm.is_some() && !title_line.is_empty(),
+        mid_interior,
+    );
+    if title_rows == 1 {
+        sub_rows.push(BoxRow {
+            text: row_fmt.split(&format!(" {cyan}◈{RESET} {dim}{title_line}{RESET}"), "", 0),
+            bg: String::new(),
+            tag: None,
+        });
+    }
+
     let show_notice = agent_kind.supports_view_switch()
         && status_notice.filter(|s| !s.is_empty()).is_some()
-        && mid_interior >= 4;
+        && mid_interior >= 4 + title_rows;
     if let Some(notice) = status_notice.filter(|_| show_notice) {
         sub_rows.push(BoxRow {
             text: row_fmt.split(&format!(" {amber}! {notice}{RESET}"), "", 0),
@@ -86,8 +109,8 @@ pub fn build_subagents_panel(
         pal,
     );
 
-    let show_clear_bar = done_cnt > 0 && mid_interior >= 5 + usize::from(show_notice);
-    let reserved = 2 + usize::from(show_notice) + usize::from(show_clear_bar);
+    let show_clear_bar = done_cnt > 0 && mid_interior >= 5 + title_rows + usize::from(show_notice);
+    let reserved = 2 + title_rows + usize::from(show_notice) + usize::from(show_clear_bar);
     let viewport_h = mid_interior.saturating_sub(reserved);
     let max_scroll = all_agent_rows.len().saturating_sub(viewport_h);
     *sub_scroll_offset = (*sub_scroll_offset).min(max_scroll);
@@ -121,31 +144,41 @@ pub fn build_subagents_panel(
         });
     }
 
-    let base_badge = if max_scroll > 0 {
-        let first_item = (*sub_scroll_offset / 2) + 1;
-        let last_item = (first_item + (viewport_h / 2).max(1) - 1).min(subagents.len());
-        if running_cnt > 0 {
-            format!(
-                "{running_cnt}run · ↕{first_item}-{last_item}/{}",
-                subagents.len()
-            )
+    let (panel_title, sub_badge) = if let Some(sw) = active_swarm {
+        let b = if cols < 24 {
+            format!("{running_cnt}r·{waiting_cnt}w")
         } else {
-            format!("↕ {first_item}-{last_item}/{}", subagents.len())
-        }
-    } else if running_cnt == 0 {
-        format!("{}+{}", agent_kind.badge(), subagents.len())
+            format!("#{} · {running_cnt}run·{waiting_cnt}wait", sw.board_head)
+        };
+        ("SWARM".to_string(), b)
     } else {
-        format!("{running_cnt} run/{}", subagents.len())
-    };
-    let sub_badge = if cols >= 32 {
-        format!("[{active_preset}] · {base_badge}")
-    } else {
-        format!("[{active_preset}]")
+        let base_badge = if max_scroll > 0 {
+            let first_item = (*sub_scroll_offset / 2) + 1;
+            let last_item = (first_item + (viewport_h / 2).max(1) - 1).min(subagents.len());
+            if running_cnt > 0 {
+                format!(
+                    "{running_cnt}run · ↕{first_item}-{last_item}/{}",
+                    subagents.len()
+                )
+            } else {
+                format!("↕ {first_item}-{last_item}/{}", subagents.len())
+            }
+        } else if running_cnt == 0 {
+            format!("{}+{}", agent_kind.badge(), subagents.len())
+        } else {
+            format!("{running_cnt} run/{}", subagents.len())
+        };
+        let b = if cols >= 32 {
+            format!("[{active_preset}] · {base_badge}")
+        } else {
+            format!("[{active_preset}]")
+        };
+        ("SUBAGENTS".to_string(), b)
     };
 
     SubagentPanelOutput {
         panel: PanelSpec {
-            title: "SUBAGENTS".to_string(),
+            title: panel_title,
             badge: sub_badge,
             accent: cyan.clone(),
             rows: sub_rows,
@@ -172,6 +205,7 @@ pub fn build_top_and_mid_panels(
     subagents: &[SubagentItem],
     cached_cfg: &ConfigModels,
     orch_cfg: &OrchestratorConfig,
+    swarm: Option<&AgySwarmSnapshot>,
     tick: usize,
     pal: &Palette,
 ) -> (PanelSpec, usize, PanelSpec, usize, usize, usize, usize) {
@@ -199,7 +233,10 @@ pub fn build_top_and_mid_panels(
     let sub_foc = sel.focus_zone == Some(FocusZone::Subagents);
     let (mid_panel, running_cnt, viewport_h) = if sel.show_orchestrator {
         let p = build_orchestrator_panel(geom.cols, mid_h, orch_cfg, sel.orch_cursor, sub_foc, pal);
-        let rc = subagents.iter().filter(|a| a.status == "running").count();
+        let rc = subagents
+            .iter()
+            .filter(|a| is_subagent_alive(a.status))
+            .count();
         (p, rc, mid_h.saturating_sub(2))
     } else {
         let o = build_subagents_panel(
@@ -217,6 +254,7 @@ pub fn build_top_and_mid_panels(
             cached_cfg,
             &orch_cfg.active_preset,
             sel.status_notice.as_deref(),
+            swarm,
             tick,
             pal,
         );

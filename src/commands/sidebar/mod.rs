@@ -1,7 +1,9 @@
 //! `ccide-core sidebar`: Event-Driven Interactive Right Sidebar Daemon (`src/commands/sidebar/`).
 
+pub mod agent_refresh;
 pub mod agent_tab;
 pub mod bottom_panel;
+pub mod dismiss;
 pub mod dispatch;
 pub mod hit_mask;
 pub mod input;
@@ -22,7 +24,8 @@ use crate::orchestrator::OrchestratorWatcher;
 use crate::platform::user_home_dir;
 use crate::session::transcript::SubagentItem;
 use crate::session::{
-    load_config_models_for, AgentKind, AgentSession, ConfigModels, SessionBinding,
+    is_subagent_alive, load_config_models_for, AgentKind, AgentSession, AgySwarmSnapshot,
+    ConfigModels, SessionBinding,
 };
 use crate::telemetry::TelemetrySampler;
 use crate::tui::context::SessionContextAnalyzer;
@@ -30,6 +33,7 @@ use crate::tui::grid::{get_terminal_geometry, render_multi_panel_grid};
 use crate::tui::logo::load_adaptive_logos;
 use crate::tui::palette::PaletteWatcher;
 
+use agent_refresh::sample_ctx;
 use agent_tab::{refresh_tab_dispatch, TabAgentWatcher};
 use bottom_panel::{
     append_bottom_panels, begin_sidebar_session, finish_sidebar_session, poll_and_dispatch_input,
@@ -52,6 +56,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
     let mut orch_watcher = OrchestratorWatcher::new(&home);
     let mut agent_watcher = TabAgentWatcher::new(&home, tab_yazi_id);
     let mut cur_agent_sess: Option<AgentSession> = None;
+    let mut cur_swarm: Option<AgySwarmSnapshot> = None;
     let mut telemetry = TelemetrySampler::new(48);
     let (mut sub_trackers, mut main_tracker, mut seen_sub_seq) =
         (HashMap::new(), HashMap::new(), HashMap::new());
@@ -101,7 +106,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             DIRTY_EVENT.store(true, Ordering::Relaxed);
         }
         let inner_w = geom.cols.saturating_sub(4).max(10);
-        let has_running_sub = subagents.iter().any(|a| a.status == "running");
+        let has_running_sub = subagents.iter().any(|a| is_subagent_alive(a.status));
         let is_dirty = !fast_input_redraw && DIRTY_EVENT.swap(false, Ordering::SeqCst);
 
         if !fast_input_redraw && (is_dirty || tick % 2 == 0) {
@@ -112,6 +117,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 ctx_analyzer.clear();
                 prev_rows.clear();
                 cur_agent_sess = None;
+                cur_swarm = None;
                 (
                     cached_ctx_snap,
                     seen_main_seq,
@@ -137,7 +143,7 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
             && (is_dirty || has_running_sub || sb.session_id.is_empty() || tick % 2 == 0)
         {
             let rebind_due = sb.session_id.is_empty() || is_dirty || tick % 2 == 0;
-            let (rebound, mt, mf, ml, ms, cfg, subs) = refresh_tab_dispatch(
+            let tr = refresh_tab_dispatch(
                 agent_kind,
                 rebind_due,
                 &home,
@@ -156,16 +162,9 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 &mut seen_sub_seq,
             );
             sb.agent = agent_kind;
-            (
-                main_tool, main_file, main_line, main_span, cached_cfg, subagents,
-            ) = (mt, mf, ml, ms, cfg, subs);
-            if rebound {
-                if agent_kind.supports_view_switch() {
-                    main_tracker.clear();
-                    sub_trackers.clear();
-                    seen_main_seq = None;
-                }
-                seen_sub_seq.clear();
+            (main_tool, main_file, main_line, main_span) = (tr.tool, tr.file, tr.line, tr.span);
+            (cached_cfg, subagents, cur_swarm) = (tr.cfg, tr.subs, tr.swarm);
+            if tr.rebound {
                 ctx_analyzer.clear();
                 prev_rows.clear();
                 active_view_id = "main".to_string();
@@ -187,32 +186,25 @@ pub fn run(target_cwd: &str, tab_yazi_id: &str, shell_pid_arg: u32) {
                 &subagents,
                 &cached_cfg,
                 &orch_watcher.cfg,
+                cur_swarm.as_ref(),
                 tick,
                 pal,
             );
         if !fast_input_redraw || cached_ctx_snap.is_none() {
             telemetry.sample();
-            cached_ctx_snap = Some(match (agent_kind, &cur_agent_sess) {
-                (AgentKind::Agy | AgentKind::Codex, Some(asess)) => {
-                    ctx_analyzer.sample_agent(&home, target_cwd, asess, &active_view_id)
-                }
-                _ => {
-                    let active_sub_m = (active_view_id != "main")
-                        .then(|| subagents.iter().find(|a| a.full_id == active_view_id))
-                        .flatten()
-                        .and_then(|a| a.model_raw.as_deref())
-                        .unwrap_or(&cached_cfg.sub_model_short);
-                    ctx_analyzer.sample(
-                        &home,
-                        target_cwd,
-                        &sb.session_id,
-                        sb.data_pid,
-                        &active_view_id,
-                        &cached_cfg.main_model_raw,
-                        active_sub_m,
-                    )
-                }
-            });
+            cached_ctx_snap = Some(sample_ctx(
+                &mut ctx_analyzer,
+                agent_kind,
+                &home,
+                target_cwd,
+                cur_agent_sess.as_ref(),
+                cur_swarm.as_ref(),
+                &active_view_id,
+                &sb.session_id,
+                sb.data_pid,
+                &subagents,
+                &cached_cfg,
+            ));
         }
         let ctx_snap = cached_ctx_snap.as_ref().expect("ctx_snap initialized");
 

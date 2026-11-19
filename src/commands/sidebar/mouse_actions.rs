@@ -1,17 +1,19 @@
-//! Masked Pointer Action & Subagent Dismissal Helpers (`src/commands/sidebar/mouse_actions.rs`).
+//! Masked Pointer Action Dispatcher (`src/commands/sidebar/mouse_actions.rs`).
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
+pub use crate::commands::sidebar::dismiss::{dismiss_all_completed, dismiss_single_completed};
 use crate::commands::sidebar::hit_mask::{
     FocusZone, MaskedAction, PointerCapture, SidebarGeomMask,
 };
 use crate::commands::sidebar::ipc::{
     spawn_center_focus_restore, trigger_native_view_switch, trigger_yazi_reveal,
+    write_active_view_state,
 };
 use crate::orchestrator::{OrchestratorConfig, ALL_ROLES};
-use crate::session::transcript::{append_dismissed_subagents, SubagentItem};
-use crate::session::{emit_yazi_blur, AgentKind};
+use crate::session::transcript::SubagentItem;
+use crate::session::{emit_yazi_blur, is_subagent_alive, AgentKind};
 
 pub struct DispatchEnv<'a> {
     pub home: &'a str,
@@ -45,7 +47,8 @@ impl<'a> DispatchEnv<'a> {
         last_click: &mut Instant,
     ) {
         if !self.agent.supports_view_switch() {
-            *active_view = "main".to_string();
+            *active_view = vid.to_string();
+            write_active_view_state(self.home, self.yazi_id, vid);
             *last_click = Instant::now();
             self.switch_signal_ok.set(Some(true));
             if !fp.is_empty() {
@@ -108,7 +111,7 @@ impl<'a> DispatchEnv<'a> {
             &ag.full_id,
             &ag.raw_type,
             &ag.desc,
-            ag.status != "running",
+            !is_subagent_alive(ag.status),
             ag.footer_rank,
             &ag.file,
             ag.line,
@@ -247,53 +250,6 @@ pub fn apply_masked_action(
         MaskedAction::RestoreCenterFocusOnly => {
             (sel.pane_has_focus, sel.focus_zone, sel.sub_cursor) = (false, None, None);
             *restore_focus = true;
-        }
-    }
-}
-
-pub fn dismiss_single_completed(
-    d_idx: usize,
-    env: &DispatchEnv<'_>,
-    subagents: &mut Vec<SubagentItem>,
-    active_view_id: &mut String,
-    sel: &mut SidebarSelectState,
-    switched_view: &mut bool,
-) {
-    if let Some(ag) = subagents.get(d_idx) {
-        if ag.status != "running" {
-            let dismissed_id = ag.full_id.clone();
-            append_dismissed_subagents(env.home, env.sid, std::slice::from_ref(&dismissed_id));
-            subagents.remove(d_idx);
-            sel.sub_cursor = sel.sub_cursor.map(|c| c.min(subagents.len()));
-            if *active_view_id == dismissed_id {
-                env.switch_to_main(active_view_id, &mut sel.last_click_instant);
-                *switched_view = true;
-            }
-        }
-    }
-}
-
-pub fn dismiss_all_completed(
-    env: &DispatchEnv<'_>,
-    subagents: &mut Vec<SubagentItem>,
-    active_view_id: &mut String,
-    sel: &mut SidebarSelectState,
-    switched_view: &mut bool,
-) {
-    let done_ids: Vec<String> = subagents
-        .iter()
-        .filter(|a| a.status != "running")
-        .map(|a| a.full_id.clone())
-        .collect();
-    if !done_ids.is_empty() {
-        let reset_main = done_ids.iter().any(|id| id == active_view_id);
-        append_dismissed_subagents(env.home, env.sid, &done_ids);
-        subagents.retain(|a| a.status == "running");
-        sel.sub_scroll = 0;
-        sel.sub_cursor = sel.sub_cursor.map(|c| c.min(subagents.len()));
-        if reset_main {
-            env.switch_to_main(active_view_id, &mut sel.last_click_instant);
-            *switched_view = true;
         }
     }
 }

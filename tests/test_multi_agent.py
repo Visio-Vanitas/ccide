@@ -75,7 +75,15 @@ class MultiAgentTests(unittest.TestCase):
             self.assertEqual(cc["SessionStart"][0]["command"], exp_cmd)
             self.assertEqual(cc["SessionStart"][0]["timeout"], 5)
             post_grp = cc["PostToolUse"][0]
-            self.assertIn("replace_file_content", post_grp["matcher"])
+            matcher_tokens = set(post_grp["matcher"].split("|"))
+            for expected_tool in (
+                "replace_file_content",
+                "swarm",
+                "post_message",
+                "invoke_subagent",
+                "swarm_wait",
+            ):
+                self.assertIn(expected_tool, matcher_tokens)
             self.assertEqual(post_grp["hooks"][0]["command"], exp_cmd)
             self.assertEqual(post_grp["hooks"][0]["timeout"], 5)
 
@@ -203,6 +211,45 @@ class MultiAgentTests(unittest.TestCase):
                     self.assertEqual(r_miss.returncode, 127)
                     self.assertIn("agy", r_miss.stderr)
 
+    @unittest.skipIf(os.name == "nt", "macOS /usr/bin/python3 3.9 compatibility test")
+    def test_merge_agent_hooks_python39_compat(self) -> None:
+        sys_py = "/usr/bin/python3"
+        if not os.path.isfile(sys_py):
+            self.skipTest("/usr/bin/python3 not present")
+        merger_py = os.path.join(_SCRIPTS_DIR, "merge_agent_hooks.py")
+        r_help = subprocess.run(
+            [sys_py, "-I", merger_py, "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r_help.returncode, 0, msg=r_help.stderr)
+        r_imp = subprocess.run(
+            [sys_py, "-I", "-c", f"import importlib.util; s=importlib.util.spec_from_file_location('m', {merger_py!r}); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert callable(m.merge_hooks)"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r_imp.returncode, 0, msg=r_imp.stderr)
+
+    @unittest.skipIf(os.name == "nt", "POSIX zsh launcher test")
+    def test_ccide_launcher_conversation_validation(self) -> None:
+        ccide = os.path.join(_SCRIPTS_DIR, "ccide")
+        if not shutil.which("zsh"):
+            self.skipTest("zsh not installed")
+        for bad in ("../bad", "short", "bad/slash"):
+            r_bad = subprocess.run(
+                ["zsh", ccide, "--agy", "--conversation", bad],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(r_bad.returncode, 2, msg=f"bad={bad} stderr={r_bad.stderr}")
+            self.assertIn("conversation", r_bad.stderr.lower())
+        r_eq = subprocess.run(
+            ["zsh", ccide, "--agy", "--conversation=../bad"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r_eq.returncode, 2, msg=r_eq.stderr)
+
     def test_v11_engine_hooks_and_doctor_when_built(self) -> None:
         bin_path = _v11_engine_bin()
         if not bin_path:
@@ -230,6 +277,27 @@ class MultiAgentTests(unittest.TestCase):
             )
             self.assertEqual(r_agy.stdout.strip(), "{}")
             self.assertTrue(os.path.isfile(os.path.join(td, ".cache", "cc-ide", "live_sess_conv-agy-1.json")))
+
+            # agy swarm PostToolUse wake-only smoke test -> '{}' + live_sess written
+            r_swarm = subprocess.run(
+                [bin_path, "yazi-hook", "--agent", "agy"],
+                input=json.dumps({
+                    "hookEventName": "PostToolUse",
+                    "conversationId": "conv-agy-swarm",
+                    "cwd": td,
+                    "transcriptPath": os.path.join(
+                        _REPO_ROOT, "tests", "fixtures", "agy_swarm", "brain", "coord-001", ".system_generated", "logs", "transcript.jsonl"
+                    ),
+                    "modelName": "gemini-flash-worker-agy",
+                    "toolCall": {"id": "sw1", "name": "swarm", "args": {"action": "add", "name": "w1"}},
+                }),
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertEqual(r_swarm.stdout.strip(), "{}")
+            self.assertTrue(os.path.isfile(os.path.join(td, ".cache", "cc-ide", "live_sess_conv-agy-swarm.json")))
 
             # codex PostToolUse -> empty stdout + live_sess written
             r_cdx = subprocess.run(

@@ -1,20 +1,16 @@
 //! Multi-Agent (`agy` / `codex`) Context & Cost Snapshot Builder (`src/tui/context/agent_ctx.rs`).
 
 use std::collections::HashMap;
-use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::time::Instant;
 
 use crate::budget::{compute_context_budget, CompactConfig};
-use crate::session::{
-    classify_model_family_for, codex_config, is_valid_model_name, short_model_label, AgentKind,
-    AgentSession,
-};
+use crate::session::{classify_model_family_for, short_model_label, AgentKind, AgentSession};
 use crate::tui::context::agy_parser::update_agy_ctx;
-use crate::tui::context::analyzer::{
-    apportion_tokens, is_native_1m_model_id, resolve_model_window_hint,
-};
+use crate::tui::context::agy_swarm_ctx::{pick_eff_model, resolve_agent_window};
+use crate::tui::context::analyzer::apportion_tokens;
 use crate::tui::context::bar::compute_cache_hit_pct;
 use crate::tui::context::codex_parser::update_codex_ctx;
 use crate::tui::context::perf::{PerfAccumMap, RawPerfSample};
@@ -39,23 +35,47 @@ pub struct AgentCtxSample {
     pub per_model: Vec<(String, u64, u64, u64)>,
 }
 
+impl AgentCtxSample {
+    /// Aggregates `(uncached_in, cached_in, out_tok)` in-place so `per_model` holds at most one entry per model.
+    pub fn aggregate_per_model(
+        &mut self,
+        model: &str,
+        uncached_in: u64,
+        cached_in: u64,
+        out_tok: u64,
+    ) {
+        if let Some(entry) = self.per_model.iter_mut().find(|e| e.0 == model) {
+            entry.1 = entry.1.saturating_add(uncached_in);
+            entry.2 = entry.2.saturating_add(cached_in);
+            entry.3 = entry.3.saturating_add(out_tok);
+        } else {
+            self.per_model
+                .push((model.to_string(), uncached_in, cached_in, out_tok));
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct AgentCtxTracker {
     pub offset: u64,
     pub partial: String,
     pub s: AgentCtxSample,
     pub prev_codex_totals: (u64, u64, u64),
+    pub last_seen: Option<Instant>,
 }
 
-/// Reads newly appended complete JSONL lines from `path` in `O(N)` up to the last `\n` byte,
-/// preserving multi-byte UTF-8 boundaries and resetting `tr` if the file shrank.
+/// Reads newly appended complete JSONL lines from `path` in `O(N)` up to the last `\n` byte.
 pub(crate) fn read_new_jsonl_lines(path: &Path, tr: &mut AgentCtxTracker) -> Vec<String> {
+    tr.last_seen = Some(Instant::now());
     let Ok(meta) = fs::metadata(path) else {
         return Vec::new();
     };
     let len = meta.len();
     if len < tr.offset {
-        *tr = AgentCtxTracker::default();
+        *tr = AgentCtxTracker {
+            last_seen: Some(Instant::now()),
+            ..AgentCtxTracker::default()
+        };
     }
     if len == tr.offset {
         return Vec::new();
@@ -83,125 +103,73 @@ pub(crate) fn read_new_jsonl_lines(path: &Path, tr: &mut AgentCtxTracker) -> Vec
         .collect()
 }
 
-fn resolve_agent_window(kind: AgentKind, sample_win: u64, model: &str) -> u64 {
-    match kind {
-        AgentKind::Codex if sample_win > 0 => sample_win,
-        AgentKind::Codex => codex_config()
-            .context_window
-            .filter(|&w| w > 0)
-            .unwrap_or_else(|| resolve_model_window_hint("", model, false)),
-        AgentKind::Agy => {
-            if let Some(env_w) = env::var("CCIDE_AGY_CONTEXT_WINDOW")
-                .ok()
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .filter(|&w| w >= 16_000)
-            {
-                return env_w;
-            }
-            if sample_win > 0 {
-                return sample_win;
-            }
-            match classify_model_family_for(AgentKind::Agy, model) {
-                "gemini" => 1_048_576,
-                "claude" if is_native_1m_model_id(model) => 1_000_000,
-                "openai" => 400_000,
-                _ => 200_000,
-            }
-        }
-        AgentKind::Claude => resolve_model_window_hint("", model, false),
-    }
-}
-
 impl SessionContextAnalyzer {
-    pub fn sample_agent(
+    pub(crate) fn snapshot_from(
         &mut self,
-        home: &str,
-        _cwd: &str,
-        sess: &AgentSession,
-        view_id: &str,
+        primary: &AgentCtxSample,
+        kind: AgentKind,
+        primary_model: &str,
+        is_sub: bool,
+        cost_sources: &[(AgentCtxSample, String)],
     ) -> ContextSnapshot {
-        self.pricing.reload_if_changed(home);
-        let is_sub = !view_id.is_empty() && view_id != "main";
-        let tr = self
-            .agent_trackers
-            .entry(sess.transcript_path.clone())
-            .or_default();
-        match sess.kind {
-            AgentKind::Agy => update_agy_ctx(&sess.transcript_path, tr),
-            AgentKind::Codex => update_codex_ctx(&sess.transcript_path, tr),
-            AgentKind::Claude => {}
-        }
-
-        let eff_model = if is_valid_model_name(&tr.s.model)
-            && !tr.s.model.eq_ignore_ascii_case("auto")
-        {
-            tr.s.model.clone()
-        } else if is_valid_model_name(&sess.model_id) && !sess.model_id.eq_ignore_ascii_case("auto")
-        {
-            sess.model_id.clone()
-        } else {
-            "auto".to_string()
-        };
-
-        let model_win_tokens = resolve_agent_window(sess.kind, tr.s.ctx_window, &eff_model);
-        let total_in = tr.s.occupancy;
-        let apportioned = apportion_tokens(total_in, &tr.s.weights);
+        let model_win_tokens = resolve_agent_window(kind, primary.ctx_window, primary_model);
+        let total_in = primary.occupancy;
+        let apportioned = apportion_tokens(total_in, &primary.weights);
         let budget = compute_context_budget(total_in, model_win_tokens, &CompactConfig::default());
 
         let mut perf_map: PerfAccumMap = HashMap::new();
-        for ps in &tr.s.perf {
-            if ps.out_tok == 0 && ps.ttft_ms == 0 {
-                continue;
-            }
-            let m_raw = if is_valid_model_name(&ps.model) && !ps.model.eq_ignore_ascii_case("auto")
-            {
-                &ps.model
-            } else {
-                &eff_model
-            };
-            perf_map
-                .entry(short_model_label(m_raw))
-                .or_default()
-                .record_exact(ps);
-        }
-
         let mut model_map: HashMap<String, ModelCostEntry> = HashMap::new();
-        let (mut cost_usd, mut uncached_usd) = (0.0f64, 0.0f64);
-        for (m_raw, uncached_in, cached_in, out_tok) in &tr.s.per_model {
-            let m_use = if is_valid_model_name(m_raw) && !m_raw.eq_ignore_ascii_case("auto") {
-                m_raw.as_str()
+        let (mut cost_usd, mut uncached_usd, mut session_turns) = (0.0f64, 0.0f64, 0usize);
+
+        for (src, fb_model) in cost_sources {
+            session_turns = session_turns.saturating_add(src.turns);
+            for ps in &src.perf {
+                if ps.out_tok == 0 && ps.ttft_ms == 0 {
+                    continue;
+                }
+                let m_raw = pick_eff_model(&ps.model, fb_model);
+                perf_map
+                    .entry(short_model_label(&m_raw))
+                    .or_default()
+                    .record_exact(ps);
+            }
+            let add_turns = if src.per_model.len() <= 1 {
+                src.turns.max(1)
             } else {
-                eff_model.as_str()
+                1
             };
-            let short = short_model_label(m_use);
-            let (act, unc) = self.pricing.resolve(m_use).compute_turn_cost(
-                *uncached_in,
-                0,
-                0,
-                *cached_in,
-                *out_tok,
-            );
-            cost_usd += act;
-            uncached_usd += unc;
-            let entry = model_map.entry(short.clone()).or_insert(ModelCostEntry {
-                model_short: short,
-                family: classify_model_family_for(sess.kind, m_use),
-                turns: 0,
-                input_tokens: 0,
-                cache_read_tokens: 0,
-                output_tokens: 0,
-                cost_usd: 0.0,
-                saved_usd: 0.0,
-                share_pct: 0,
-                tps: None,
-                ttft_ms: None,
-            });
-            entry.turns += 1;
-            entry.input_tokens = entry.input_tokens.saturating_add(*uncached_in);
-            entry.cache_read_tokens = entry.cache_read_tokens.saturating_add(*cached_in);
-            entry.output_tokens = entry.output_tokens.saturating_add(*out_tok);
-            entry.cost_usd += act;
-            entry.saved_usd += (unc - act).max(0.0);
+            for (m_raw, uncached_in, cached_in, out_tok) in &src.per_model {
+                let m_use = pick_eff_model(m_raw, fb_model);
+                let short = short_model_label(&m_use);
+                let (act, unc) = self.pricing.resolve(&m_use).compute_turn_cost(
+                    *uncached_in,
+                    0,
+                    0,
+                    *cached_in,
+                    *out_tok,
+                );
+                cost_usd += act;
+                uncached_usd += unc;
+                let entry = model_map.entry(short.clone()).or_insert(ModelCostEntry {
+                    model_short: short,
+                    family: classify_model_family_for(kind, &m_use),
+                    turns: 0,
+                    input_tokens: 0,
+                    cache_read_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: 0.0,
+                    saved_usd: 0.0,
+                    share_pct: 0,
+                    tps: None,
+                    ttft_ms: None,
+                });
+                entry.turns = entry.turns.saturating_add(add_turns);
+                entry.input_tokens = entry.input_tokens.saturating_add(*uncached_in);
+                entry.cache_read_tokens = entry.cache_read_tokens.saturating_add(*cached_in);
+                entry.output_tokens = entry.output_tokens.saturating_add(*out_tok);
+                entry.cost_usd += act;
+                entry.saved_usd += (unc - act).max(0.0);
+            }
         }
 
         let mut model_costs: Vec<ModelCostEntry> = model_map.into_values().collect();
@@ -245,11 +213,11 @@ impl SessionContextAnalyzer {
             tool_io_tokens: apportioned[2],
             thinking_tokens: apportioned[3],
             chat_tokens: apportioned[4],
-            cum_cache_read_tokens: tr.s.cum_cached,
-            session_hit_pct: compute_cache_hit_pct(tr.s.cum_cached, tr.s.cum_input),
-            last_hit_pct: compute_cache_hit_pct(tr.s.last_cached, total_in),
-            turns: tr.s.turns,
-            session_turns: tr.s.turns,
+            cum_cache_read_tokens: primary.cum_cached,
+            session_hit_pct: compute_cache_hit_pct(primary.cum_cached, primary.cum_input),
+            last_hit_pct: compute_cache_hit_pct(primary.last_cached, total_in),
+            turns: primary.turns,
+            session_turns: session_turns.max(primary.turns),
             cost_usd,
             saved_usd,
             saved_pct,
@@ -260,5 +228,30 @@ impl SessionContextAnalyzer {
             lines_removed: 0,
             model_costs,
         }
+    }
+
+    pub fn sample_agent(
+        &mut self,
+        home: &str,
+        _cwd: &str,
+        sess: &AgentSession,
+        view_id: &str,
+    ) -> ContextSnapshot {
+        self.pricing.reload_if_changed(home);
+        let is_sub = !view_id.is_empty() && view_id != "main";
+        let (primary, eff_model) = {
+            let tr = self
+                .agent_trackers
+                .entry(sess.transcript_path.clone())
+                .or_default();
+            match sess.kind {
+                AgentKind::Agy => update_agy_ctx(&sess.transcript_path, tr),
+                AgentKind::Codex => update_codex_ctx(&sess.transcript_path, tr),
+                AgentKind::Claude => {}
+            }
+            (tr.s.clone(), pick_eff_model(&tr.s.model, &sess.model_id))
+        };
+        let sources = [(primary.clone(), eff_model.clone())];
+        self.snapshot_from(&primary, sess.kind, &eff_model, is_sub, &sources)
     }
 }

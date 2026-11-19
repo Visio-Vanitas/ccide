@@ -101,12 +101,13 @@ pub fn update_codex_ctx(path: &Path, tr: &mut AgentCtxTracker) {
                             }
                         };
                         if (d_in | d_cr | d_out) != 0 {
-                            tr.s.per_model.push((
-                                tr.s.model.clone(),
+                            let m_key = tr.s.model.clone();
+                            tr.s.aggregate_per_model(
+                                &m_key,
                                 d_in.saturating_sub(d_cr),
                                 d_cr,
                                 d_out,
-                            ));
+                            );
                         }
                     }
                     "task_complete" => {

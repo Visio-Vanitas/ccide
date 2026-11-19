@@ -2,6 +2,7 @@
 
 pub mod agent_ctx;
 pub mod agy_parser;
+pub mod agy_swarm_ctx;
 pub mod analyzer;
 pub mod bar;
 pub mod codex_parser;

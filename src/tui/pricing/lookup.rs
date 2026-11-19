@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 
-use crate::json::{extract_json_f64, extract_json_u64};
+use crate::json::{extract_json_f64, extract_json_u64, iter_object_members};
 use crate::tui::pricing::ModelRate;
 
 pub fn resolve_pricing_path(home: &str) -> PathBuf {
@@ -67,87 +67,22 @@ const FUZZY_BLOCKLIST: &[&str] = &[
     "flash",
 ];
 
+const EFFORT_SUFFIXES: &[&str] = &["-low", "-medium", "-med", "-high", "-xhigh", "-max"];
 const MAX_SUFFIX_STRIP_SEGMENTS: usize = 4;
 
 pub fn parse_section_into(section_obj: &str, dst: &mut HashMap<String, ModelRate>) {
-    let bytes = section_obj.as_bytes();
-    let n = bytes.len();
-    let mut i = 1usize;
-    while i < n {
-        if bytes[i] == b'"' {
-            let k_start = i + 1;
-            let mut k_end = k_start;
-            while k_end < n {
-                if bytes[k_end] == b'\\' {
-                    k_end += 2;
-                    continue;
-                }
-                if bytes[k_end] == b'"' {
-                    break;
-                }
-                k_end += 1;
-            }
-            if k_end >= n {
-                break;
-            }
-            let key = section_obj[k_start..k_end].trim().to_ascii_lowercase();
-            if key.starts_with("github_copilot/") {
-                i = k_end + 1;
-                continue;
-            }
-            let mut j = k_end + 1;
-            while j < n && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if j < n && bytes[j] == b':' {
-                j += 1;
-                while j < n && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j < n && bytes[j] == b'{' {
-                    let obj_start = j;
-                    let mut depth = 0usize;
-                    let mut in_str = false;
-                    while j < n {
-                        let b = bytes[j];
-                        if in_str {
-                            if b == b'\\' {
-                                j += 2;
-                                continue;
-                            }
-                            if b == b'"' {
-                                in_str = false;
-                            }
-                        } else {
-                            match b {
-                                b'"' => in_str = true,
-                                b'{' => depth += 1,
-                                b'}' => {
-                                    depth -= 1;
-                                    if depth == 0 {
-                                        if let Some(rate) =
-                                            parse_rate_obj(&section_obj[obj_start..=j], &key)
-                                        {
-                                            let norm_k = normalize_model_key(&key);
-                                            if !norm_k.is_empty() && norm_k != key {
-                                                dst.insert(norm_k, rate);
-                                            }
-                                            dst.insert(key, rate);
-                                        }
-                                        break;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        j += 1;
-                    }
-                }
-            }
-            i = j + 1;
+    for (raw_k, val_slice) in iter_object_members(section_obj) {
+        let key = raw_k.trim().to_ascii_lowercase();
+        if key.starts_with("github_copilot/") || !val_slice.starts_with('{') {
             continue;
         }
-        i += 1;
+        if let Some(rate) = parse_rate_obj(val_slice, &key) {
+            let norm_k = normalize_model_key(&key);
+            if !norm_k.is_empty() && norm_k != key {
+                dst.insert(norm_k, rate);
+            }
+            dst.insert(key, rate);
+        }
     }
 }
 
@@ -237,31 +172,44 @@ pub fn lookup_in_maps(
             return Some(r);
         }
     }
-    let mut cand = norm.to_string();
-    for _ in 0..MAX_SUFFIX_STRIP_SEGMENTS {
-        if let Some((head, _)) = cand.rsplit_once('-') {
-            if head.len() < 5 || FUZZY_BLOCKLIST.contains(&head) {
-                break;
-            }
-            for map in [overrides, rates] {
-                if let Some(&r) = map.get(head) {
-                    return Some(r);
+    let mut base_norm = norm;
+    for eff in EFFORT_SUFFIXES {
+        if let Some(stripped) = norm.strip_suffix(eff) {
+            if stripped.len() >= 5 && !FUZZY_BLOCKLIST.contains(&stripped) {
+                for map in [overrides, rates] {
+                    if let Some(&r) = map.get(stripped) {
+                        return Some(r);
+                    }
                 }
+                base_norm = stripped;
             }
-            cand = head.to_string();
-        } else {
             break;
         }
     }
-    if norm.len() >= 5 && !FUZZY_BLOCKLIST.contains(&norm) {
+    let mut cand = base_norm.to_string();
+    for _ in 0..MAX_SUFFIX_STRIP_SEGMENTS {
+        let Some((head, _)) = cand.rsplit_once('-') else {
+            break;
+        };
+        if head.len() < 5 || FUZZY_BLOCKLIST.contains(&head) {
+            break;
+        }
+        for map in [overrides, rates] {
+            if let Some(&r) = map.get(head) {
+                return Some(r);
+            }
+        }
+        cand = head.to_string();
+    }
+    if base_norm.len() >= 5 && !FUZZY_BLOCKLIST.contains(&base_norm) {
         for map in [overrides, rates] {
             let mut best: Option<(usize, &str, ModelRate)> = None;
             for (k, &r) in map {
                 if k.len() >= 5
                     && !FUZZY_BLOCKLIST.contains(&k.as_str())
-                    && (norm.starts_with(k.as_str()) || k.starts_with(norm))
+                    && (base_norm.starts_with(k.as_str()) || k.starts_with(base_norm))
                 {
-                    let len = k.len().min(norm.len());
+                    let len = k.len().min(base_norm.len());
                     if best
                         .map(|(bl, bk, _)| len > bl || (len == bl && k.as_str() < bk))
                         .unwrap_or(true)
@@ -276,4 +224,35 @@ pub fn lookup_in_maps(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tui::pricing::PricingCatalog;
+
+    #[test]
+    fn resolves_swarm_effort_suffixes_and_preserves_dot_version_models() {
+        let cat = PricingCatalog::new("/nonexistent");
+        for (model, exp_in) in [
+            ("claude-opus-5-5-high", 4.0),
+            ("gemini-4-argon-high", 2.0),
+            ("gemini-3.8-flash-low", 1.5),
+            ("gemini-4-hydrogen-high", 2.0),
+            ("gpt-6-astra", 2.5),
+            ("gemini-2.5-pro", 1.25),
+            ("gpt-4.1", 2.0),
+        ] {
+            let r = cat.resolve(model);
+            assert!(
+                (r.input - exp_in).abs() < 1e-6,
+                "model={model} got={} expected={exp_in}",
+                r.input
+            );
+        }
+        assert_eq!(
+            cat.resolve("unknown-future-model-xhigh")
+                .compute_turn_cost(0, 0, 0, 0, 0),
+            (0.0, 0.0)
+        );
+    }
 }
