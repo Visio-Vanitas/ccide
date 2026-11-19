@@ -21,7 +21,20 @@ $RepoRoot = Split-Path -Parent $ScriptDir
 $ResolverMjs = Join-Path $HomeDir ".claude\scripts\ensure-ccide-core.mjs"
 if (-not (Test-Path $ResolverMjs)) { $ResolverMjs = Join-Path $ScriptDir "ensure-ccide-core.mjs" }
 if ((Test-Path $ResolverMjs) -and (Get-Command node -ErrorAction SilentlyContinue)) {
-    & node $ResolverMjs --version *> $null
+    $HadPlugRoot = Test-Path Env:CLAUDE_PLUGIN_ROOT
+    $PrevPlugRoot = $env:CLAUDE_PLUGIN_ROOT
+    if (-not $HadPlugRoot -and (Test-Path (Join-Path $RepoRoot ".claude-plugin\plugin.json"))) {
+        $env:CLAUDE_PLUGIN_ROOT = $RepoRoot
+    }
+    try {
+        & node $ResolverMjs --version *> $null
+    } finally {
+        if (-not $HadPlugRoot) {
+            Remove-Item Env:CLAUDE_PLUGIN_ROOT -ErrorAction SilentlyContinue
+        } else {
+            $env:CLAUDE_PLUGIN_ROOT = $PrevPlugRoot
+        }
+    }
 }
 $CoreBin = Join-Path $HomeDir ".claude\bin\ccide-core.exe"
 if (-not (Test-Path $CoreBin)) {
@@ -68,17 +81,21 @@ while ($i -lt $args.Count) {
         "^--wezterm$"              { $Backend = "wezterm"; $i++; continue }
         "^--wt$"                   { $Backend = "wt"; $i++; continue }
         "^(--backend)$"            {
-            if ($i + 1 -lt $args.Count) { $Backend = [string]$args[$i + 1]; $i += 2 } else { $i++ }
-            continue
+            if ($i + 1 -lt $args.Count -and [string]$args[$i + 1]) { $Backend = [string]$args[$i + 1]; $i += 2; continue }
+            Write-Error "Error: --backend requires a value"; exit 2
         }
         "^(--width)$"              {
-            if ($i + 1 -lt $args.Count) { $LeftPct = [string]$args[$i + 1]; $i += 2 } else { $i++ }
-            continue
+            if ($i + 1 -lt $args.Count -and [string]$args[$i + 1]) { $LeftPct = [string]$args[$i + 1]; $i += 2; continue }
+            Write-Error "Error: --width requires a percentage"; exit 2
         }
         "^--keep-panes$"           { $KeepPanes = $true; $i++; continue }
         "^--wt-child$"             { $IsWtChild = $true; $i++; continue }
         "^--wt-conv$"              {
             if ($i + 1 -lt $args.Count) { $ConvId = [string]$args[$i + 1]; $i += 2; continue }
+            $i++; continue
+        }
+        "^--wt-agy-home$"          {
+            if ($i + 1 -lt $args.Count) { $env:CCIDE_AGY_HOME = [string]$args[$i + 1]; $i += 2; continue }
             $i++; continue
         }
         "^--agy$"                  { $Agent = "agy"; $i++; continue }
@@ -87,7 +104,7 @@ while ($i -lt $args.Count) {
             if ($i + 1 -lt $args.Count) { $Agent = [string]$args[$i + 1]; $i += 2; continue }
             Write-Error "Error: --agent requires claude|agy|codex"; exit 2
         }
-        "^--agent=(.+)$"          { $Agent = $Matches[1]; $i++; continue }
+        "^--agent=(.*)$"          { $Agent = $Matches[1]; $i++; continue }
         "^--conversation$"         {
             if ($i + 1 -lt $args.Count) {
                 $ConvId = [string]$args[$i + 1]; $ExplicitConv = $true
@@ -265,8 +282,9 @@ if ($Backend -ne "wezterm" -and -not $IsWtChild -and $DetectedBackend -eq "none"
         # `wt.exe` parses `;` as a subcommand separator, so escape it inside paths.
         $WtDir = $TargetDir.Replace(";", "\;")
         $WtSelf = $SelfPs1.Replace(";", "\;")
-        $WtExtra = @("--wt-child")
+        $WtExtra = @("--wt-child", "--agent", $Agent)
         if ($Agent -eq "agy" -and $ConvId -and -not $ExplicitConv) { $WtExtra += @("--wt-conv", $ConvId) }
+        if ($env:CCIDE_AGY_HOME) { $WtExtra += @("--wt-agy-home", $env:CCIDE_AGY_HOME) }
         & $WtCmd.Source -d $WtDir $SelfShell -ExecutionPolicy Bypass -File $WtSelf @args @WtExtra
         $WtExit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
         exit $WtExit

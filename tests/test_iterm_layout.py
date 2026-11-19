@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for iTerm2 3-column layout math in ccide_daemon.py and iterm2_workspace.py."""
 
+import asyncio
 import importlib.machinery
 import importlib.util
 import os
@@ -13,9 +14,12 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _make_iterm2_stub() -> dict[str, types.ModuleType]:
+    class _StubSession:
+        pass
+
     iterm2_mod = types.ModuleType("iterm2")
     iterm2_mod.App = object
-    iterm2_mod.Session = object
+    iterm2_mod.Session = _StubSession
     iterm2_mod.Tab = object
     iterm2_mod.LocalWriteOnlyProfile = object
     iterm2_mod.Selection = lambda items: items
@@ -157,6 +161,52 @@ class ItermLayoutTests(unittest.TestCase):
                         self.assertEqual(
                             mod.compute_iterm_column_widths(total_w, above, has_right), hi
                         )
+
+    def test_narrow_and_non_positive_widths(self) -> None:
+        for mod in (self.daemon, self.workspace):
+            for total_w in (-1, 0):
+                for has_right in (True, False):
+                    self.assertEqual(mod.compute_iterm_column_widths(total_w, 30, has_right), (0, 0, 0))
+            for total_w in (1, 2, 10, 20, 39):
+                for has_right in (True, False):
+                    left_w, mid_w, right_w = mod.compute_iterm_column_widths(total_w, 30, has_right)
+                    self.assertEqual(left_w + mid_w + right_w, total_w)
+                    self.assertGreaterEqual(mid_w, 1)
+                    if not has_right:
+                        self.assertEqual(right_w, 0)
+
+    def test_apply_consistent_tab_widths_stubbed_session(self) -> None:
+        for mod in (self.daemon, self.workspace):
+            sess_cls = mod.iterm2.Session
+
+            def mk_leaf(w: int, h: int):
+                s = sess_cls()
+                s.grid_size = types.SimpleNamespace(width=w, height=h)
+                s.preferred_size = None
+                return s
+
+            s_yazi = mk_leaf(50, 30)
+            s_git = mk_leaf(50, 30)
+            s_center = mk_leaf(110, 60)
+            s_sb = mk_leaf(40, 60)
+            left_col = types.SimpleNamespace(children=[s_yazi, s_git])
+            tab = types.SimpleNamespace(root=types.SimpleNamespace(children=[left_col, s_center, s_sb]))
+            updated = []
+
+            async def noop_refresh():
+                return None
+
+            async def update_layout():
+                updated.append(True)
+
+            tab.async_update_layout = update_layout
+            app = types.SimpleNamespace(async_refresh=noop_refresh)
+            asyncio.run(mod.apply_consistent_tab_widths(app, tab, left_pct=30, min_total_w=268))
+            self.assertEqual(updated, [True])
+            self.assertEqual(s_yazi.preferred_size[0], 80)
+            self.assertEqual(s_git.preferred_size[0], 80)
+            self.assertEqual(s_center.preferred_size, (145, 60))
+            self.assertEqual(s_sb.preferred_size, (43, 60))
 
 
 if __name__ == "__main__":

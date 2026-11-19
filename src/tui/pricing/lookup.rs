@@ -235,9 +235,14 @@ mod tests {
         let cat = PricingCatalog::new("/nonexistent");
         for (model, exp_in) in [
             ("claude-opus-5-5-high", 4.0),
+            ("gemini-4-argon", 2.0),
             ("gemini-4-argon-high", 2.0),
-            ("gemini-3.8-flash-low", 1.5),
+            ("gemini-4-hydrogen", 2.0),
             ("gemini-4-hydrogen-high", 2.0),
+            ("gemini-4-neon", 2.0),
+            ("hydrogen-preview", 2.0),
+            ("gemini-3.8-flash-low", 1.5),
+            ("gpt-oss-120b-medium", 0.15),
             ("gpt-6-astra", 2.5),
             ("gemini-2.5-pro", 1.25),
             ("gpt-4.1", 2.0),
@@ -249,10 +254,9 @@ mod tests {
                 r.input
             );
         }
-        assert_eq!(
-            cat.resolve("unknown-future-model-xhigh")
-                .compute_turn_cost(0, 0, 0, 0, 0),
-            (0.0, 0.0)
-        );
+        let unk = cat.resolve("unknown-future-model-xhigh");
+        assert!(unk.input > 0.0 && unk.output > 0.0);
+        let (act, unc) = unk.compute_turn_cost(10_000, 0, 0, 0, 1_000);
+        assert!(act > 0.0 && (act - unc).abs() < 1e-9);
     }
 }

@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.2] - 2026-11-20
+
+### Fixed & Hardened
+- **Real Antigravity `transcript.jsonl` Parsing, Coordinator Promotion & Path Filtering (`src/session/`, `src/platform/mod.rs`, `src/json/scan.rs`)**:
+  - Supported both `"arguments"` and `"args"` (including double-encoded JSON string values via `extract_agy_arg_str` and quoted integers via `extract_agy_arg_u64`), preferred `agy_transcript_for_cid`, and filtered internal/temp paths (`/.gemini/`, `/.codex/`, `/.system_generated/`, `/.gemini/antigravity`, `/.codex/sessions/`) out of Yazi reveals.
+  - Promoted implicit or hook-bound Agy worker `conversation_id`s to their Swarm coordinator via `agy_parent_coordinator` / `agy_is_member_of` while letting explicit `--conversation` / `tab_conv_<yid>.txt` overrides bypass the 24 h mtime cutoff (`agy_resolve_cid_detail`).
+  - Pre-seeded empty transcript models from `members.json` / `sess.model_id` before `update_agy_ctx`, switched `agy_occupancy` to add `input + cache_read` for Claude models or when `input < cache_read`, decoded `file:///C:/...` across all OSes, and enforced `is_safe_id` in `agent.rs` and `scan.rs` plus `saturating_sub` / `unescape_key` in `json/scan.rs`.
+- **Swarm Worker Hook Isolation & Sidebar Protection (`src/commands/{hook_input,hook_records,yazi_hook}.rs`, `src/commands/sidebar/{dismiss,hit_mask}.rs`, `src/commands/workspace/{spec_io,actions}.rs`)**:
+  - Isolated Agy worker `PostToolUse` hooks (`agy_event_is_worker`, `should_reveal_agent_view`) so workers only write `live_sess_<sid>.json` and never overwrite coordinator `live_tab_<yid>.json`, `session_<coord>.yazi`, or `main_last_file_<yid>.json`, revealing Yazi only when the active view matches.
+  - Cleaned `active_view_<yid>.txt`, `main_last_file_<yid>.json`, and `tab_shell_<yid>.txt` in `remove_tab_state`, aligned `clear-subagents` with `!is_subagent_alive`, and tested `waiting` protection vs `killed` dismissal.
+- **Turn-Accurate Multi-Model `COST` & Expanded Pricing (`src/tui/context/`, `src/tui/pricing/`, `assets/pricing.json`)**:
+  - Tracked per-model turn counts in 5-tuple `per_model` and computed remainder-preserving per-turn cost `(t - 1) * cost(q) + cost(q + r)` in `snapshot_from` so multi-turn sessions never trigger false single-turn `above_tokens` surcharges, plus 10-minute idle tracker pruning in `sample_agent`.
+  - Added `gemini-4-argon`, `gemini-4-hydrogen`, `gemini-4-neon`, and `gpt-oss-120b` / `gpt-oss` pricing/fallback routing.
+- **CI/Release Milestone Fallback, Bootstrap Skew & Launcher/Installer Hardening (`.github/workflows/{ci,release}.yml`, `scripts/`, `install.{sh,ps1}`)**:
+  - Updated `ci.yml` and `release.yml` to promote `0.x.y` patches to full 6-target binary builds/releases when `v<M>.<m>.0` is absent on `origin`, plus 7-entry parity and `integrations/` validation in `ci.yml`.
+  - Updated `ensure-ccide-core.{sh,mjs}` to compare `(major, minor, patch)` versions and fall back from `v<M>.<m>.0` to `v<M>.<m>.<p>`, fixed `install.sh` `EXTRA_ARGS` forwarding and `install.ps1` `sys.argv`/`Invoke-BestEffort` safety, and forwarded `CLAUDE_PLUGIN_ROOT`, `CCIDE_AGY_HOME`, and `--wt-agy-home` across `ccide` / `ccide.ps1`.
+
+---
+
+## [0.11.1] - 2026-11-19
+
+### Added & Fixed
+- **Native Antigravity Swarm Observability (`src/session/agy_swarm{,_io}.rs`, `src/tui/context/agy_swarm_ctx.rs`, `src/commands/sidebar/{agent_tab,agent_refresh,dismiss,subagents_rows}.rs`)**:
+  - Auto-discovered `<sys_gen>/swarm/{swarm.json,members.json,board.jsonl}` and `subagents/*.json` relative to the active `agy` transcript, rendering `SWARM #<board_head> · <run>run·<wait>wait`, the swarm title, and the selected worker's latest `board.jsonl` snippet.
+  - Mapped Swarm member states (`running`, `waiting` protected from dismissal, `stopped`, `killed` dismissible), enabled click-to-inspect worker Top Logo + `CONTEXT` + Yazi follow without `SIGUSR2`, aggregated Swarm `COST` across coordinator and unique worker transcripts, and added `--conversation <id>` / `CCIDE_AGY_CONVERSATION` (`^[A-Za-z0-9_-]{8,64}$`) and `CCIDE_AGY_HOME`.
+  - Added `from __future__ import annotations` in `scripts/merge_agent_hooks.py` for stock macOS `/usr/bin/python3` (`3.9+`) compatibility.
+
+---
+
+## [0.11.0] - 2026-11-19
+
+### Added
+- **Multi-Agent Support: Google Antigravity CLI (`agy`) & OpenAI Codex CLI (`codex`) (`src/session/{agent,agent_bind,agy,codex,codex_discover}.rs`, `src/tui/context/{agent_ctx,agy_parser,codex_parser,snapshot}.rs`, `src/json/toml_lite.rs`, `src/commands/{hook_input,hook_records}.rs`, `src/commands/setup/doctor_agents.rs`, `integrations/`)**:
+  - Added `--agy`, `--codex`, `--agent <claude|agy|codex>`, and `CCIDE_AGENT` launcher support, non-destructive hook bundles (`~/.gemini/config/plugins/cc-ide/` and `$CODEX_HOME/hooks.json` via `scripts/merge_agent_hooks.py`), strict per-host hook stdout (`{}` for `agy`, empty stdout for `codex`, opt-in `CCIDE_AGY_ORCH=1`), and disk-only fallback discovery (`last_conversations.json` / `sessions/YYYY/MM/DD/rollout-*.jsonl`).
+  - Added `agy` and `codex` context/cost parsers (tolerant of Codex Desktop `0.167` object `context_window`), display-name pricing normalization (`"Claude Opus 4.6 (Thinking)"` -> `claude-opus-4-6`), `[agy]`/`[codex]` sidebar badges, and `doctor --json` `"agents"` / `"agent_hooks"` diagnostics.
+
+---
+
+## [0.10.1] - 2026-11-18
+
+### Fixed
+- **iTerm2 `LayoutPlan` Column-Width Parity (`scripts/ccide_daemon.py`, `scripts/iterm2_workspace.py`, `tests/test_iterm_layout.py`)**:
+  - Replaced legacy `56/80/38` floors (`sum=174`, which overflowed `< 175`-col windows and skewed `268`-col splits to `86|123|59`) with `compute_iterm_column_widths` matching `LayoutPlan` (`22/48/28` floors, deficit trimming, proportional narrow scaling, `user.cc_left_pct` persistence).
+
+---
+
 ## [0.10.0] - 2026-11-16
 
 ### Added & Changed
@@ -230,7 +276,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shared Cross-Platform Hardware Oscilloscope & Quadrant Model Logos (`src/telemetry/`, `src/tui/logo.rs`)**:
   - Single-instance `500 ms` `/tmp/.cc-ide/hw_telemetry_v1.bin` binary snapshot shared across all open tabs (`< 2 µs` read) rendering sub-pixel `CPU`, `GPU` (`IOKit AGX` / Linux `sysfs` & `nvidia-smi`), `MEM`, and `NET` curves alongside dynamic 2×2 Quadrant vector model logos (`CLAUDE`, `GEMINI`, `DEEPSEEK`, `OPENAI`, `GROK`).
 
-[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/Visio-Vanitas/ccide/compare/v0.11.1...v0.11.2
+[0.11.1]: https://github.com/Visio-Vanitas/ccide/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.10.1...v0.11.0
+[0.10.1]: https://github.com/Visio-Vanitas/ccide/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.4...v0.10.0
 [0.9.4]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/Visio-Vanitas/ccide/compare/v0.9.2...v0.9.3

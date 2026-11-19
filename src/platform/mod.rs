@@ -1,7 +1,4 @@
 //! Cross-Platform OS Paths, UNC Normalization & Executable Resolution (`src/platform/mod.rs`).
-//!
-//! Unifies environment & filesystem conventions across macOS, Linux, and Windows (`pwsh`/`cmd.exe`)
-//! with zero external crate dependencies (MSRV `1.70.0`).
 
 pub mod ipc;
 
@@ -126,7 +123,13 @@ pub fn is_internal_or_temp_path(abs_path: &str, home: &str) -> bool {
     let norm = normalize_slashes(abs_path);
     let home_norm = normalize_slashes(home).trim_end_matches('/').to_string();
     if !home_norm.is_empty() {
-        for sub in ["/.claude/projects/", "/.cache/cc-ide/", "/.lib/"] {
+        for sub in [
+            "/.claude/projects/",
+            "/.cache/cc-ide/",
+            "/.lib/",
+            "/.gemini/",
+            "/.codex/",
+        ] {
             if norm.starts_with(&format!("{home_norm}{sub}")) {
                 return true;
             }
@@ -138,6 +141,9 @@ pub fn is_internal_or_temp_path(abs_path: &str, home: &str) -> bool {
         || norm.starts_with("/private/tmp/.cc-ide-")
         || norm.contains("/.cache/cc-ide/")
         || norm.contains("/.claude/projects/")
+        || norm.contains("/.system_generated/")
+        || norm.contains("/.gemini/antigravity")
+        || norm.contains("/.codex/sessions/")
         || norm.contains("/tmp/claude-")
     {
         return true;
@@ -240,21 +246,21 @@ mod tests {
             normalize_slashes(r"\\?\C:\Users\dev\src\main.rs"),
             "C:/Users/dev/src/main.rs"
         );
-        assert!(is_internal_or_temp_path(
+        let chk = |p, h| is_internal_or_temp_path(p, h);
+        assert!(chk(
             r"C:\Users\dev\.claude\projects\abc\s1.jsonl",
             r"C:\Users\dev"
         ));
-        assert!(!is_internal_or_temp_path(
-            r"C:\Users\dev\repo\src\main.rs",
-            r"C:\Users\dev"
+        assert!(!chk(r"C:\Users\dev\repo\src\main.rs", r"C:\Users\dev"));
+        assert!(!chk("/repo/.lib/foo.rs", "/Users/dev"));
+        assert!(chk("/Users/dev/.lib/foo.rs", "/Users/dev"));
+        assert!(chk("/tmp/.cc-ide-501/ready_pid_42", "/Users/dev"));
+        assert!(chk(
+            "/Users/dev/.gemini/antigravity/brain/c1/.system_generated/steps/1/output.txt",
+            ""
         ));
-        assert!(!is_internal_or_temp_path("/repo/.lib/foo.rs", "/Users/dev"));
-        assert!(is_internal_or_temp_path(
-            "/Users/dev/.lib/foo.rs",
-            "/Users/dev"
-        ));
-        assert!(is_internal_or_temp_path(
-            "/tmp/.cc-ide-501/ready_pid_42",
+        assert!(chk(
+            "/Users/dev/.codex/sessions/2026/11/20/rollout-1.jsonl",
             "/Users/dev"
         ));
         assert!(paths_equal_ci(Path::new("/a/b/"), Path::new("/a/b")));

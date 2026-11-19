@@ -22,7 +22,7 @@ pub fn find_balanced_span(bytes: &[u8], start: usize, open_b: u8, close_b: u8) -
         } else if b == open_b {
             depth += 1;
         } else if b == close_b {
-            depth -= 1;
+            depth = depth.saturating_sub(1);
             if depth == 0 {
                 return Some(i);
             }
@@ -97,7 +97,7 @@ pub fn extract_string_list_in_array(arr_slice: &str) -> Vec<String> {
                 j += 1;
             }
             if j < bytes.len() {
-                out.push(arr_slice[start..j].to_string());
+                out.push(unescape_key(&arr_slice[start..j]));
                 i = j + 1;
                 continue;
             }
@@ -242,5 +242,9 @@ mod tests {
         assert_eq!(members[1], ("b".to_string(), "[true,false]"));
         assert_eq!(members[2], ("c".to_string(), "\"str\""));
         assert_eq!(members[3], ("d".to_string(), "42"));
+        assert_eq!(
+            extract_string_list_in_array(r#"["file:\/\/\/C:\/repo","C:\\Users\\dev"]"#),
+            vec!["file:///C:/repo", r"C:\Users\dev"]
+        );
     }
 }

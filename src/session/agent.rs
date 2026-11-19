@@ -59,7 +59,7 @@ pub fn is_safe_id(s: &str) -> bool {
 }
 
 pub fn read_tab_agent(home: &str, yid: &str) -> AgentKind {
-    if yid.is_empty() {
+    if !is_safe_id(yid) {
         return AgentKind::Claude;
     }
     let path = cache_dir(home).join(format!("tab_agent_{}.txt", yid));
@@ -70,7 +70,7 @@ pub fn read_tab_agent(home: &str, yid: &str) -> AgentKind {
 }
 
 pub fn write_tab_agent(home: &str, yid: &str, k: AgentKind) {
-    if yid.is_empty() {
+    if !is_safe_id(yid) {
         return;
     }
     let cdir = cache_dir(home);
@@ -135,6 +135,8 @@ mod tests {
         assert_eq!(read_tab_agent(&home, "y99"), AgentKind::Codex);
         write_tab_agent(&home, "y99", AgentKind::Agy);
         assert_eq!(read_tab_agent(&home, "y99"), AgentKind::Agy);
+        write_tab_agent(&home, "../evil", AgentKind::Codex);
+        assert_eq!(read_tab_agent(&home, "../evil"), AgentKind::Claude);
         let _ = fs::remove_dir_all(&tmp);
     }
 }

@@ -1,8 +1,8 @@
-# `cc-ide` (`ccide-core`) Architecture Overview (`v0.11.1`)
+# `cc-ide` (`ccide-core`) Architecture Overview (`v0.11.2`)
 
 `ccide-core` is a zero-crate, MSRV `1.70.0` Rust binary (Edition 2021) orchestrating a 3-column adaptive terminal IDE (`30% | 54% | 16%`) across **Claude Code**, **Google Antigravity CLI (`agy`)**, **Antigravity Swarm**, and **OpenAI Codex CLI (`codex`)** on macOS, Linux, and Windows.
 
-For frozen per-release interface contracts, see [`ARCH_v0.10.md`](./ARCH_v0.10.md), [`ARCH_v0.11_multi_agent.md`](./ARCH_v0.11_multi_agent.md), and [`ARCH_v0.11.1_agy_swarm.md`](./ARCH_v0.11.1_agy_swarm.md); for full maintenance notes, see [`../AGENT.md`](../AGENT.md).
+For frozen per-release interface contracts, see [`ARCH_v0.10.md`](./ARCH_v0.10.md), [`ARCH_v0.11_multi_agent.md`](./ARCH_v0.11_multi_agent.md), [`ARCH_v0.11.1_agy_swarm.md`](./ARCH_v0.11.1_agy_swarm.md), and [`ARCH_v0.11.2_hardening.md`](./ARCH_v0.11.2_hardening.md); for full maintenance notes, see [`../AGENT.md`](../AGENT.md).
 
 ---
 

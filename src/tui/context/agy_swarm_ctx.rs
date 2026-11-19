@@ -15,7 +15,13 @@ use crate::tui::context::analyzer::{is_native_1m_model_id, resolve_model_window_
 use crate::tui::context::{ContextSnapshot, SessionContextAnalyzer};
 
 const MAX_SWARM_WORKERS: usize = 48;
-const TRACKER_IDLE_TTL: Duration = Duration::from_secs(600);
+pub(crate) const TRACKER_IDLE_TTL: Duration = Duration::from_secs(600);
+
+pub(crate) fn seed_agy_model(dst: &mut String, fb: &str) {
+    if dst.is_empty() && is_valid_model_name(fb) && !fb.eq_ignore_ascii_case("auto") {
+        *dst = fb.to_string();
+    }
+}
 
 pub(crate) fn resolve_agent_window(kind: AgentKind, sample_win: u64, model: &str) -> u64 {
     match kind {
@@ -81,6 +87,7 @@ impl SessionContextAnalyzer {
                 .entry(sess.transcript_path.clone())
                 .or_default();
             tr.last_seen = Some(now);
+            seed_agy_model(&mut tr.s.model, &sess.model_id);
             update_agy_ctx(&sess.transcript_path, tr);
             (tr.s.clone(), pick_eff_model(&tr.s.model, &sess.model_id))
         };
@@ -120,6 +127,7 @@ impl SessionContextAnalyzer {
         for (fid, wpath, wmodel, _) in unique_workers {
             let tr = self.agent_trackers.entry(wpath.clone()).or_default();
             tr.last_seen = Some(now);
+            seed_agy_model(&mut tr.s.model, wmodel);
             update_agy_ctx(wpath, tr);
             let eff = pick_eff_model(&tr.s.model, wmodel);
             let sample = tr.s.clone();
@@ -227,6 +235,22 @@ mod tests {
         assert_eq!(
             (snap_argon.model_win_tokens, snap_argon.model_costs.len()),
             (1_048_576, 3)
+        );
+
+        let mut s20 = AgentCtxSample {
+            turns: 20,
+            ..Default::default()
+        };
+        for _ in 0..20 {
+            s20.aggregate_per_model("gemini-4-carbon", 15_000, 0, 0);
+        }
+        let src20 = [(s20.clone(), "gemini-4-carbon".to_string())];
+        let snap20 = an.snapshot_from(&s20, AgentKind::Agy, "gemini-4-carbon", false, &src20);
+        assert_eq!(snap20.model_costs[0].turns, 20);
+        assert!(
+            (snap20.cost_usd - 0.60).abs() < 1e-6,
+            "got {}",
+            snap20.cost_usd
         );
         let _ = fs::remove_dir_all(&dir);
     }

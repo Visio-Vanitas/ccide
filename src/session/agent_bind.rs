@@ -9,8 +9,8 @@ use crate::ffi::{is_pid_alive, ProcToken};
 use crate::json::{extract_json_str, extract_json_u64};
 use crate::platform::cache_dir;
 use crate::session::agent::{is_safe_id, AgentKind};
-use crate::session::agy::{agy_settings_model, agy_transcript_for_cid, agy_transcript_path};
-use crate::session::agy_swarm::agy_resolve_cid;
+use crate::session::agy::{agy_settings_model, agy_transcript_path};
+use crate::session::agy_swarm::{agy_parent_coordinator, agy_resolve_cid_detail};
 use crate::session::binding::{commit_binding, SessionBinding};
 use crate::session::codex::{
     codex_config, find_rollout_by_id, find_rollout_for_cwd, rollout_session_id,
@@ -76,42 +76,58 @@ pub fn resolve_agent_session(
         return None;
     }
     let cdir = cache_dir(home);
+    let agy_explicit = if kind == AgentKind::Agy {
+        agy_resolve_cid_detail(home, yid, cwd)
+            .filter(|(_, exp)| *exp)
+            .map(|(c, _)| c)
+    } else {
+        None
+    };
 
     if is_safe_id(yid) {
         if let Ok(txt) = fs::read_to_string(cdir.join(format!("live_tab_{}.json", yid))) {
             let ok_kind = extract_json_str(&txt, "agent").and_then(|a| AgentKind::from_name(&a))
                 == Some(kind);
             let tpath_s = extract_json_str(&txt, "transcript_path").unwrap_or_default();
-            let tpath = PathBuf::from(&tpath_s);
-            let has_dotdot = tpath
+            let mut tpath = PathBuf::from(&tpath_s);
+            let dotdot = tpath
                 .components()
                 .any(|c| c == std::path::Component::ParentDir);
-            if ok_kind && !tpath_s.is_empty() && !has_dotdot && tpath.is_file() {
+            if ok_kind && !tpath_s.is_empty() && !dotdot && tpath.is_file() {
                 if let Some(pid) = live_agent_pid(&txt) {
                     let raw_sid = extract_json_str(&txt, "session_id");
                     let bad_raw = raw_sid.as_ref().is_some_and(|s| !is_safe_id(s));
-                    let sid = raw_sid.unwrap_or_else(|| {
+                    let mut sid = raw_sid.unwrap_or_else(|| {
                         if kind == AgentKind::Codex {
                             rollout_session_id(&tpath)
                         } else {
                             String::new()
                         }
                     });
-                    let sid_ok = !bad_raw && (sid.is_empty() || is_safe_id(&sid));
-                    if sid_ok && (sid.is_empty() || !is_claimed_by_live_sibling(&cdir, &sid, yid)) {
-                        commit_binding(&cdir, &sid, yid);
-                        let model_id = extract_json_str(&txt, "model_id")
-                            .or_else(|| extract_json_str(&txt, "model"))
-                            .unwrap_or_default();
-                        let hcwd = extract_json_str(&txt, "cwd").unwrap_or_else(|| cwd.to_string());
-                        return Some(AgentSession {
-                            kind,
-                            session_id: sid,
-                            agent_pid: pid,
-                            transcript_path: tpath,
-                            model_id,
-                            cwd: hcwd,
-                        });
+                    let skip_exp = kind == AgentKind::Agy
+                        && agy_explicit.as_ref().is_some_and(|exp| exp != &sid);
+                    if !skip_exp && !bad_raw && (sid.is_empty() || is_safe_id(&sid)) {
+                        if kind == AgentKind::Agy && !sid.is_empty() {
+                            if let Some((c_cid, c_tp)) = agy_parent_coordinator(&sid, &tpath) {
+                                (sid, tpath) = (c_cid, c_tp);
+                            }
+                        }
+                        if sid.is_empty() || !is_claimed_by_live_sibling(&cdir, &sid, yid) {
+                            commit_binding(&cdir, &sid, yid);
+                            let model_id = extract_json_str(&txt, "model_id")
+                                .or_else(|| extract_json_str(&txt, "model"))
+                                .unwrap_or_default();
+                            let hcwd =
+                                extract_json_str(&txt, "cwd").unwrap_or_else(|| cwd.to_string());
+                            return Some(AgentSession {
+                                kind,
+                                session_id: sid,
+                                agent_pid: pid,
+                                transcript_path: tpath,
+                                model_id,
+                                cwd: hcwd,
+                            });
+                        }
                     }
                 }
             }
@@ -120,14 +136,23 @@ pub fn resolve_agent_session(
 
     match kind {
         AgentKind::Agy => {
-            let cid = agy_resolve_cid(home, yid, cwd).filter(|s| is_safe_id(s))?;
+            let (mut cid, is_explicit) = agy_resolve_cid_detail(home, yid, cwd)?;
+            if !is_safe_id(&cid) {
+                return None;
+            }
+            let mut tpath = agy_transcript_path(&cid);
+            if !is_explicit {
+                if let Some((c_cid, c_tp)) = agy_parent_coordinator(&cid, &tpath) {
+                    (cid, tpath) = (c_cid, c_tp);
+                }
+            }
             if is_claimed_by_live_sibling(&cdir, &cid, yid) {
                 return None;
             }
-            let tpath = agy_transcript_for_cid(&cid).unwrap_or_else(|| agy_transcript_path(&cid));
             let mt = fs::metadata(&tpath).and_then(|m| m.modified()).ok()?;
-            if SystemTime::now().duration_since(mt).unwrap_or_default()
-                > Duration::from_secs(86_400)
+            if !is_explicit
+                && SystemTime::now().duration_since(mt).unwrap_or_default()
+                    > Duration::from_secs(86_400)
             {
                 return None;
             }
@@ -234,7 +259,8 @@ mod tests {
         let self_tok = ProcToken::self_token().encode();
         let tr_esc = tr.to_string_lossy().replace('\\', "\\\\");
         let body = format!(
-            r#"{{"agent":"codex","session_id":"s1","agent_pid":"{self_tok}","transcript_path":"{tr_esc}","model_id":"gpt-5.4","cwd":"/repo"}}"#
+            "{{\"agent\":\"codex\",\"session_id\":\"s1\",\"agent_pid\":\"{self_tok}\",\
+            \"transcript_path\":\"{tr_esc}\",\"model_id\":\"gpt-5.4\",\"cwd\":\"/repo\"}}"
         );
         fs::write(cdir.join("live_tab_y1.json"), body).unwrap();
         let home = base.to_string_lossy().into_owned();

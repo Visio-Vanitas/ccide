@@ -1,7 +1,7 @@
 # `cc-ide` (`ccide-core`) — Architecture & Agent Maintenance Guide
 
 ## 1. Overview
-`cc-ide` (v0.10.0) is a high-performance, cross-platform native engine for the 3-column Claude Code tiling workspace across **macOS**, **Linux**, and **Windows (`pwsh` / `cmd.exe`)**. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses zero external Cargo crates and no nightly features, and builds out of the box on LTS Linux distributions, macOS, and Windows MSVC:
+`cc-ide` (v0.11.2) is a high-performance, cross-platform native engine for the 3-column tiling workspace across **Claude Code**, **Google Antigravity CLI (`agy`, including Antigravity Swarm)**, and **OpenAI Codex CLI (`codex`)** on **macOS**, **Linux**, and **Windows (`pwsh` / `cmd.exe`)**. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses zero external Cargo crates and no nightly features, and builds out of the box on LTS Linux distributions, macOS, and Windows MSVC:
 - **Left Column (30%)**: `Yazi` File Tree (top, synced live on Claude Code `Read`/`Edit`/`Write`/`MultiEdit`/`NotebookEdit`/`LSP`/`Grep` ops — automatically revealing the file AND scrolling/highlighting the exact modified or inspected line range in preview via `assets/yazi-hscroll.lua` + `src/session/focus.rs`) + `Lazygit` Diff (bottom, unwrapped by default via `~/.config/cc-ide/viewer.json` with compact single-column `109│` line numbers via `scripts/lazygit-pager.sh`, full-stream zero-telemetry hash-free commit logs via `scripts/lazygit-log.py`, optional `vi`-style `↪` wrapping when `"wrap": true`, and hover-targeted content-bounds-clamped Magic Mouse scrolling via `scripts/pty-hscroll-bridge.py`), locked to zero terminal scrollback (`scrollback_lines = 0`).
 - **Center Column (54%)**: `Claude Code` Main Workspace (with native `viewing-agent` switching, untouched native `/btw` overlay, and clean bottom chrome).
 - **Right Column (16%)**: `ccide-core sidebar` 3-Tier Interactive TUI:
@@ -31,13 +31,20 @@ ccide/
 ├── install.sh                # POSIX Interactive TUI & Headless Installer, Doctor & Uninstaller
 ├── install.ps1 / install.cmd # Native PowerShell & cmd.exe Windows Installer, Doctor & Uninstaller
 ├── .claude-plugin/
-│   ├── marketplace.json      # Official Claude Code Marketplace manifest ("cc-ide" v0.10.0)
-│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.10.0)
+│   ├── marketplace.json      # Official Claude Code Marketplace manifest ("cc-ide" v0.11.2)
+│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.11.2)
+├── integrations/
+│   ├── antigravity/          # Native Antigravity plugin (`plugin.json`, `hooks*.json`, `hook.{sh,cmd}`)
+│   └── codex/                # Codex plugin & hooks (`.codex-plugin/plugin.json` v0.11.2, `hooks*.json`, `hook.{sh,cmd}`)
 ├── hooks/
 │   ├── hooks.json            # Official Plugin Hooks (modules: ./register.ts + Pre/PostToolUse, Subagent*, PostModelSwitch, SessionStart)
 │   └── register.ts           # In-process mod: immediate slash commands (/palette, /rebalance-panes, /clear-agents, /orch, /ccide-doctor), turn.step TPS/TTFT & model sync
 ├── docs/
+│   ├── ARCHITECTURE.md       # High-level multi-agent module & integration overview
 │   ├── ARCH_v0.10.md         # Frozen v0.10.0 architecture contract (PaneSpec v2, LayoutPlan, Ghostty & CLI specs)
+│   ├── ARCH_v0.11_multi_agent.md # Frozen v0.11.0 multi-agent architecture (`agy` + `codex`)
+│   ├── ARCH_v0.11.1_agy_swarm.md # Frozen v0.11.1 Antigravity Swarm architecture
+│   ├── ARCH_v0.11.2_hardening.md # Frozen v0.11.2 hardening contract
 │   └── CLAUDE_CODE_INTERFACES.md # Verified Claude Code plugin, hook, subagent & Workflow SDK reference
 ├── skills/
 │   ├── ccide/SKILL.md        # `/cc-ide:ccide` workspace controller skill
@@ -59,6 +66,7 @@ ccide/
 │   ├── cc_patch_rules.py     # Minimal structural regex patch rules & invariant string anchors
 │   ├── patch_claude_binary.py# Atomic binary patcher, Bun bytecode cache invalidator & `--verify` guard
 │   ├── agent-task-context.py # Deterministic Issue -> JSON agent brief, PR promotion notes & line-budget gate
+│   ├── merge_agent_hooks.py  # Non-destructive Python 3.9+ hook merger for Codex `$CODEX_HOME/hooks.json`
 │   ├── sync-pricing.py       # Upstream pricing sync (`BerriAI/litellm` + `pydantic/genai-prices`)
 │   ├── ccide_daemon.py       # iTerm2 AutoLaunch warm daemon (Unix socket + OSC 1337 SSH bridge + FocusMonitor)
 │   ├── iterm2_workspace.py   # Cold fallback: iTerm2 Python API 3-column tiling & view-switch controller
@@ -86,14 +94,14 @@ ccide/
     ├── main.rs               # CLI dispatcher (--version, proto, sidebar, yazi-hook, statusline, workspace, pane-runner, ipc-dir, wake-pid, setup, doctor)
     ├── platform/             # Cross-OS paths, 0700 per-UID IPC dir (`ipc.rs`), atomic_write & executable discovery (`mod.rs`)
     ├── ffi/                  # Zero-crate OS FFI (`mod`, `unix`, `macos`, `windows`, `win_sys`) & generation-guarded `ProcToken`
-    ├── json/                 # Zero-dependency JSON & JSONC leaf (`mod`, `extract`, `scan`, `jsonc`)
+    ├── json/                 # Zero-dependency JSON, JSONC & TOML-scalar leaf (`mod`, `extract`, `scan`, `jsonc`, `toml_lite`)
     ├── budget/               # Context window & auto-compact leaf (`mod`, `config`)
     ├── model_id.rs           # Leaf model-name validator & shim prefix helpers
     ├── proto.rs              # Leaf protocol constants & `ccide-core proto [--json]`
     ├── tui/
     │   ├── mod.rs            # ANSI color palette & block/spinner constants
     │   ├── layout.rs         # Declarative cell typesetting engine (`RowLayout`, `ColSpec`, `ColumnWidths`)
-    │   ├── context/          # Compact `CONTEXT` + scrollable `3/2/1`-line `COST` (`mod`, `analyzer`, `bar`, `cost_panel`, `json_scan`, `parser`, `perf`, `render`)
+    │   ├── context/          # `CONTEXT` + `COST` (`mod`, `snapshot`, `agent_ctx`, `agy_swarm_ctx`, `agy_parser`, `codex_parser`, `analyzer`, `bar`, `cost_panel`, `json_scan`, `parser`, `perf`, `render`)
     │   ├── pricing/          # `tokscale`-aligned progressive multi-vendor pricing (`mod`, `lookup`)
     │   ├── logo/             # Inline Kitty `APC _G` / `OSC 1337` PNG & `.ansi` sprite renderer (`mod`, `image`, `ansi`)
     │   ├── palette/          # Customizable JSONC palette, 6 presets & companion syntax sync (`mod`, `presets`, `syntax`, `artifacts`, `companions`, `template`)
@@ -103,19 +111,23 @@ ccide/
     ├── orchestrator/         # Zero-patch Subagent & Workflow router (`mod`, `presets`, `router`, `shims`, `workflow_router`)
     ├── session/
     │   ├── mod.rs            # Process-tree-isolated sessionId & live Yazi tab resolver (+ `binding.rs`, `scan.rs`)
+    │   ├── agent.rs          # `AgentKind::{Claude, Agy, Codex}`, `tab_agent_<yid>.txt`, `agy_home`/`codex_home` (+ `agent_bind.rs`)
+    │   ├── agy.rs            # Antigravity CLI session, Swarm (`agy_swarm.rs`, `agy_swarm_io.rs`) & tool/subagent parsers
+    │   ├── codex.rs          # Codex CLI TOML config, rollout discovery (`codex_discover.rs`) & `apply_patch` parsers
     │   ├── model.rs          # Per-session model family, alias & 3-tier width compactor (+ `model_compact.rs`)
     │   ├── focus.rs          # Tool hunk line locator, Yazi `blur` & preview auto-scroll/highlight IPC
     │   ├── transcript.rs     # Incremental offset-cached .jsonl parser (+ `transcript_main.rs`)
     │   └── subagents.rs      # Session-isolated subagent discovery & dismissal store (+ `subagent_state.rs`)
     └── commands/
         ├── mod.rs
+        ├── hook_input.rs     # Multi-agent hook event normalization, stdout gate & worker isolation (+ `hook_records.rs`)
         ├── pane_runner.rs    # Cross-platform companion pane supervisor (`geom_<yid>_<role>.txt` & `reload_lg_<yid>`)
         ├── pre_tool_hook.rs  # `PreToolUse` subagent & Workflow model/effort router (`ccide-core pre-tool-hook`)
-        ├── setup/            # Interactive TUI installer, theme studio & `doctor [--json]` (`mod`, `doctor`, `doctor_probes`, `doctor_render`, `input`, `runner`, `ui`)
-        ├── sidebar/          # Event-driven right sidebar (`mod`, `bottom_panel`, `dispatch`, `hit_mask`, `input`, `ipc`, `ipc_guard`, `mouse_actions`, `orch_panel`, `subagents_panel`)
+        ├── setup/            # Interactive TUI installer, theme studio & `doctor [--json]` (`mod`, `doctor`, `doctor_probes`, `doctor_agents`, `doctor_render`, `input`, `runner`, `ui`)
+        ├── sidebar/          # Event-driven right sidebar (`mod`, `agent_tab`, `agent_refresh`, `bottom_panel`, `dismiss`, `dispatch`, `hit_mask`, `input`, `ipc`, `ipc_guard`, `mouse_actions`, `orch_panel`, `subagents_panel`, `subagents_rows`)
         ├── statusline/       # Powerline statusline & git summary (`mod`, `git_info`)
-        ├── workspace/        # Adaptive workspace engine (`mod`, `spec`, `layout`, `open`, `detect`, `rebalance`, `reload`, `actions`, `iterm`, `ghostty`, `ghostty_script`, `ghostty_linux`, `tmux`, `wezterm`, `wt`)
-        └── yazi_hook.rs      # Official Plugin Hook handler (`PostToolUse`, `Subagent*`, `PostModelSwitch`, `SessionStart`)
+        ├── workspace/        # Adaptive workspace engine (`mod`, `spec`, `spec_io`, `layout`, `open`, `detect`, `rebalance`, `reload`, `actions`, `iterm`, `ghostty`, `ghostty_script`, `ghostty_linux`, `tmux`, `wezterm`, `wt`)
+        └── yazi_hook.rs      # Multi-agent Plugin Hook handler (`PostToolUse`, `Subagent*`, `PostModelSwitch`, `SessionStart`)
 ```
 
 ---
@@ -267,7 +279,7 @@ ccide doctor [--json]
 Installer side effects worth knowing:
 - **Stage 3a (`scripts/iterm-pyenv.py`)**: locates `iTerm.app` across `/Applications`, `~/Applications`, and `mdfind`; respects `PIP_INDEX_URL` / `pip config list` or concurrently probes `pypi.org`, TUNA, Aliyun, and USTC (cached 24h in `~/.cache/cc-ide/pypi_mirror.json`); provisions an isolated PEP 668-safe venv at `~/.local/share/cc-ide/pyenv` with `iterm2` installed and records `~/.cache/cc-ide/python_bin` (falling back cleanly to Tier 3 `tmux` with copy-pasteable commands when offline).
 - **Stage 3b (`scripts/iterm-preferences.py`)**: backs up `com.googlecode.iterm2.plist` + original key snapshot under `~/.config/cc-ide/backups/iterm2/`, idempotently applies `ShowPaneTitles=false`, `ShowPaneTitlesEvenIfOnlyOnePane=false`, `PerPaneBackgroundImage=false`, `DimInactiveSplitPanes=false`, and `EnableAPIServer=true` (leaving `SplitPaneDimmingAmount` untouched and clearing per-pane wallpapers via `LocalWriteOnlyProfile`), and supports exact rollback via `./install.sh --restore-iterm-preferences`.
-- **Scripts, SSH & Plugin Cache**: symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/` (and `ccide.cmd` + `ccide.ps1` on Windows via `install.ps1` / `install.cmd`), (re)writes `~/.ssh/ccide_config` + `Include` in `~/.ssh/config`, (re)starts `ccide_daemon.py`, and packages `cc-ide` into `~/.claude/plugins/cache/cc-ide/cc-ide/0.10.0/` (fetching milestone-pinned `v<major>.<minor>.0` release binaries via `scripts/ensure-ccide-core.mjs` / `ensure-ccide-core.sh` when `cargo` is absent, with `--version` skew detection).
+- **Scripts, SSH & Plugin Cache**: symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/` (and `ccide.cmd` + `ccide.ps1` on Windows via `install.ps1` / `install.cmd`), (re)writes `~/.ssh/ccide_config` + `Include` in `~/.ssh/config`, (re)starts `ccide_daemon.py`, packages `cc-ide` into `~/.claude/plugins/cache/cc-ide/cc-ide/0.11.2/` (fetching release binaries via `scripts/ensure-ccide-core.{mjs,sh}` when `cargo` is absent, trying `v<M>.<m>.0` first and falling back to `v<M>.<m>.<p>`, with `(M, m, p)` `--version` skew detection), and non-destructively installs Antigravity (`~/.gemini/config/plugins/cc-ide/`) & Codex (`$CODEX_HOME/hooks.json` via `scripts/merge_agent_hooks.py`) integrations when present or requested via `--with-agy` / `--with-codex`.
 
 ---
 
@@ -278,11 +290,11 @@ Installer side effects worth knowing:
 - CI proves the floor with a real toolchain: `dtolnay/rust-toolchain@master` with `toolchain: 1.70.0`, then `cargo +1.70.0 check --locked --all-targets` and `cargo +1.70.0 test --locked` against the v3 `Cargo.lock`. Stable is used only for `rustfmt` and `clippy --all-targets -- -D warnings`.
 
 ### 7.2 Promotion Flow (enforced by `.github/workflows/ci.yml`)
-1. **`dev`** — feature work; pushes and PRs run the full gate (no release).
-2. **`preview`** — a PR from `dev`; on merge, `ci.yml` runs a live 3-OS `cc-maint.py --fetch-npm latest` probe, and for `0.X.0` minor milestones `release.yml` publishes a pre-release tag `v0.X.0-rc.<run_number>` (`prerelease: true`, `make_latest: false`; `0.x.y` patches skip RC releases).
-3. **`main`** — a PR from `preview` only; the `branch-flow-guard` job fails any PR whose `head_ref` is not `preview`. On merge, `release.yml` publishes the immutable stable tag `v0.X.0` (`make_latest: true`) for minor milestones, or creates lightweight tag `v0.x.y` for patch releases.
+1. **`dev`** — feature work; pushes and PRs run the full gate (`ci.yml` validates shell/pwsh/Python scripts including `integrations/*/hook.sh` and `merge_agent_hooks.py`, 7-entry version parity across `Cargo.toml`/`plugin.json`/`marketplace.json`/`install.sh`/`install.ps1`/`integrations/codex/.codex-plugin/plugin.json`, and full Rust + Python unit suites).
+2. **`preview`** — a PR from `dev`; on merge, `ci.yml` runs a live 3-OS `cc-maint.py --fetch-npm latest` probe, and for `0.X.0` minor milestones (or `0.x.y` patches when `v0.X.0` is absent on `origin`) `release.yml` publishes a pre-release tag `v<ver>-rc.<run_number>` (`prerelease: true`, `make_latest: false`; `0.x.y` patches with an existing `v0.X.0` tag skip RC releases).
+3. **`main`** — a PR from `preview` only; the `branch-flow-guard` job fails any PR whose `head_ref` is not `preview`. On merge, `release.yml` publishes the immutable stable tag `v<ver>` (`make_latest: true`) with 6-target binaries for minor milestones or when `v0.X.0` is absent on `origin`, otherwise creating lightweight tag `v0.x.y`.
 
-**`0.X.0` minor milestones vs `0.x.y` patches.** `ci.yml` and `release.yml` both parse `Cargo.toml` to classify the version. `0.X.0` minor milestones run the full gate and publish all six release archives (`ccide-core-<triple>.tar.gz` for `aarch64`/`x86_64` × macOS/Linux/Windows MSVC) plus `SHA256SUMS.txt` — the same assets `scripts/ensure-ccide-core.mjs` resolves and verifies at install/hook time. `0.x.y` patch releases (`y > 0`) still run the MSRV/clippy/format/patcher gate but skip the 6-OS build matrix and binary upload entirely — the `build-matrix` job still runs and reports success with a skip notice, because branch protection requires every `Build & Test (<target>)` context; on `main` they only create the `v0.x.y` tag when it does not yet exist. A patch release therefore never republishes prebuilt binaries — clients keep the binaries from the last `0.X.0` milestone, which is why every patch must be source-compatible with that milestone's `ccide-core`.
+**`0.X.0` minor milestones vs `0.x.y` patches.** `ci.yml` and `release.yml` both parse `Cargo.toml` to classify the version. `0.X.0` minor milestones — and `0.x.y` patches whose `v0.X.0` milestone tag is not yet on `origin` — run the full 6-target matrix and publish all six release archives (`ccide-core-<triple>.tar.gz` for `aarch64`/`x86_64` × macOS/Linux/Windows MSVC) plus `SHA256SUMS.txt` (`scripts/ensure-ccide-core.{mjs,sh}` tries `v0.X.0` first and falls back to `v0.x.y`). `0.x.y` patch releases (`y > 0`) when `v0.X.0` already exists still run the MSRV/clippy/format/patcher gate but skip the 6-OS build matrix and binary upload (`build-matrix` reports success with a skip notice so required branch-protection contexts stay green) and create `v0.x.y` on `main`.
 
 ### 7.3 Daily Upstream Compatibility Probe (`.github/workflows/cc-compat-watch.yml`)
 Runs daily at `03:17 UTC` (and on `workflow_dispatch`). It resolves the newest `@anthropic-ai/claude-code` version from npm, runs `patch_claude_binary.py --verify` against the downloaded bundle, and on failure opens a `[Compat Alert] Claude Code v<ver> upstream bundle layout changed` issue with the JSON report — deduplicated against existing open issues for the same version.
@@ -290,8 +302,7 @@ Runs daily at `03:17 UTC` (and on `workflow_dispatch`). It resolves the newest `
 ---
 
 ## 8. Roadmap
-- **v0.10 (Current Stabilization Release)**:
-  1. **Full-Repo Audit & Workspace Convergence**: shipped `PaneSpec` v2, unified `LayoutPlan` (`22/48/28` floors) + live `rebalance` (`tmux resize-pane -x`, WezTerm `adjust-pane-size`, accurate `/rebalance-panes` exit-code toasts), `workspace detect`, `src/proto.rs`, macOS Ghostty `OSC 2` caller targeting & live `geom_<yid>_*` rebalance, and cross-OS Lazygit reload sentinels.
-  2. **Opt-In Linux Ghostty Native Probe**: `ghostty_linux.rs` (`CCIDE_GHOSTTY_LINUX=1`) checks `+list-actions` CLI and `gdbus` D-Bus capabilities (`150ms` bounded) while falling through cleanly to `tmux` in `v0.10.0`.
-- **v0.11**: remove read-only `legacy_ipc_dir()` (`/tmp/.cc-ide`) compatibility fallback and adopt Linux Ghostty native split transport once upstream supports surface-targeted split actions.
+- **v0.11.2 (Current Multi-Agent & Swarm Hardening Release)**:
+  1. **Multi-Agent Workspace & Antigravity Swarm**: unified support for `claude`, `agy` (including Antigravity Swarm `SWARM #<board_head>`, click-to-inspect workers, multi-model `COST`), and `codex` (`rollout-*.jsonl`), hardened with real `"args"`/double-encoded parsing, coordinator promotion, worker hook isolation, turn-accurate `COST`, `gemini-4-*`/`gpt-oss-120b` pricing, `is_safe_id`/path filtering, and `release.yml`/`ensure-ccide-core` patch fallbacks.
+- **v0.12**: remove read-only `legacy_ipc_dir()` (`/tmp/.cc-ide`) compatibility fallback and adopt Linux Ghostty native split transport once upstream supports surface-targeted split actions.
 - **v1.0**: first-class **PowerShell (`pwsh`) support** for Windows Terminal (including reopen-based rebalance) and WezTerm packaging & marketplace distribution, plus passing `LayoutPlan` column widths to the iTerm2 daemon (`30% | 54% | 16%`).

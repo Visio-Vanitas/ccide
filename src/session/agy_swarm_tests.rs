@@ -81,7 +81,11 @@ fn loads_swarm_fixture_board_subagents_and_dismissal() {
     assert!(snap.board_latest[0]
         .2
         .contains("Wait for backends completion"));
-    assert_eq!(snap.worker_transcripts.len(), 4);
+    assert_eq!(snap.worker_transcripts.len(), 5);
+    assert!(snap
+        .worker_transcripts
+        .iter()
+        .any(|(id, _, _)| id == "sub-extra-001"));
 
     let ids: Vec<_> = snap
         .members
@@ -117,16 +121,33 @@ fn loads_swarm_fixture_board_subagents_and_dismissal() {
         "coord-001",
         &["worker-killed-003".into(), "worker-opus-001".into()],
     );
+    subs.insert("stale-tracker".into(), JsonlTracker::from_tail(None));
     let snap2 = load_agy_swarm(&home_s, "coord-001", &tr, &mut subs, &mut fb);
+    assert!(!subs.contains_key("stale-tracker"));
     assert!(!snap2
         .members
         .iter()
         .any(|m| m.full_id == "worker-killed-003"));
     assert!(snap2.members.iter().any(|m| m.full_id == "worker-opus-001"));
-    assert_eq!(snap2.worker_transcripts.len(), 4);
-
-    let (h_miss, l_miss) = read_board_tail(&root.join("missing.jsonl"), 65_536);
-    assert_eq!((h_miss, l_miss.len()), (0, 0));
+    assert_eq!(snap2.worker_transcripts.len(), 5);
+    assert!(agy_is_member_of(&tr, "worker-argon-002"));
+    assert!(agy_is_member_of(&tr, "sub-extra-001"));
+    assert!(!agy_is_member_of(&tr, "../evil"));
+    assert_eq!(agy_parent_coordinator("coord-001", &tr), None);
+    let wtr = root.join("agy/brain/worker-argon-002/.system_generated/logs/transcript.jsonl");
+    assert_eq!(
+        agy_parent_coordinator("worker-argon-002", &wtr)
+            .map(|(c, _)| c)
+            .as_deref(),
+        Some("coord-001")
+    );
+    let sub_tr = root.join("agy/brain/sub-extra-001/.system_generated/logs/transcript.jsonl");
+    assert_eq!(
+        agy_parent_coordinator("sub-extra-001", &sub_tr)
+            .map(|(c, _)| c)
+            .as_deref(),
+        Some("coord-001")
+    );
     let (h_tail, _) = read_board_tail(
         &root.join("agy/brain/coord-001/.system_generated/swarm/board.jsonl"),
         200,
@@ -136,31 +157,8 @@ fn loads_swarm_fixture_board_subagents_and_dismissal() {
 }
 
 #[test]
-fn rejects_unsafe_ids_and_resolves_cid_precedence() {
+fn resolves_cid_precedence_and_worker_promotion() {
     let (root, tr) = setup_swarm_fixture("resolve");
-    let bad_members =
-        r#"{"title":"T","members":{"bad":{"conversation_id":"../evil","phase":"RUNNING"}}}"#;
-    write_f(
-        &root.join("agy/brain/coord-001/.system_generated/swarm/members.json"),
-        bad_members,
-    );
-    write_f(
-        &root.join("agy/brain/coord-001/.system_generated/subagents/bad.json"),
-        r#"{"conversationId":"a/b","state":"SUBAGENT_STATE_ALIVE"}"#,
-    );
-    let (mut subs, mut fb) = (HashMap::new(), JsonlTracker::from_tail(None));
-    let snap = load_agy_swarm(
-        &root.to_string_lossy(),
-        "coord-001",
-        &tr,
-        &mut subs,
-        &mut fb,
-    );
-    assert!(!snap
-        .members
-        .iter()
-        .any(|m| m.full_id == "../evil" || m.full_id == "a/b"));
-
     let _g1 = EnvGuard("CCIDE_AGY_HOME", std::env::var("CCIDE_AGY_HOME").ok());
     let _g2 = EnvGuard(
         "CCIDE_AGY_CONVERSATION",
@@ -172,21 +170,25 @@ fn rejects_unsafe_ids_and_resolves_cid_precedence() {
     let home_s = home.to_string_lossy().into_owned();
 
     assert_eq!(
+        io::decode_file_uri("file:///C:/Users/my%20repo").as_deref(),
+        Some("C:/Users/my repo")
+    );
+    assert_eq!(
         agy_resolve_cid(&home_s, "y1", "/workspace/demo").as_deref(),
         Some("coord-001")
     );
     write_f(
         &root.join("agy/cache/last_conversations.json"),
-        r#"{"/workspace/demo":{"conversationId":"worker-argon-002"}}"#,
+        r#"{"/workspace/demo":"worker-argon-002"}"#,
     );
     assert_eq!(
-        agy_resolve_cid(&home_s, "y1", "/workspace/demo").as_deref(),
-        Some("worker-argon-002")
+        agy_resolve_cid_detail(&home_s, "y1", "/workspace/demo"),
+        Some(("worker-argon-002".into(), false))
     );
     std::env::set_var("CCIDE_AGY_CONVERSATION", "worker-opus-001");
     assert_eq!(
-        agy_resolve_cid(&home_s, "y1", "/workspace/demo").as_deref(),
-        Some("worker-opus-001")
+        agy_resolve_cid_detail(&home_s, "y1", "/workspace/demo"),
+        Some(("worker-opus-001".into(), true))
     );
     write_f(&home.join(".cache/cc-ide/tab_conv_y1.txt"), "coord-001\n");
     assert_eq!(
@@ -198,5 +200,79 @@ fn rejects_unsafe_ids_and_resolves_cid_precedence() {
         agy_resolve_cid(&home_s, "y1", "/workspace/demo").as_deref(),
         Some("worker-opus-001")
     );
+
+    let _ = fs::remove_file(home.join(".cache/cc-ide/tab_conv_y1.txt"));
+    std::env::remove_var("CCIDE_AGY_CONVERSATION");
+    let tok = crate::ffi::ProcToken::self_token().encode();
+    let wtr = root.join("agy/brain/worker-argon-002/.system_generated/logs/transcript.jsonl");
+    let wtr_esc = wtr.to_string_lossy().replace('\\', "\\\\");
+    let ltab = format!(
+        "{{\"agent\":\"agy\",\"session_id\":\"worker-argon-002\",\
+        \"agent_pid\":\"{tok}\",\"transcript_path\":\"{wtr_esc}\",\"cwd\":\"/workspace/demo\"}}"
+    );
+    write_f(&home.join(".cache/cc-ide/live_tab_y1.json"), &ltab);
+    let sess_prom = crate::session::resolve_agent_session(
+        &home_s,
+        "y1",
+        "/workspace/demo",
+        0,
+        crate::session::AgentKind::Agy,
+    );
+    assert_eq!(
+        sess_prom.as_ref().map(|s| s.session_id.as_str()),
+        Some("coord-001")
+    );
+
+    write_f(
+        &home.join(".cache/cc-ide/tab_conv_y1.txt"),
+        "worker-opus-001\n",
+    );
+    let sess_exp = crate::session::resolve_agent_session(
+        &home_s,
+        "y1",
+        "/workspace/demo",
+        0,
+        crate::session::AgentKind::Agy,
+    );
+    assert_eq!(
+        sess_exp.as_ref().map(|s| s.session_id.as_str()),
+        Some("worker-opus-001")
+    );
+
+    #[cfg(unix)]
+    if std::process::Command::new("touch")
+        .args(["-t", "202001010000"])
+        .arg(tr.as_os_str())
+        .status()
+        .ok()
+        .is_some_and(|s| s.success())
+    {
+        let _ = fs::remove_file(home.join(".cache/cc-ide/live_tab_y1.json"));
+        let _ = fs::remove_file(home.join(".cache/cc-ide/tab_conv_y1.txt"));
+        write_f(
+            &root.join("agy/cache/last_conversations.json"),
+            r#"{"/workspace/demo":"coord-001"}"#,
+        );
+        assert!(crate::session::resolve_agent_session(
+            &home_s,
+            "y2",
+            "/workspace/demo",
+            0,
+            crate::session::AgentKind::Agy,
+        )
+        .is_none());
+        write_f(&home.join(".cache/cc-ide/tab_conv_y2.txt"), "coord-001\n");
+        let old_exp = crate::session::resolve_agent_session(
+            &home_s,
+            "y2",
+            "/workspace/demo",
+            0,
+            crate::session::AgentKind::Agy,
+        );
+        assert_eq!(
+            old_exp.as_ref().map(|s| s.session_id.as_str()),
+            Some("coord-001")
+        );
+    }
     let _ = fs::remove_dir_all(&root);
 }

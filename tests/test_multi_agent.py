@@ -187,6 +187,36 @@ class MultiAgentTests(unittest.TestCase):
             self.assertNotIn("SessionStart", after_rm["hooks"])
             self.assertFalse(merger.merge_hooks(target, remove=True))
 
+            # CLI subprocess path: quoted commandWindows for paths with spaces + --remove cleanup
+            space_dir = os.path.join(td, "cc-ide with spaces")
+            os.makedirs(space_dir, exist_ok=True)
+            hook_cmd = os.path.join(space_dir, "hook.cmd")
+            merger_script = os.path.join(_REPO_ROOT, "scripts", "merge_agent_hooks.py")
+            cli_target = os.path.join(td, "cli_hooks.json")
+            r_add = subprocess.run(
+                [sys.executable, "-I", merger_script, "--target", cli_target, "--hook-bin", hook_cmd, "--json"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertTrue(json.loads(r_add.stdout)["changed"])
+            with open(cli_target, encoding="utf-8") as fh:
+                cli_data = json.load(fh)
+            self.assertEqual(
+                cli_data["hooks"]["SessionStart"][0]["hooks"][0]["commandWindows"],
+                f'"{hook_cmd}" yazi-hook --agent codex',
+            )
+            r_rm = subprocess.run(
+                [sys.executable, "-I", merger_script, "--target", cli_target, "--remove", "--json"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertTrue(json.loads(r_rm.stdout)["changed"])
+            with open(cli_target, encoding="utf-8") as fh:
+                cli_after = json.load(fh)
+            self.assertNotIn("hooks", cli_after)
+
     @unittest.skipIf(os.name == "nt", "POSIX zsh launcher test")
     def test_ccide_launcher_syntax_and_agent_validation(self) -> None:
         ccide = os.path.join(_SCRIPTS_DIR, "ccide")
@@ -250,6 +280,42 @@ class MultiAgentTests(unittest.TestCase):
         )
         self.assertEqual(r_eq.returncode, 2, msg=r_eq.stderr)
 
+    @unittest.skipIf(os.name == "nt", "POSIX zsh installer test")
+    def test_install_sh_with_agy_arg_forwarding(self) -> None:
+        installer = os.path.join(_REPO_ROOT, "install.sh")
+        if not shutil.which("zsh"):
+            self.skipTest("zsh not installed")
+        self.assertEqual(subprocess.run(["zsh", "-n", installer]).returncode, 0)
+        r_help = subprocess.run(
+            ["zsh", installer, "--with-agy", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r_help.returncode, 0, msg=r_help.stderr)
+        with open(installer, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("shift || true", src)
+        self.assertIn('scripts/iterm-preferences.py" --apply "${EXTRA_ARGS[@]}"', src)
+        self.assertIn('scripts/iterm-preferences.py" --restore "${EXTRA_ARGS[@]}"', src)
+
+    def test_ccide_ps1_agent_and_conversation_validation(self) -> None:
+        pwsh = shutil.which("pwsh")
+        if not pwsh:
+            self.skipTest("pwsh not installed")
+        ps1 = os.path.join(_SCRIPTS_DIR, "ccide.ps1")
+        r_unk = subprocess.run(
+            [pwsh, "-NoProfile", "-File", ps1, "--agent", "unknown"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r_unk.returncode, 2, msg=r_unk.stderr)
+        r_bad = subprocess.run(
+            [pwsh, "-NoProfile", "-File", ps1, "--agy", "--conversation", "../bad"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r_bad.returncode, 2, msg=r_bad.stderr)
+
     def test_v11_engine_hooks_and_doctor_when_built(self) -> None:
         bin_path = _v11_engine_bin()
         if not bin_path:
@@ -278,7 +344,12 @@ class MultiAgentTests(unittest.TestCase):
             self.assertEqual(r_agy.stdout.strip(), "{}")
             self.assertTrue(os.path.isfile(os.path.join(td, ".cache", "cc-ide", "live_sess_conv-agy-1.json")))
 
-            # agy swarm PostToolUse wake-only smoke test -> '{}' + live_sess written
+            # agy swarm PostToolUse wake-only smoke test -> '{}' + live_sess written, no main_last_file
+            cache_dir = os.path.join(td, ".cache", "cc-ide")
+            edited_file = os.path.join(td, "edited.rs")
+            with open(edited_file, "w", encoding="utf-8") as fh:
+                fh.write("fn main() {}\n")
+            env_yid = {**env, "CC_YAZI_ID": "42424"}
             r_swarm = subprocess.run(
                 [bin_path, "yazi-hook", "--agent", "agy"],
                 input=json.dumps({
@@ -289,15 +360,49 @@ class MultiAgentTests(unittest.TestCase):
                         _REPO_ROOT, "tests", "fixtures", "agy_swarm", "brain", "coord-001", ".system_generated", "logs", "transcript.jsonl"
                     ),
                     "modelName": "gemini-flash-worker-agy",
-                    "toolCall": {"id": "sw1", "name": "swarm", "args": {"action": "add", "name": "w1"}},
+                    "toolCall": {"id": "sw1", "name": "swarm", "args": {"action": "add", "name": "w1", "path": edited_file}},
                 }),
                 text=True,
                 capture_output=True,
-                env=env,
+                env=env_yid,
                 check=True,
             )
             self.assertEqual(r_swarm.stdout.strip(), "{}")
-            self.assertTrue(os.path.isfile(os.path.join(td, ".cache", "cc-ide", "live_sess_conv-agy-swarm.json")))
+            self.assertTrue(os.path.isfile(os.path.join(cache_dir, "live_sess_conv-agy-swarm.json")))
+            self.assertFalse(os.path.isfile(os.path.join(cache_dir, "main_last_file_42424.json")))
+
+            # agy worker PostToolUse edit_file isolation: writes live_sess_<worker> but must NOT overwrite coordinator tab state
+            coord_tp = os.path.join(
+                _REPO_ROOT, "tests", "fixtures", "agy_swarm", "brain", "coord-001", ".system_generated", "logs", "transcript.jsonl"
+            )
+            with open(os.path.join(cache_dir, "tab_conv_42424.txt"), "w", encoding="utf-8") as fh:
+                fh.write("coord-001")
+            with open(os.path.join(cache_dir, "live_tab_42424.json"), "w", encoding="utf-8") as fh:
+                json.dump({"agent": "agy", "session_id": "coord-001", "transcript_path": coord_tp}, fh)
+            r_worker = subprocess.run(
+                [bin_path, "yazi-hook", "--agent", "agy"],
+                input=json.dumps({
+                    "hookEventName": "PostToolUse",
+                    "conversationId": "worker-argon-002",
+                    "cwd": td,
+                    "transcriptPath": os.path.join(
+                        _REPO_ROOT, "tests", "fixtures", "agy_swarm", "brain", "worker-argon-002", ".system_generated", "logs", "transcript.jsonl"
+                    ),
+                    "modelName": "gemini-4-argon",
+                    "toolCall": {"id": "ed1", "name": "edit_file", "args": {"path": edited_file}},
+                }),
+                text=True,
+                capture_output=True,
+                env=env_yid,
+                check=True,
+            )
+            self.assertEqual(r_worker.stdout.strip(), "{}")
+            self.assertTrue(os.path.isfile(os.path.join(cache_dir, "live_sess_worker-argon-002.json")))
+            with open(os.path.join(cache_dir, "live_tab_42424.json"), encoding="utf-8") as fh:
+                live_tab_after = json.load(fh)
+            self.assertEqual(live_tab_after["session_id"], "coord-001")
+            self.assertFalse(os.path.isfile(os.path.join(cache_dir, "main_last_file_42424.json")))
+            self.assertFalse(os.path.isfile(os.path.join(cache_dir, "session_worker-argon-002.yazi")))
 
             # codex PostToolUse -> empty stdout + live_sess written
             r_cdx = subprocess.run(

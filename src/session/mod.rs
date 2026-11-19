@@ -34,8 +34,9 @@ pub use agy::{
 };
 #[allow(unused_imports)]
 pub use agy_swarm::{
-    agy_brain_root, agy_resolve_cid, agy_sys_gen, load_agy_swarm, read_board_tail,
-    swarm_member_status, AgySwarmSnapshot,
+    agy_brain_root, agy_is_member_of, agy_parent_coordinator, agy_resolve_cid,
+    agy_resolve_cid_detail, agy_sys_gen, load_agy_swarm, read_board_tail, swarm_member_status,
+    AgySwarmSnapshot,
 };
 #[allow(unused_imports)]
 pub use binding::{choose_binding, commit_binding, BindingChoice, SessionBinding};
@@ -60,12 +61,12 @@ fn ancestor_distance(mut pid: u32, target_ancestor: u32) -> Option<usize> {
     if target_ancestor == 0 || pid == 0 {
         return None;
     }
+    let root = if cfg!(windows) { 4 } else { 1 };
     for hops in 0..32 {
         if pid == target_ancestor {
             return Some(hops);
         }
-        let at_root = if cfg!(windows) { pid == 4 } else { pid <= 1 };
-        if at_root {
+        if pid <= root {
             return None;
         }
         match get_ppid_of(pid) {
@@ -206,21 +207,19 @@ pub fn resolve_isolated_session_binding(
     shell_pid_arg: u32,
 ) -> SessionBinding {
     let cdir = cache_dir(home);
-    let shell_tok = if shell_pid_arg > 0 {
-        ProcToken::current(shell_pid_arg).unwrap_or(ProcToken {
-            pid: shell_pid_arg,
-            start_ms: 0,
-        })
-    } else {
-        fs::read_to_string(cdir.join(format!("tab_shell_{tab_yazi_id}.txt")))
-            .ok()
-            .filter(|_| !tab_yazi_id.is_empty())
-            .and_then(|s| ProcToken::parse(&s))
-            .unwrap_or(ProcToken {
-                pid: 0,
-                start_ms: 0,
-            })
+    let mut shell_tok = ProcToken {
+        pid: shell_pid_arg,
+        start_ms: 0,
     };
+    if shell_pid_arg > 0 {
+        shell_tok = ProcToken::current(shell_pid_arg).unwrap_or(shell_tok);
+    } else if !tab_yazi_id.is_empty() {
+        let p = cdir.join(format!("tab_shell_{tab_yazi_id}.txt"));
+        shell_tok = fs::read_to_string(p)
+            .ok()
+            .and_then(|s| ProcToken::parse(&s))
+            .unwrap_or(shell_tok);
+    }
     let shell_pid = shell_tok.pid;
     let canon_target = clean_canonicalize(target_cwd).unwrap_or_else(|_| PathBuf::from(target_cwd));
     let alive_entries = scan::scan_alive_sessions(home);

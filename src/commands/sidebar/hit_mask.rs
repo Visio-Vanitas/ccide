@@ -253,5 +253,26 @@ mod tests {
             Some(MaskedAction::FocusZoneOnly(None))
         );
         assert_eq!(cap.on_mouse_up(0, 20, 18, z_ctx), None);
+
+        // Right-edge `×` (`col >= cols - 4`) gates dismissal on `!is_subagent_alive`.
+        let sub_tags = HashMap::from([(15, (2, 0)), (17, (2, 1))]);
+        let subs = vec![
+            SubagentItem {
+                status: "waiting",
+                ..SubagentItem::default()
+            },
+            SubagentItem {
+                status: "killed",
+                ..SubagentItem::default()
+            },
+        ];
+        assert_eq!(
+            mask.classify(38, 15, &sub_tags, &subs),
+            HitZone::SubagentItem(0)
+        );
+        assert_eq!(
+            mask.classify(38, 17, &sub_tags, &subs),
+            HitZone::SubagentDismiss(1)
+        );
     }
 }

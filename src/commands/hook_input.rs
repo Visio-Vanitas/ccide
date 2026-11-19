@@ -4,15 +4,62 @@
 mod hook_records;
 
 use std::env;
+use std::fs;
 use std::path::{Component, Path};
 
+use crate::ffi::{current_ppid, get_ppid_of};
 use crate::json::{
     extract_json_array_slice, extract_json_object, extract_json_str, extract_string_list_in_array,
     json_escape,
 };
+use crate::platform::ipc_path;
 use crate::session::{codex_home, is_safe_id, AgentKind};
 
-pub use hook_records::{emit_required_stdout, to_claude_shape, write_agent_hook_records};
+pub use hook_records::{
+    agy_event_is_worker, emit_required_stdout, should_reveal_agent_view, to_claude_shape,
+    write_agent_hook_records,
+};
+
+pub(crate) fn should_reveal_claude_view(cdir: &Path, yid: &str, sid: &str, agent_id: &str) -> bool {
+    let mut active_view = fs::read_to_string(cdir.join(format!("active_view_{yid}.txt")))
+        .unwrap_or_else(|_| "main".to_string())
+        .trim()
+        .to_string();
+    let mut pid_cur = None;
+    let mut pid = current_ppid();
+    for _ in 0..4 {
+        if pid <= 1 {
+            break;
+        }
+        if let Ok(txt) = fs::read_to_string(ipc_path(&format!("cur_pid_{pid}.txt"))) {
+            pid_cur = Some(txt);
+            break;
+        }
+        match get_ppid_of(pid) {
+            Some(parent) if parent > 1 && parent != pid => pid = parent,
+            _ => break,
+        }
+    }
+    let sess_cur = (!sid.is_empty())
+        .then(|| fs::read_to_string(ipc_path(&format!("cur_{sid}.txt"))).ok())
+        .flatten();
+    if let Some(cur_native) = pid_cur.or(sess_cur) {
+        let cn = cur_native.lines().next().unwrap_or("").trim();
+        if !cn.is_empty() {
+            active_view = cn.to_string();
+        }
+    }
+    let norm_view = if active_view.is_empty() {
+        "main"
+    } else {
+        active_view.as_str()
+    };
+    if agent_id.is_empty() {
+        norm_view == "main"
+    } else {
+        norm_view == agent_id
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookEventKind {

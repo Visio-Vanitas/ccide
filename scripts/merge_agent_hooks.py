@@ -54,10 +54,10 @@ def _clean_group(group) -> dict | None:
     return None if is_ccide_entry(group) else group
 
 
-def _atomic_write_json(target: str, data: dict) -> None:
+def _atomic_write_json(target: str, data: dict, backup: bool = True) -> None:
     parent = os.path.dirname(os.path.abspath(target))
     os.makedirs(parent, exist_ok=True)
-    if os.path.isfile(target) and not os.path.exists(target + ".ccide.bak"):
+    if backup and os.path.isfile(target) and not os.path.exists(target + ".ccide.bak"):
         shutil.copy2(target, target + ".ccide.bak")
     tmp = f"{target}.tmp.{os.getpid()}"
     payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
@@ -88,7 +88,7 @@ def merge_hooks(target: str, template_path: str | None = None, hook_bin: str | N
             del data["hooks"]
         if data == orig:
             return False
-        _atomic_write_json(target, data)
+        _atomic_write_json(target, data, backup=False)
         return True
 
     if not template_path:
@@ -124,15 +124,24 @@ def merge_hooks(target: str, template_path: str | None = None, hook_bin: str | N
     if not isinstance(hooks_obj, dict):
         raise ValueError(f"Expected object for 'hooks' in {target}")
 
+    for ev in list(hooks_obj.keys()):
+        cur_ev = hooks_obj.get(ev)
+        if not isinstance(cur_ev, list):
+            continue
+        cleaned_ev = [g for g in (_clean_group(x) for x in cur_ev) if g is not None]
+        if cleaned_ev:
+            hooks_obj[ev] = cleaned_ev
+        else:
+            del hooks_obj[ev]
+
     for ev, tpl_groups in tpl.get("hooks", {}).items():
         if not isinstance(tpl_groups, list):
             continue
         cur = hooks_obj.get(ev, [])
         if not isinstance(cur, list):
             raise ValueError(f"Expected array for hooks.{ev} in {target}")
-        kept = [g for g in (_clean_group(x) for x in cur) if g is not None]
         added = [_rewrite_group(g, hook_bin_unix, hook_bin_win) for g in tpl_groups if isinstance(g, dict)]
-        hooks_obj[ev] = kept + added
+        hooks_obj[ev] = cur + added
 
     if os.path.isfile(target) and data == orig:
         return False

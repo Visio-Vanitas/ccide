@@ -9,7 +9,9 @@ use crate::json::{
     extract_json_array_slice, extract_json_object, extract_json_str, extract_json_u64,
     iter_array_objects, iter_object_members,
 };
-use crate::platform::{clean_canonicalize, normalize_slashes, paths_equal_ci};
+use crate::platform::{
+    clean_canonicalize, is_internal_or_temp_path, normalize_slashes, paths_equal_ci,
+};
 use crate::session::agent::{agy_home, is_safe_id};
 #[allow(unused_imports)]
 pub use crate::session::agy_swarm::agy_transcript_for_cid;
@@ -71,14 +73,31 @@ pub fn agy_cid_for_cwd(cwd: &str) -> Option<String> {
     best_anc.map(|(_, cid)| cid)
 }
 
+pub fn extract_agy_arg_str(args: &str, key: &str) -> Option<String> {
+    let mut s = extract_json_str(args, key)?.trim().to_string();
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        s = s[1..s.len() - 1]
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\");
+    }
+    (!s.is_empty()).then_some(s)
+}
+
+pub fn extract_agy_arg_u64(args: &str, key: &str) -> Option<u64> {
+    extract_json_u64(args, key)
+        .or_else(|| extract_agy_arg_str(args, key)?.trim().parse::<u64>().ok())
+}
+
 pub fn agy_transcript_path(cid: &str) -> PathBuf {
     if !is_safe_id(cid) {
         return PathBuf::new();
     }
-    agy_home()
-        .join("brain")
-        .join(cid)
-        .join(".system_generated/logs/transcript.jsonl")
+    agy_transcript_for_cid(cid).unwrap_or_else(|| {
+        agy_home()
+            .join("brain")
+            .join(cid)
+            .join(".system_generated/logs/transcript.jsonl")
+    })
 }
 
 pub fn agy_settings_model() -> Option<String> {
@@ -88,12 +107,17 @@ pub fn agy_settings_model() -> Option<String> {
 
 fn map_agy_tool_call(tc: &str) -> Option<(&'static str, String, usize, usize)> {
     let name = extract_json_str(tc, "name")?;
-    let args = extract_json_object(tc, "arguments").unwrap_or(tc);
+    let args = extract_json_object(tc, "arguments")
+        .or_else(|| extract_json_object(tc, "args"))
+        .unwrap_or(tc);
     let file = ["Path", "AbsolutePath", "TargetFile"]
         .into_iter()
-        .find_map(|k| extract_json_str(args, k).filter(|p| !p.is_empty()))?;
-    let start = extract_json_u64(args, "StartLine").unwrap_or(0) as usize;
-    let end = extract_json_u64(args, "EndLine").unwrap_or(0) as usize;
+        .find_map(|k| extract_agy_arg_str(args, k))?;
+    if is_internal_or_temp_path(&file, "") {
+        return None;
+    }
+    let start = extract_agy_arg_u64(args, "StartLine").unwrap_or(0) as usize;
+    let end = extract_agy_arg_u64(args, "EndLine").unwrap_or(0) as usize;
     let span = if start > 0 && end >= start {
         (end - start + 1).min(120)
     } else {
@@ -158,23 +182,25 @@ pub fn agy_main_file_ops(path: &Path, tr: &mut JsonlTracker) -> Option<MainSessi
 
 fn parse_agy_sub_call(tc: &str, idx: usize, done: bool, ctime: u64) -> Option<SubagentItem> {
     let name = extract_json_str(tc, "name").unwrap_or_default();
-    let args = extract_json_object(tc, "arguments").unwrap_or(tc);
+    let args = extract_json_object(tc, "arguments")
+        .or_else(|| extract_json_object(tc, "args"))
+        .unwrap_or(tc);
     let (raw_type, desc, model_raw) = match name.as_str() {
         "invoke_subagent" => {
-            let rt = extract_json_str(args, "TypeName").unwrap_or_else(|| "subagent".into());
-            let role = extract_json_str(args, "Role").unwrap_or_else(|| rt.clone());
+            let rt = extract_agy_arg_str(args, "TypeName").unwrap_or_else(|| "subagent".into());
+            let role = extract_agy_arg_str(args, "Role").unwrap_or_else(|| rt.clone());
             (
                 rt,
                 role,
-                extract_json_str(args, "Model").filter(|s| is_valid_model_name(s)),
+                extract_agy_arg_str(args, "Model").filter(|s| is_valid_model_name(s)),
             )
         }
-        "swarm" if extract_json_str(args, "action").as_deref() == Some("add") => {
-            let nm = extract_json_str(args, "name").unwrap_or_else(|| "swarm".into());
+        "swarm" if extract_agy_arg_str(args, "action").as_deref() == Some("add") => {
+            let nm = extract_agy_arg_str(args, "name").unwrap_or_else(|| "swarm".into());
             (
                 nm.clone(),
                 nm,
-                extract_json_str(args, "model").filter(|s| is_valid_model_name(s)),
+                extract_agy_arg_str(args, "model").filter(|s| is_valid_model_name(s)),
             )
         }
         _ => return None,

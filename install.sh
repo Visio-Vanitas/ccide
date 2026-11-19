@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${0:A:h}"
-PLUGIN_VERSION="0.11.1"
+PLUGIN_VERSION="0.11.2"
 HOME_DIR="$HOME"
 CLAUDE_DIR="$HOME_DIR/.claude"
 CACHE_DIR="$HOME_DIR/.cache/cc-ide"
@@ -148,15 +148,13 @@ EOF
 fi
 
 if [[ "$MODE" == "--iterm-preferences-only" ]]; then
-  shift || true
   log_step "Applying reversible ccide iTerm2 display & Python API preferences..."
-  exec "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --apply "$@"
+  exec "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --apply "${EXTRA_ARGS[@]}"
 fi
 
 if [[ "$MODE" == "--restore-iterm-preferences" ]]; then
-  shift || true
   log_step "Restoring original iTerm2 preferences from backup..."
-  exec "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --restore "$@"
+  exec "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --restore "${EXTRA_ARGS[@]}"
 fi
 
 if [[ "$MODE" == "--uninstall" ]]; then
@@ -267,9 +265,8 @@ if [[ "$MODE" == "--patch-only" ]]; then
 fi
 
 if [[ "$MODE" == "--doctor" || "$MODE" == "doctor" ]]; then
-  shift || true
   ensure_engine_built >/dev/null
-  exec "$PROJECT_ROOT/bin/ccide-core" doctor "$PROJECT_ROOT" "$@"
+  exec "$PROJECT_ROOT/bin/ccide-core" doctor "$PROJECT_ROOT" "${EXTRA_ARGS[@]}"
 fi
 
 if [[ "$MODE" == "--tui" || ( "$MODE" == "auto" && -t 0 && -t 1 && "${CCIDE_NONINTERACTIVE:-0}" != "1" ) ]]; then
@@ -701,7 +698,7 @@ done
 if [[ "$OPT_PLUGIN" == "1" ]]; then
   backup_once "$CLAUDE_DIR/settings.json"
   "$PYTHON_BIN" -I - "$PROJECT_ROOT" "$PLUGIN_CACHE_DIR" "$PLUGIN_VERSION" <<'PYEOF'
-import datetime, json, os, sys
+import datetime, json, os, shlex, sys
 
 project_root, plugin_cache_dir, version = sys.argv[1], sys.argv[2], sys.argv[3]
 claude_dir = os.path.expanduser("~/.claude")
@@ -757,7 +754,7 @@ st.setdefault("extraKnownMarketplaces", {})["cc-ide"] = {
 }
 st["statusLine"] = {
     "type": "command",
-    "command": f"{os.path.join(claude_dir, 'bin', 'ccide-core')} statusline",
+    "command": f"{shlex.quote(os.path.join(claude_dir, 'bin', 'ccide-core'))} statusline",
 }
 if "hooks" in st and isinstance(st["hooks"], dict):
     for hk in ("PostToolUse", "SubagentStart", "SubagentStop"):

@@ -182,7 +182,7 @@ mod tests {
         assert_eq!(tr1.s.per_model.len(), 1);
         assert_eq!(
             tr1.s.per_model[0],
-            ("gpt-5.4".to_string(), 6_500, 12_000, 340)
+            ("gpt-5.4".to_string(), 6_500, 12_000, 340, 1)
         );
         assert_eq!(tr1.s.perf.len(), 1);
         assert_eq!(tr1.s.perf[0].ttft_ms, 850);

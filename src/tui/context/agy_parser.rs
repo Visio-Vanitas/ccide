@@ -8,11 +8,12 @@ use crate::tui::context::agent_ctx::{read_new_jsonl_lines, AgentCtxTracker};
 use crate::tui::context::perf::{parse_iso8601_ms, RawPerfSample};
 
 /// Computes context window occupancy for `agy` steps:
-/// Anthropic (`classify_model_family_for(AgentKind::Agy, model) == "claude"`) reports
-/// `input_tokens` and `cache_read_tokens` exclusively (`input + cache_read`), whereas
-/// Gemini/OpenAI (and empty/`"auto"` default Agy family) report `input_tokens` inclusive of cache.
+/// Returns `input_tokens + cache_read_tokens` for Anthropic (`"claude"`) models or whenever
+/// `input_tokens < cache_read_tokens` (exclusive cache-hit accounting), else `input_tokens`.
 pub fn agy_occupancy(model: &str, input_tokens: u64, cache_read_tokens: u64) -> u64 {
-    if classify_model_family_for(AgentKind::Agy, model) == "claude" {
+    if classify_model_family_for(AgentKind::Agy, model) == "claude"
+        || input_tokens < cache_read_tokens
+    {
         input_tokens.saturating_add(cache_read_tokens)
     } else {
         input_tokens
@@ -131,6 +132,7 @@ mod tests {
             32_500
         );
         assert_eq!(agy_occupancy("gemini-3.8-flash", 14_500, 8_000), 14_500);
+        assert_eq!(agy_occupancy("gemini-4-argon-high", 3_584, 27_646), 31_230);
         assert_eq!(agy_occupancy("", 14_500, 8_000), 14_500);
         assert_eq!(agy_occupancy("auto", 14_500, 8_000), 14_500);
 

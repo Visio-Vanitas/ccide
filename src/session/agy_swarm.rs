@@ -3,12 +3,11 @@
 #[path = "agy_swarm_io.rs"]
 mod io;
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use crate::json::{extract_json_bool, extract_json_object, extract_json_str, iter_object_members};
 use crate::session::agent::is_safe_id;
@@ -19,14 +18,12 @@ use crate::session::subagent_state::load_dismissed_subagents;
 use crate::session::subagents::{is_subagent_alive, SubagentItem};
 use crate::session::transcript::JsonlTracker;
 
-use io::sanitize_line;
 #[allow(unused_imports)]
-pub use io::{agy_brain_roots, agy_resolve_cid, agy_transcript_for_cid, read_board_tail};
-
-type MembersCache = HashMap<PathBuf, (u64, SystemTime, String)>;
-thread_local! {
-    static MEMBERS_CACHE: RefCell<MembersCache> = RefCell::new(HashMap::new());
-}
+pub use io::{
+    agy_brain_root, agy_brain_roots, agy_is_member_of, agy_parent_coordinator, agy_resolve_cid,
+    agy_resolve_cid_detail, agy_sys_gen, agy_transcript_for_cid, read_board_tail,
+};
+use io::{read_members_cached, sanitize_line};
 
 #[derive(Clone, Default)]
 pub struct AgySwarmSnapshot {
@@ -37,18 +34,6 @@ pub struct AgySwarmSnapshot {
     pub members: Vec<SubagentItem>,
     pub worker_transcripts: Vec<(String, PathBuf, String)>,
     pub board_latest: Vec<(String, u64, String)>,
-}
-
-pub fn agy_sys_gen(transcript: &Path) -> Option<PathBuf> {
-    let p = transcript.parent()?.parent()?;
-    (p.file_name() == Some(OsStr::new(".system_generated"))).then(|| p.to_path_buf())
-}
-
-pub fn agy_brain_root(transcript: &Path) -> Option<PathBuf> {
-    agy_sys_gen(transcript)?
-        .parent()?
-        .parent()
-        .map(Path::to_path_buf)
 }
 
 pub fn swarm_member_status(member_json: &str) -> &'static str {
@@ -65,28 +50,6 @@ pub fn swarm_member_status(member_json: &str) -> &'static str {
         Some("working") => "running",
         _ => "waiting",
     }
-}
-
-fn read_members_cached(path: &Path) -> Option<String> {
-    let meta = fs::metadata(path).ok().filter(|m| m.len() <= 262_144)?;
-    let key = (meta.len(), meta.modified().unwrap_or(UNIX_EPOCH));
-    if let Some(hit) = MEMBERS_CACHE.with(|c| {
-        c.borrow()
-            .get(path)
-            .filter(|(l, m, _)| (*l, *m) == key)
-            .map(|(_, _, t)| t.clone())
-    }) {
-        return Some(hit);
-    }
-    let txt = fs::read_to_string(path).ok()?;
-    MEMBERS_CACHE.with(|c| {
-        let mut m = c.borrow_mut();
-        if m.len() >= 32 {
-            m.clear();
-        }
-        m.insert(path.to_path_buf(), (key.0, key.1, txt.clone()));
-    });
-    Some(txt)
 }
 
 fn pick_model(json: &str) -> Option<String> {
@@ -141,6 +104,7 @@ fn append_plain_subagents(
     br: &Path,
     seen: &mut HashSet<String>,
     items: &mut Vec<SubagentItem>,
+    workers: &mut Vec<(String, PathBuf, String)>,
     trs: &mut HashMap<String, JsonlTracker>,
 ) {
     for entry in fs::read_dir(sub_dir)
@@ -173,7 +137,9 @@ fn append_plain_subagents(
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "subagent".into())
         };
-        items.push(build_item(cid, g("role"), g("typeName"), st, None, br, trs).0);
+        let (it, wt) = build_item(cid.clone(), g("role"), g("typeName"), st, None, br, trs);
+        workers.push((cid, wt, String::new()));
+        items.push(it);
     }
 }
 
@@ -235,8 +201,16 @@ pub fn load_agy_swarm(
     let sub_dir = sg.join("subagents");
     let has_sub = sub_dir.is_dir();
     if has_sub {
-        append_plain_subagents(&sub_dir, &br, &mut seen, &mut items, sub_trackers);
+        append_plain_subagents(
+            &sub_dir,
+            &br,
+            &mut seen,
+            &mut items,
+            &mut snap.worker_transcripts,
+            sub_trackers,
+        );
     }
+    sub_trackers.retain(|k, _| seen.contains(k));
     if !has_members && !has_sub {
         items = agy_subagents(transcript, fallback_tr);
     }

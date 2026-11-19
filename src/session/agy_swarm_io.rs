@@ -1,5 +1,6 @@
 //! Antigravity Swarm Board Tail, Brain Roots & Conversation ID Resolution.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -8,11 +9,51 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::json::{
-    extract_json_array_slice, extract_json_str, extract_json_u64, extract_string_list_in_array,
+    extract_json_array_slice, extract_json_object, extract_json_str, extract_json_u64,
+    extract_string_list_in_array, iter_object_members,
 };
 use crate::platform::{cache_dir, clean_canonicalize, paths_equal_ci, user_home_dir};
 use crate::session::agent::{agy_home, is_safe_id};
 use crate::session::agy::agy_cid_for_cwd;
+
+type MembersCache = HashMap<PathBuf, (u64, SystemTime, String)>;
+thread_local! {
+    static MEMBERS_CACHE: RefCell<MembersCache> = RefCell::new(HashMap::new());
+}
+
+pub fn agy_sys_gen(transcript: &Path) -> Option<PathBuf> {
+    let p = transcript.parent()?.parent()?;
+    (p.file_name() == Some(OsStr::new(".system_generated"))).then(|| p.to_path_buf())
+}
+
+pub fn agy_brain_root(transcript: &Path) -> Option<PathBuf> {
+    agy_sys_gen(transcript)?
+        .parent()?
+        .parent()
+        .map(Path::to_path_buf)
+}
+
+pub(crate) fn read_members_cached(path: &Path) -> Option<String> {
+    let meta = fs::metadata(path).ok().filter(|m| m.len() <= 262_144)?;
+    let key = (meta.len(), meta.modified().unwrap_or(UNIX_EPOCH));
+    if let Some(hit) = MEMBERS_CACHE.with(|c| {
+        c.borrow()
+            .get(path)
+            .filter(|(l, m, _)| (*l, *m) == key)
+            .map(|(_, _, t)| t.clone())
+    }) {
+        return Some(hit);
+    }
+    let txt = fs::read_to_string(path).ok()?;
+    MEMBERS_CACHE.with(|c| {
+        let mut m = c.borrow_mut();
+        if m.len() >= 32 {
+            m.clear();
+        }
+        m.insert(path.to_path_buf(), (key.0, key.1, txt.clone()));
+    });
+    Some(txt)
+}
 
 pub fn agy_brain_roots() -> Vec<PathBuf> {
     let a = agy_home().join("brain");
@@ -87,7 +128,7 @@ pub fn read_board_tail(board: &Path, max_bytes: u64) -> (u64, Vec<(String, u64, 
     (head, out)
 }
 
-fn decode_file_uri(uri: &str) -> Option<String> {
+pub(crate) fn decode_file_uri(uri: &str) -> Option<String> {
     let raw = uri
         .strip_prefix("file://localhost")
         .or_else(|| uri.strip_prefix("file://"))?;
@@ -107,7 +148,9 @@ fn decode_file_uri(uri: &str) -> Option<String> {
         i += 1;
     }
     let s = String::from_utf8_lossy(&out).into_owned();
-    let win = cfg!(windows) && s.starts_with('/') && s.as_bytes().get(2) == Some(&b':');
+    let win = s.starts_with('/')
+        && s.as_bytes().get(1).is_some_and(|c| c.is_ascii_alphabetic())
+        && s.as_bytes().get(2) == Some(&b':');
     Some(if win { s[1..].into() } else { s })
 }
 
@@ -119,8 +162,11 @@ fn scan_subagents_cid(canon_cwd: &Path) -> Option<String> {
             if !is_safe_id(&cid) || agy_transcript_for_cid(&cid).is_none() {
                 continue;
             }
-            let sd = conv.path().join(".system_generated/subagents");
-            for sub in fs::read_dir(sd).into_iter().flatten().flatten() {
+            for sub in fs::read_dir(conv.path().join(".system_generated/subagents"))
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let p = sub.path();
                 if p.extension() != Some(OsStr::new("json")) {
                     continue;
@@ -157,20 +203,86 @@ fn scan_subagents_cid(canon_cwd: &Path) -> Option<String> {
     best.map(|(_, c)| c)
 }
 
-pub fn agy_resolve_cid(home: &str, yid: &str, cwd: &str) -> Option<String> {
+pub fn agy_is_member_of(coord_transcript: &Path, candidate_cid: &str) -> bool {
+    if !is_safe_id(candidate_cid) {
+        return false;
+    }
+    let Some(sg) = agy_sys_gen(coord_transcript) else {
+        return false;
+    };
+    if let Some(txt) = read_members_cached(&sg.join("swarm/members.json")) {
+        if let Some(obj) = extract_json_object(&txt, "members") {
+            for (_, mj) in iter_object_members(obj) {
+                if extract_json_str(mj, "conversation_id").as_deref() == Some(candidate_cid) {
+                    return true;
+                }
+            }
+        }
+    }
+    let sub = sg.join("subagents").join(format!("{candidate_cid}.json"));
+    fs::metadata(&sub).ok().is_some_and(|m| m.len() <= 65_536)
+        && fs::read_to_string(&sub).ok().is_some_and(|st| {
+            extract_json_str(&st, "conversationId").as_deref() == Some(candidate_cid)
+        })
+}
+
+pub fn agy_parent_coordinator(cid: &str, transcript_path: &Path) -> Option<(String, PathBuf)> {
+    if !is_safe_id(cid)
+        || agy_sys_gen(transcript_path).is_some_and(|sg| sg.join("swarm/members.json").is_file())
+    {
+        return None;
+    }
+    let mut roots = Vec::new();
+    if let Some(br) = agy_brain_root(transcript_path) {
+        roots.push(br);
+    }
+    for r in agy_brain_roots() {
+        if !roots.contains(&r) {
+            roots.push(r);
+        }
+    }
+    let mut scanned = 0usize;
+    for root in roots {
+        for conv in fs::read_dir(&root).into_iter().flatten().flatten() {
+            scanned += 1;
+            if scanned > 128 {
+                return None;
+            }
+            let cand_cid = conv.file_name().to_string_lossy().into_owned();
+            if cand_cid == cid || !is_safe_id(&cand_cid) {
+                continue;
+            }
+            let cand_tr = conv.path().join(".system_generated/logs/transcript.jsonl");
+            if cand_tr.is_file() && agy_is_member_of(&cand_tr, cid) {
+                return Some((cand_cid, cand_tr));
+            }
+        }
+    }
+    None
+}
+
+pub fn agy_resolve_cid_detail(home: &str, yid: &str, cwd: &str) -> Option<(String, bool)> {
     let valid = |s: &str| is_safe_id(s) && agy_transcript_for_cid(s).is_some();
     let from_tab = is_safe_id(yid)
         .then(|| fs::read_to_string(cache_dir(home).join(format!("tab_conv_{yid}.txt"))).ok())
         .flatten();
     let from_env = std::env::var("CCIDE_AGY_CONVERSATION").ok();
-    [from_tab, from_env]
+    if let Some(cid) = [from_tab, from_env]
         .into_iter()
         .flatten()
         .map(|s| s.trim().to_string())
         .find(|c| valid(c))
-        .or_else(|| agy_cid_for_cwd(cwd).filter(|s| valid(s)))
-        .or_else(|| {
-            let cc = clean_canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
-            scan_subagents_cid(&cc)
-        })
+    {
+        return Some((cid, true));
+    }
+    if let Some(cid) = agy_cid_for_cwd(cwd).filter(|s| valid(s)) {
+        return Some((cid, false));
+    }
+    let cc = clean_canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
+    scan_subagents_cid(&cc).map(|cid| (cid, false))
+}
+
+#[allow(dead_code)]
+pub fn agy_resolve_cid(home: &str, yid: &str, cwd: &str) -> Option<String> {
+    agy_resolve_cid_detail(home, yid, cwd).map(|(cid, _)| cid)
 }

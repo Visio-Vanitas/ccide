@@ -8,17 +8,17 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ffi::{current_ppid, get_ppid_of, notify_sidebar};
+use crate::ffi::notify_sidebar;
 use crate::json::{extract_json_bool, extract_json_object, extract_json_str, json_escape};
-use crate::platform::{atomic_write, cache_dir, ipc_path, is_internal_or_temp_path, user_home_dir};
+use crate::platform::{atomic_write, cache_dir, is_internal_or_temp_path, user_home_dir};
 use crate::session::{
     emit_yazi_reveal_at, extract_tool_line_target, is_valid_model_name, normalize_path_under_cwd,
     resolve_live_yazi_tab, AgentKind,
 };
 
 use hook_input::{
-    emit_required_stdout, parse_hook_event, to_claude_shape, write_agent_hook_records,
-    HookEventKind,
+    agy_event_is_worker, emit_required_stdout, parse_hook_event, should_reveal_agent_view,
+    to_claude_shape, write_agent_hook_records, HookEventKind,
 };
 
 fn extract_first_filename_from_array(src: &str) -> Option<String> {
@@ -49,47 +49,6 @@ fn extract_first_filename_from_array(src: &str) -> Option<String> {
         return None;
     }
     None
-}
-
-fn should_reveal_claude_view(cdir: &Path, yid: &str, sid: &str, agent_id: &str) -> bool {
-    let mut active_view = fs::read_to_string(cdir.join(format!("active_view_{yid}.txt")))
-        .unwrap_or_else(|_| "main".to_string())
-        .trim()
-        .to_string();
-    let mut pid_cur = None;
-    let mut pid = current_ppid();
-    for _ in 0..4 {
-        if pid <= 1 {
-            break;
-        }
-        if let Ok(txt) = fs::read_to_string(ipc_path(&format!("cur_pid_{pid}.txt"))) {
-            pid_cur = Some(txt);
-            break;
-        }
-        match get_ppid_of(pid) {
-            Some(parent) if parent > 1 && parent != pid => pid = parent,
-            _ => break,
-        }
-    }
-    let sess_cur = (!sid.is_empty())
-        .then(|| fs::read_to_string(ipc_path(&format!("cur_{sid}.txt"))).ok())
-        .flatten();
-    if let Some(cur_native) = pid_cur.or(sess_cur) {
-        let cn = cur_native.lines().next().unwrap_or("").trim();
-        if !cn.is_empty() {
-            active_view = cn.to_string();
-        }
-    }
-    let norm_view = if active_view.is_empty() {
-        "main"
-    } else {
-        active_view.as_str()
-    };
-    if agent_id.is_empty() {
-        norm_view == "main"
-    } else {
-        norm_view == agent_id
-    }
 }
 
 pub fn run_with_agent(forced: Option<AgentKind>) {
@@ -133,7 +92,8 @@ pub fn run_with_agent(forced: Option<AgentKind>) {
     }
 
     let (target_yazi_id, tab_cwd) = resolve_live_yazi_tab(&cdir_str, &ev.session_id, &ev.cwd);
-    if !target_yazi_id.is_empty() && !ev.session_id.is_empty() {
+    let is_worker = agy_event_is_worker(&cdir, &target_yazi_id, &ev);
+    if !is_worker && !target_yazi_id.is_empty() && !ev.session_id.is_empty() {
         let _ = atomic_write(
             &cdir.join(format!("session_{}.yazi", ev.session_id)),
             target_yazi_id.as_bytes(),
@@ -240,7 +200,7 @@ pub fn run_with_agent(forced: Option<AgentKind>) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    if ev.agent_id.is_empty() {
+    if !is_worker && ev.agent_id.is_empty() {
         let main_json = format!(
             "{{\"file\":\"{}\",\"tool\":\"{}\",\"line\":{target_line},\"span\":{target_span},\"ts\":{now_s}}}\n",
             json_escape(&file_path),
@@ -252,9 +212,7 @@ pub fn run_with_agent(forced: Option<AgentKind>) {
         );
     }
 
-    if ev.agent == AgentKind::Claude
-        && !should_reveal_claude_view(&cdir, &target_yazi_id, &ev.session_id, &ev.agent_id)
-    {
+    if !should_reveal_agent_view(&cdir, &target_yazi_id, &ev, is_worker) {
         return;
     }
 

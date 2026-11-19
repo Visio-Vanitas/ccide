@@ -8,6 +8,7 @@ use std::time::SystemTime;
 use crate::ffi::{current_ppid, is_descendant_of, is_pid_alive, ProcToken};
 use crate::json::{extract_json_bool, extract_json_str, extract_json_u64};
 use crate::platform::{clean_canonicalize, ipc_dir, paths_equal_ci};
+use crate::session::agent::is_safe_id;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessEntry {
@@ -148,36 +149,36 @@ pub fn resolve_yazi_id_from_ppid(cache_dir_path: &str) -> String {
         return String::new();
     }
     let mut best: Option<(SystemTime, String)> = None;
-    if let Ok(rd) = fs::read_dir(cache_dir_path) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if let Some(yid) = fname
-                .strip_prefix("tab_shell_")
-                .and_then(|s| s.strip_suffix(".txt"))
-            {
-                if let Ok(stxt) = fs::read_to_string(&p) {
-                    if let Some(tok) = ProcToken::parse(&stxt) {
-                        let spid_ok = if tok.start_ms > 0 {
-                            tok.is_alive_match()
-                        } else {
-                            is_pid_alive(tok.pid)
-                        };
-                        if spid_ok && is_descendant_of(ppid, tok.pid) {
-                            let mtime = entry
-                                .metadata()
-                                .and_then(|m| m.modified())
-                                .unwrap_or(SystemTime::UNIX_EPOCH);
-                            if best
-                                .as_ref()
-                                .map(|(b_mt, _)| mtime >= *b_mt)
-                                .unwrap_or(true)
-                            {
-                                best = Some((mtime, yid.to_string()));
-                            }
-                        }
-                    }
-                }
+    for entry in fs::read_dir(cache_dir_path).into_iter().flatten().flatten() {
+        let p = entry.path();
+        let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let Some(yid) = fname
+            .strip_prefix("tab_shell_")
+            .and_then(|s| s.strip_suffix(".txt"))
+        else {
+            continue;
+        };
+        if !is_safe_id(yid) {
+            continue;
+        }
+        let Some(tok) = fs::read_to_string(&p)
+            .ok()
+            .and_then(|s| ProcToken::parse(&s))
+        else {
+            continue;
+        };
+        let ok = if tok.start_ms > 0 {
+            tok.is_alive_match()
+        } else {
+            is_pid_alive(tok.pid)
+        };
+        if ok && is_descendant_of(ppid, tok.pid) {
+            let mt = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            if best.as_ref().map_or(true, |(b_mt, _)| mt >= *b_mt) {
+                best = Some((mt, yid.to_string()));
             }
         }
     }
@@ -190,16 +191,15 @@ pub fn resolve_live_yazi_tab(
     cwd_path: &str,
 ) -> (String, String) {
     let ppid = current_ppid();
-    let canon_cwd = if !cwd_path.is_empty() {
-        clean_canonicalize(cwd_path).ok()
-    } else {
-        None
-    };
-    let bound_yid = if !session_id.is_empty() {
+    let canon_cwd = (!cwd_path.is_empty())
+        .then(|| clean_canonicalize(cwd_path).ok())
+        .flatten();
+    let bound_yid = if is_safe_id(session_id) {
         fs::read_to_string(format!("{}/session_{}.yazi", cache_dir_path, session_id))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| is_safe_id(s))
             .unwrap_or_default()
-            .trim()
-            .to_string()
     } else {
         String::new()
     };
@@ -212,48 +212,46 @@ pub fn resolve_live_yazi_tab(
     }
 
     let mut live_tabs = Vec::new();
-    if let Ok(rd) = fs::read_dir(ipc_dir()) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !fname.starts_with("sidebar_tab_") || !fname.ends_with(".json") {
-                continue;
-            }
-            let Ok(txt) = fs::read_to_string(&p) else {
-                continue;
-            };
-            let Some(sb_tok) = extract_json_str(&txt, "pid").and_then(|s| ProcToken::parse(&s))
-            else {
-                continue;
-            };
-            if !sb_tok.is_alive_match() {
-                continue;
-            }
-            let yid = extract_json_str(&txt, "yazi_id").unwrap_or_default();
-            if yid.is_empty() {
-                continue;
-            }
-            let cwd = extract_json_str(&txt, "cwd").unwrap_or_default();
-            let shell_pid = extract_json_u64(&txt, "shell_pid").unwrap_or(0) as u32;
-            let mtime = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            live_tabs.push(LiveTab {
-                mtime,
-                yazi_id: yid,
-                cwd,
-                shell_pid,
-            });
+    for entry in fs::read_dir(ipc_dir()).into_iter().flatten().flatten() {
+        let p = entry.path();
+        let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !fname.starts_with("sidebar_tab_") || !fname.ends_with(".json") {
+            continue;
         }
+        let Ok(txt) = fs::read_to_string(&p) else {
+            continue;
+        };
+        let Some(sb_tok) = extract_json_str(&txt, "pid").and_then(|s| ProcToken::parse(&s)) else {
+            continue;
+        };
+        if !sb_tok.is_alive_match() {
+            continue;
+        }
+        let yid = extract_json_str(&txt, "yazi_id").unwrap_or_default();
+        if !is_safe_id(&yid) {
+            continue;
+        }
+        let cwd = extract_json_str(&txt, "cwd").unwrap_or_default();
+        let shell_pid = extract_json_u64(&txt, "shell_pid").unwrap_or(0) as u32;
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        live_tabs.push(LiveTab {
+            mtime,
+            yazi_id: yid,
+            cwd,
+            shell_pid,
+        });
     }
     live_tabs.sort_by_key(|b| std::cmp::Reverse(b.mtime));
 
     if ppid > 1 {
-        for lt in &live_tabs {
-            if lt.shell_pid > 0 && is_descendant_of(ppid, lt.shell_pid) {
-                return (lt.yazi_id.clone(), lt.cwd.clone());
-            }
+        if let Some(lt) = live_tabs
+            .iter()
+            .find(|t| t.shell_pid > 0 && is_descendant_of(ppid, t.shell_pid))
+        {
+            return (lt.yazi_id.clone(), lt.cwd.clone());
         }
     }
     if !bound_yid.is_empty() {
@@ -263,12 +261,12 @@ pub fn resolve_live_yazi_tab(
     }
     if let Some(ref cc) = canon_cwd {
         for lt in &live_tabs {
-            if !lt.cwd.is_empty() {
-                if let Ok(lt_canon) = clean_canonicalize(&lt.cwd) {
-                    if paths_equal_ci(&lt_canon, cc) {
-                        return (lt.yazi_id.clone(), lt.cwd.clone());
-                    }
-                }
+            if !lt.cwd.is_empty()
+                && clean_canonicalize(&lt.cwd)
+                    .ok()
+                    .is_some_and(|c| paths_equal_ci(&c, cc))
+            {
+                return (lt.yazi_id.clone(), lt.cwd.clone());
             }
         }
     }
@@ -277,7 +275,10 @@ pub fn resolve_live_yazi_tab(
     if !ppid_yid.is_empty() {
         return (ppid_yid, cwd_path.to_string());
     }
-    let env_yid = std::env::var("CC_YAZI_ID").unwrap_or_default();
+    let env_yid = std::env::var("CC_YAZI_ID")
+        .ok()
+        .filter(|s| is_safe_id(s))
+        .unwrap_or_default();
     if !env_yid.is_empty() {
         return (env_yid, cwd_path.to_string());
     }

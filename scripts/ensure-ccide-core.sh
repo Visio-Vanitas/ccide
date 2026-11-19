@@ -4,7 +4,22 @@
 # zero-Rust hosts automatically fetch and SHA256-verify the matching native binary.
 set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+SELF_PATH="$0"
+if [ -L "$SELF_PATH" ] || [ -e "$SELF_PATH" ]; then
+  if command -v realpath >/dev/null 2>&1; then
+    _rp="$(realpath "$SELF_PATH" 2>/dev/null || true)"
+    [ -n "$_rp" ] && SELF_PATH="$_rp"
+  elif command -v readlink >/dev/null 2>&1; then
+    _rl="$(readlink -f "$SELF_PATH" 2>/dev/null || readlink "$SELF_PATH" 2>/dev/null || true)"
+    if [ -n "$_rl" ]; then
+      case "$_rl" in
+        /*) SELF_PATH="$_rl" ;;
+        *) SELF_PATH="$(cd "$(dirname "$SELF_PATH")" 2>/dev/null && pwd)/$_rl" ;;
+      esac
+    fi
+  fi
+fi
+SCRIPT_DIR="$(cd "$(dirname "$SELF_PATH")" 2>/dev/null && pwd || true)"
 DEFAULT_ROOT=""
 [ -n "$SCRIPT_DIR" ] && DEFAULT_ROOT="$(dirname "$SCRIPT_DIR")"
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$DEFAULT_ROOT}"
@@ -21,10 +36,15 @@ CUSTOM_TAG="${CCIDE_RELEASE_TAG:-}"
 VER_SRC="${PLUGIN_VER:-${CUSTOM_TAG#v}}"
 PLUG_MAJ=""
 PLUG_MIN=""
+PLUG_PAT="0"
+PLUG_EXACT=""
 case "$VER_SRC" in
   [0-9]*.[0-9]*)
     PLUG_MAJ="$(printf '%s' "$VER_SRC" | cut -d. -f1 | tr -cd '0-9')"
     PLUG_MIN="$(printf '%s' "$VER_SRC" | cut -d. -f2 | tr -cd '0-9')"
+    _raw_pat="$(printf '%s' "$VER_SRC" | cut -d. -f3 | tr -cd '0-9')"
+    [ -n "$_raw_pat" ] && PLUG_PAT="$_raw_pat"
+    PLUG_EXACT="${PLUG_MAJ}.${PLUG_MIN}.${PLUG_PAT}"
     ;;
 esac
 TAG="$CUSTOM_TAG"
@@ -68,9 +88,14 @@ bin_is_ok() {
   [ -n "$_ver" ] || return 1
   _bmaj="$(printf '%s' "$_ver" | cut -d. -f1 | tr -cd '0-9')"
   _bmin="$(printf '%s' "$_ver" | cut -d. -f2 | tr -cd '0-9')"
+  _bpat="$(printf '%s' "$_ver" | cut -d. -f3 | tr -cd '0-9')"
+  [ -n "$_bpat" ] || _bpat="0"
   [ -n "$_bmaj" ] && [ -n "$_bmin" ] || return 1
   if [ "$_bmaj" -lt "$PLUG_MAJ" ] 2>/dev/null; then return 1; fi
-  if [ "$_bmaj" -eq "$PLUG_MAJ" ] && [ "$_bmin" -lt "$PLUG_MIN" ] 2>/dev/null; then return 1; fi
+  if [ "$_bmaj" -gt "$PLUG_MAJ" ] 2>/dev/null; then return 0; fi
+  if [ "$_bmin" -lt "$PLUG_MIN" ] 2>/dev/null; then return 1; fi
+  if [ "$_bmin" -gt "$PLUG_MIN" ] 2>/dev/null; then return 0; fi
+  if [ "$_bpat" -lt "$PLUG_PAT" ] 2>/dev/null; then return 1; fi
   return 0
 }
 
@@ -113,36 +138,16 @@ fetch_url() {
   fi
 }
 
-try_download() {
-  [ -n "$TRIPLE" ] && [ -n "$TAG" ] || return 1
-  mkdir -p "$CLAUDE_BIN_DIR"
-  _tries=0
-  while [ "$_tries" -lt 300 ]; do
-    if mkdir "$LOCK_DIR" 2>/dev/null; then
-      LOCK_HELD=1
-      break
-    fi
-    if [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +1 2>/dev/null || true)" ]; then
-      rm -rf "$LOCK_DIR" 2>/dev/null || true
-      continue
-    fi
-    _tries=$((_tries + 1))
-    sleep 0.1 2>/dev/null || sleep 1
-  done
-  [ "$LOCK_HELD" -eq 1 ] || return 1
-
-  if [ -x "$TARGET_BIN" ] && bin_is_ok "$TARGET_BIN"; then
-    return 0
-  fi
-
+try_download_tag() {
+  _dl_tag="$1"
   ARCHIVE="ccide-core-${TRIPLE}.tar.gz"
-  BASE_URL="https://github.com/${REPO_SLUG}/releases/download/${TAG}"
+  BASE_URL="https://github.com/${REPO_SLUG}/releases/download/${_dl_tag}"
   TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t ccide)"
 
   fetch_url "${BASE_URL}/${ARCHIVE}" "${TMP_DIR}/${ARCHIVE}" || return 1
   fetch_url "${BASE_URL}/SHA256SUMS.txt" "${TMP_DIR}/SHA256SUMS.txt" || return 1
 
-  EXPECTED="$(grep " ${ARCHIVE}\$" "${TMP_DIR}/SHA256SUMS.txt" | awk '{print $1}' | head -n 1 || true)"
+  EXPECTED="$(tr -d '\r' < "${TMP_DIR}/SHA256SUMS.txt" | awk -v a="$ARCHIVE" '$2 == a || $2 == ("*" a) { print $1; exit }')"
   [ -n "$EXPECTED" ] || return 1
   if command -v shasum >/dev/null 2>&1; then
     ACTUAL="$(shasum -a 256 "${TMP_DIR}/${ARCHIVE}" | awk '{print $1}')"
@@ -176,6 +181,46 @@ try_download() {
     fi
   fi
   return 0
+}
+
+try_download() {
+  [ -n "$TRIPLE" ] && [ -n "$TAG" ] || return 1
+  mkdir -p "$CLAUDE_BIN_DIR"
+  _tries=0
+  while [ "$_tries" -lt 300 ]; do
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      LOCK_HELD=1
+      break
+    fi
+    if [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +1 2>/dev/null || true)" ]; then
+      rm -rf "$LOCK_DIR" 2>/dev/null || true
+      continue
+    fi
+    _tries=$((_tries + 1))
+    sleep 0.1 2>/dev/null || sleep 1
+  done
+  [ "$LOCK_HELD" -eq 1 ] || return 1
+
+  if [ -x "$TARGET_BIN" ] && bin_is_ok "$TARGET_BIN"; then
+    return 0
+  fi
+
+  if [ -n "$CUSTOM_TAG" ]; then
+    _cand_tags="$CUSTOM_TAG"
+  elif [ -n "$PLUG_EXACT" ] && [ "v${PLUG_EXACT}" != "$TAG" ]; then
+    _cand_tags="${TAG} v${PLUG_EXACT}"
+  else
+    _cand_tags="$TAG"
+  fi
+  for _dl_tag in $_cand_tags; do
+    if try_download_tag "$_dl_tag"; then
+      return 0
+    fi
+    rm -rf "${TMP_DIR:-}" "${STAGED_BIN:-}"
+    TMP_DIR=""
+    STAGED_BIN=""
+  done
+  return 1
 }
 
 if try_download; then

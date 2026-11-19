@@ -62,7 +62,7 @@ class BootstrapAndProtoTests(unittest.TestCase):
             plug = os.path.join(td, "plugin")
             os.makedirs(os.path.join(plug, ".claude-plugin"), exist_ok=True)
             with open(os.path.join(plug, ".claude-plugin", "plugin.json"), "w", encoding="utf-8") as f:
-                json.dump({"name": "cc-ide", "version": "0.10.2"}, f)
+                json.dump({"name": "cc-ide", "version": "0.10.0"}, f)
 
             bin_p = os.path.join(home, ".claude", "bin", "ccide-core")
             cnt_log = os.path.join(td, "ver_calls.txt")
@@ -87,8 +87,14 @@ class BootstrapAndProtoTests(unittest.TestCase):
             _write_exec(bin_p, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ccide-core 0.11.0"; exit 0; fi\nexit 43\n')
             self.assertEqual(subprocess.run([node, _MJS, "x"], env=env, capture_output=True).returncode, 43)
 
-            # Skewed binary (0.9.4 < 0.10) with missing tag -> fail-open runs existing binary without live GitHub.
+            # Skewed patch binary (0.10.0 < 0.10.2) with missing tag -> fail-open runs existing binary.
+            _write_exec(bin_p, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ccide-core 0.10.0"; exit 0; fi\nexit 42\n')
+            with open(os.path.join(plug, ".claude-plugin", "plugin.json"), "w", encoding="utf-8") as f:
+                json.dump({"name": "cc-ide", "version": "0.10.2"}, f)
             off_env = {**env, "CCIDE_RELEASE_TAG": "v0.0.0-ccide-test-missing"}
+            self.assertEqual(subprocess.run([node, _MJS, "x"], env=off_env, capture_output=True).returncode, 42)
+
+            # Skewed minor binary (0.9.4 < 0.10.2) with missing tag -> fail-open runs existing binary without live GitHub.
             _write_exec(bin_p, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ccide-core 0.9.4"; exit 0; fi\nexit 44\n')
             self.assertEqual(subprocess.run([node, _MJS, "x"], env=off_env, capture_output=True).returncode, 44)
 
@@ -168,6 +174,32 @@ class BootstrapAndProtoTests(unittest.TestCase):
             self.assertEqual(r_tag.returncode, 7)
             with open(curl_log, encoding="utf-8") as f:
                 self.assertIn("/releases/download/v0.10.99/", f.read())
+
+            # Patch-tag fallback: when v0.11.0 404s (exit 1), ensure-ccide-core.sh falls back to exact v0.11.2.
+            for p in (old_bin, os.path.join(plug, "bin", "ccide-core")):
+                if os.path.exists(p):
+                    os.unlink(p)
+            with open(os.path.join(plug, ".claude-plugin", "plugin.json"), "w", encoding="utf-8") as f:
+                json.dump({"name": "cc-ide", "version": "0.11.2"}, f)
+            _write_exec(old_bin, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ccide-core 0.11.0"; exit 0; fi\nexit 55\n')
+            _write_exec(
+                os.path.join(mock_bin, "curl"),
+                "#!/bin/sh\n"
+                f'echo "$*" >> "{curl_log}"\n'
+                'url=""; out=""\n'
+                'while [ $# -gt 0 ]; do\n'
+                '  case "$1" in -o) out="$2"; shift 2;; -A|--connect-timeout|--max-time) shift 2;; -*) shift;; *) url="$1"; shift;; esac\n'
+                "done\n"
+                'case "$url" in */v0.11.0/*) exit 1;; esac\n'
+                f'cp "{srv_dir}/$(basename "$url")" "$out"\n',
+            )
+            r_fb = subprocess.run(["sh", _SH, "fb1"], env=env, capture_output=True, text=True)
+            self.assertEqual(r_fb.returncode, 7, msg=r_fb.stderr)
+            self.assertIn("UPGRADED:fb1", r_fb.stdout)
+            with open(curl_log, encoding="utf-8") as f:
+                fb_log = f.read()
+            self.assertIn(f"/releases/download/v0.11.0/{archive}", fb_log)
+            self.assertIn(f"/releases/download/v0.11.2/{archive}", fb_log)
 
     def test_core_binary_version_proto_and_detect_when_built(self):
         exe = "ccide-core.exe" if os.name == "nt" else "ccide-core"

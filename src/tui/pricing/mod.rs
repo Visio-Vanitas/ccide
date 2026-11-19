@@ -207,7 +207,11 @@ impl PricingCatalog {
             } else {
                 "deepseek-chat"
             }
-        } else if norm.contains("gemini") {
+        } else if norm.contains("gemini")
+            || norm.contains("argon")
+            || norm.contains("hydrogen")
+            || norm.contains("neon")
+        {
             if norm.contains("flash") {
                 "gemini-3.8-flash"
             } else {
@@ -215,6 +219,8 @@ impl PricingCatalog {
             }
         } else if norm.contains("grok") {
             "grok-4.5"
+        } else if norm.contains("gpt-oss") {
+            "gpt-oss-120b"
         } else if norm.contains("gpt") || norm.starts_with("o3") || norm.starts_with("o4") {
             "gpt-5.4"
         } else if norm.contains("haiku") {

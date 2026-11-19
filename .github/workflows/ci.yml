@@ -54,8 +54,12 @@ jobs:
         run: |
           BASE_VER="$(grep '^version =' Cargo.toml | head -n 1 | cut -d '"' -f 2)"
           echo "base_ver=${BASE_VER}" >> "$GITHUB_OUTPUT"
+          MILESTONE_TAG="v${BASE_VER%.*}.0"
           if [[ "${BASE_VER}" == *.0 ]]; then
             echo "is_minor=true" >> "$GITHUB_OUTPUT"
+          elif ! git ls-remote --exit-code --tags origin "refs/tags/${MILESTONE_TAG}" >/dev/null 2>&1; then
+            echo "is_minor=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Milestone tag '${MILESTONE_TAG}' is absent on origin; running full 6-target matrix for patch v${BASE_VER}."
           else
             echo "is_minor=false" >> "$GITHUB_OUTPUT"
           fi
@@ -157,12 +161,12 @@ jobs:
 
       - name: Validate Shell, Node & Python Scripts
         run: |
-          sh -n scripts/ensure-ccide-core.sh
+          sh -n scripts/ensure-ccide-core.sh integrations/antigravity/hook.sh integrations/codex/hook.sh
           node --check scripts/ensure-ccide-core.mjs
           zsh -n install.sh
           zsh -n scripts/ccide
           zsh -n scripts/pane-runner.sh
-          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/git_smooth_graph.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py scripts/ccide_workflow_runner.py scripts/ccide_workflow_server.py scripts/ccide_syntax_pal.py
+          python3 -I -m py_compile scripts/patch_claude_binary.py scripts/bun_pe.py scripts/cc_patch_rules.py scripts/cc_schema_inspector.py scripts/cc-maint.py scripts/ccide_daemon.py scripts/iterm2_workspace.py scripts/iterm-preferences.py scripts/iterm-pyenv.py scripts/lazygit-pager.sh scripts/lazygit-log.py scripts/git_smooth_graph.py scripts/pty-hscroll-bridge.py scripts/md-render.py scripts/sync-pricing.py scripts/agent-task-context.py scripts/ccide_workflow_runner.py scripts/ccide_workflow_server.py scripts/ccide_syntax_pal.py scripts/merge_agent_hooks.py
           pwsh -NoProfile -Command '$errs = $null; foreach ($f in @("install.ps1", "scripts/ccide.ps1")) { [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errs); if ($errs) { Write-Error "$f : $errs"; exit 1 } }'
 
       - name: Validate Plugin & Marketplace JSON Manifests & Version Parity
@@ -182,6 +186,12 @@ jobs:
               ".claude-plugin/plugin.json",
               ".claude-plugin/marketplace.json",
               "hooks/hooks.json",
+              "integrations/antigravity/plugin.json",
+              "integrations/antigravity/hooks.json",
+              "integrations/antigravity/hooks.windows.json",
+              "integrations/codex/.codex-plugin/plugin.json",
+              "integrations/codex/hooks.json",
+              "integrations/codex/hooks.windows.json",
               "assets/cc-schema.json",
               "assets/adaptive_quadrant_logos.json",
               "assets/glow-style.json",
@@ -222,11 +232,14 @@ jobs:
               inst_ver = re.search(r'(?m)^PLUGIN_VERSION="([^"]+)"', f.read()).group(1)
           with open("install.ps1", encoding="utf-8") as f:
               ps1_ver = re.search(r'(?m)^\$PluginVersion\s*=\s*"([^"]+)"', f.read()).group(1)
-          assert cargo_ver == plugin_ver == mkt_ver == mkt_p0_ver == inst_ver == ps1_ver, (
+          with open("integrations/codex/.codex-plugin/plugin.json", encoding="utf-8") as f:
+              codex_ver = json.load(f)["version"]
+          assert cargo_ver == plugin_ver == mkt_ver == mkt_p0_ver == inst_ver == ps1_ver == codex_ver, (
               f"Version mismatch: Cargo.toml={cargo_ver}, plugin.json={plugin_ver}, "
-              f"marketplace.json={mkt_ver}/{mkt_p0_ver}, install.sh={inst_ver}, install.ps1={ps1_ver}"
+              f"marketplace.json={mkt_ver}/{mkt_p0_ver}, install.sh={inst_ver}, install.ps1={ps1_ver}, "
+              f"codex={codex_ver}"
           )
-          print(f"OK: 5-way version parity ({cargo_ver})")
+          print(f"OK: 7-entry version parity ({cargo_ver})")
           PY
 
       - name: Build Debug Engine & Run Dynamic Patcher, Workbench & Cross-Platform Unit Tests

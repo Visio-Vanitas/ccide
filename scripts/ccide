@@ -49,8 +49,8 @@ while [[ $# -gt 0 ]]; do
     --wezterm) BACKEND="wezterm"; shift ;;
     --wt) BACKEND="wt"; shift ;;
     --backend)
-      BACKEND="${2:-auto}"
-      if [[ $# -ge 2 ]]; then shift 2; else shift; fi
+      if [[ $# -lt 2 || -z "$2" ]]; then echo "Error: --backend requires a value" >&2; exit 2; fi
+      BACKEND="$2"; shift 2
       ;;
     --clear-subagents|--clear-done)
       shift
@@ -131,8 +131,8 @@ while [[ $# -gt 0 ]]; do
         "$@"
       ;;
     --width)
-      LEFT_PCT="${2:-30}"
-      if [[ $# -ge 2 ]]; then shift 2; else shift; fi
+      if [[ $# -lt 2 || -z "$2" ]]; then echo "Error: --width requires a percentage" >&2; exit 2; fi
+      LEFT_PCT="$2"; shift 2
       ;;
     --keep-panes)
       KEEP_PANES=1
@@ -218,7 +218,11 @@ REPO_ROOT="${SCRIPT_DIR:h}"
 _resolver_sh="$HOME/.claude/scripts/ensure-ccide-core.sh"
 [[ -f "$_resolver_sh" ]] || _resolver_sh="$SCRIPT_DIR/ensure-ccide-core.sh"
 if [[ -f "$_resolver_sh" ]]; then
-  sh "$_resolver_sh" --version >/dev/null 2>&1 || true
+  if [[ -z "${CLAUDE_PLUGIN_ROOT:-}" && -f "$REPO_ROOT/.claude-plugin/plugin.json" ]]; then
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" sh "$_resolver_sh" --version >/dev/null 2>&1 || true
+  else
+    sh "$_resolver_sh" --version >/dev/null 2>&1 || true
+  fi
 fi
 CCIDE_CORE_BIN="$HOME/.claude/bin/ccide-core"
 [[ -x "$CCIDE_CORE_BIN" ]] || CCIDE_CORE_BIN="$(command -v ccide-core || echo "$REPO_ROOT/bin/ccide-core")"
@@ -238,12 +242,13 @@ if [[ -x "$CCIDE_CORE_BIN" ]]; then
   esac
 fi
 
+_tmux_agy_home="${CCIDE_AGY_HOME:+ CCIDE_AGY_HOME=${(q)CCIDE_AGY_HOME}}"
 if [[ -z "${TMUX:-}" && ( "$BACKEND" == "tmux" || ( "$BACKEND" == "auto" && "$DETECTED_BACKEND" == "none" ) ) ]]; then
   if command -v tmux >/dev/null 2>&1 && [[ -z "${CLAUDECODE:-}" ]]; then
     SESSION_NAME="ccide-${PWD:t}-$$"
     QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
     exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-      "export CCIDE_BACKEND=tmux CCIDE_AGENT=${(q)CCIDE_AGENT} CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR} CCIDE_AGY_CONVERSATION=${(q)CONV_ID}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
+      "export CCIDE_BACKEND=tmux CCIDE_AGENT=${(q)CCIDE_AGENT} CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR} CCIDE_AGY_CONVERSATION=${(q)CONV_ID}${_tmux_agy_home}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
   fi
 fi
 
@@ -285,7 +290,7 @@ if [[ -z "$PANE_SPEC" && -z "${TMUX:-}" && "$BACKEND" == "auto" && -z "${CLAUDEC
   SESSION_NAME="ccide-${PWD:t}-$$"
   QUOTED_ORIG="${(j: :)${(q)ORIG_ARGS[@]}}"
   exec tmux -L ccide new-session -A -s "$SESSION_NAME" -c "$TARGET_DIR" \
-    "export CCIDE_BACKEND=tmux CCIDE_AGENT=${(q)CCIDE_AGENT} CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR} CCIDE_AGY_CONVERSATION=${(q)CONV_ID}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
+    "export CCIDE_BACKEND=tmux CCIDE_AGENT=${(q)CCIDE_AGENT} CCIDE_IPC_DIR=${(q)CCIDE_IPC_DIR} CCIDE_AGY_CONVERSATION=${(q)CONV_ID}${_tmux_agy_home}; exec ${(q)0} ${QUOTED_ORIG} --tmux"
 fi
 
 if [[ -n "${CLAUDECODE:-}" ]]; then

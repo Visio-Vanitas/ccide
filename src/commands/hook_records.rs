@@ -5,11 +5,15 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::commands::yazi_hook::hook_input::{first_esc, first_str, HookEvent, HookEventKind};
+use crate::commands::yazi_hook::hook_input::{
+    first_esc, first_str, should_reveal_claude_view, HookEvent, HookEventKind,
+};
 use crate::ffi::{current_ppid, get_ppid_of, ProcToken};
 use crate::json::{extract_json_object, extract_json_str, extract_json_u64, json_escape};
 use crate::platform::atomic_write;
-use crate::session::{agy, codex, write_tab_agent, AgentKind};
+use crate::session::{
+    agy, agy_is_member_of, agy_parent_coordinator, codex, is_safe_id, write_tab_agent, AgentKind,
+};
 
 fn extract_last_patch_path(patch_txt: &str) -> Option<String> {
     let norm = if !patch_txt.contains('\n') && patch_txt.contains("\\n") {
@@ -104,6 +108,79 @@ pub fn emit_required_stdout(agent: AgentKind, ev: HookEventKind) {
     let _ = out.flush();
 }
 
+fn resolve_agent_tp(ev: &HookEvent, prev: &str) -> String {
+    if !ev.transcript_path.is_empty() {
+        ev.transcript_path.clone()
+    } else if ev.agent == AgentKind::Agy && !ev.session_id.is_empty() {
+        agy::agy_transcript_for_cid(&ev.session_id)
+            .unwrap_or_else(|| agy::agy_transcript_path(&ev.session_id))
+            .to_string_lossy()
+            .into_owned()
+    } else if ev.agent == AgentKind::Codex && !ev.session_id.is_empty() {
+        codex::find_rollout_by_id(&ev.session_id)
+            .map(|p| p.to_string_lossy().into_owned())
+            .or_else(|| first_str(prev, &["transcript_path"]))
+            .unwrap_or_default()
+    } else {
+        first_str(prev, &["transcript_path"]).unwrap_or_default()
+    }
+}
+
+fn codex_rollout_is_worker(tp: &str) -> bool {
+    !tp.is_empty()
+        && codex::read_first_line(Path::new(tp))
+            .and_then(|l1| extract_json_str(&l1, "parent_thread_id"))
+            .filter(|s| !s.is_empty())
+            .is_some()
+}
+
+pub fn agy_event_is_worker(cdir: &Path, yid: &str, ev: &HookEvent) -> bool {
+    if ev.agent != AgentKind::Agy || ev.session_id.is_empty() {
+        return false;
+    }
+    if is_safe_id(yid) {
+        if let Ok(tc) = fs::read_to_string(cdir.join(format!("tab_conv_{yid}.txt"))) {
+            let tc_cid = tc.trim();
+            if is_safe_id(tc_cid) && tc_cid != ev.session_id {
+                return true;
+            }
+        }
+        if let Ok(prev) = fs::read_to_string(cdir.join(format!("live_tab_{yid}.json"))) {
+            let is_agy = extract_json_str(&prev, "agent").as_deref() == Some("agy");
+            let prev_sid = extract_json_str(&prev, "session_id").unwrap_or_default();
+            let prev_tp = extract_json_str(&prev, "transcript_path").unwrap_or_default();
+            if is_agy
+                && !prev_sid.is_empty()
+                && prev_sid != ev.session_id
+                && !prev_tp.is_empty()
+                && agy_is_member_of(Path::new(&prev_tp), &ev.session_id)
+            {
+                return true;
+            }
+        }
+    }
+    let tp = resolve_agent_tp(ev, "");
+    agy_parent_coordinator(&ev.session_id, Path::new(&tp)).is_some()
+}
+
+pub fn should_reveal_agent_view(cdir: &Path, yid: &str, ev: &HookEvent, is_worker: bool) -> bool {
+    match ev.agent {
+        AgentKind::Claude => should_reveal_claude_view(cdir, yid, &ev.session_id, &ev.agent_id),
+        AgentKind::Agy => {
+            let raw =
+                fs::read_to_string(cdir.join(format!("active_view_{yid}.txt"))).unwrap_or_default();
+            let t = raw.trim();
+            let active_view = if t.is_empty() { "main" } else { t };
+            if is_worker {
+                !ev.session_id.is_empty() && active_view == ev.session_id
+            } else {
+                active_view == "main" || (!ev.session_id.is_empty() && active_view == ev.session_id)
+            }
+        }
+        AgentKind::Codex => !is_worker && !codex_rollout_is_worker(&ev.transcript_path),
+    }
+}
+
 pub fn write_agent_hook_records(home: &str, cdir: &Path, ev: &HookEvent, yid: &str) {
     let shell_pid = fs::read_to_string(cdir.join(format!("tab_shell_{yid}.txt")))
         .ok()
@@ -127,27 +204,25 @@ pub fn write_agent_hook_records(home: &str, cdir: &Path, ev: &HookEvent, yid: &s
     let pid_tok = ProcToken::current(host_pid)
         .map(|t| t.encode())
         .unwrap_or_else(|| host_pid.to_string());
-    let prev = fs::read_to_string(cdir.join(format!("live_tab_{yid}.json")))
-        .or_else(|_| fs::read_to_string(cdir.join(format!("live_sess_{}.json", ev.session_id))))
-        .unwrap_or_default();
+    let is_agy_worker = agy_event_is_worker(cdir, yid, ev);
+    let prev = if is_agy_worker {
+        fs::read_to_string(cdir.join(format!("live_sess_{}.json", ev.session_id)))
+            .unwrap_or_default()
+    } else {
+        fs::read_to_string(cdir.join(format!("live_tab_{yid}.json")))
+            .or_else(|_| fs::read_to_string(cdir.join(format!("live_sess_{}.json", ev.session_id))))
+            .unwrap_or_default()
+    };
     let eff_mod = if !ev.model.is_empty() {
         ev.model.clone()
     } else {
         first_str(&prev, &["model_id", "model"]).unwrap_or_default()
     };
-    let tp = if !ev.transcript_path.is_empty() {
-        ev.transcript_path.clone()
-    } else if ev.agent == AgentKind::Agy && !ev.session_id.is_empty() {
-        agy::agy_transcript_path(&ev.session_id)
-            .to_string_lossy()
-            .into_owned()
-    } else if ev.agent == AgentKind::Codex && !ev.session_id.is_empty() {
-        codex::find_rollout_by_id(&ev.session_id)
-            .map(|p| p.to_string_lossy().into_owned())
-            .or_else(|| first_str(&prev, &["transcript_path"]))
-            .unwrap_or_default()
-    } else {
-        first_str(&prev, &["transcript_path"]).unwrap_or_default()
+    let tp = resolve_agent_tp(ev, &prev);
+    let is_worker = match ev.agent {
+        AgentKind::Agy => is_agy_worker,
+        AgentKind::Codex => codex_rollout_is_worker(&tp),
+        AgentKind::Claude => false,
     };
     let now_s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -170,7 +245,7 @@ pub fn write_agent_hook_records(home: &str, cdir: &Path, ev: &HookEvent, yid: &s
         let p = cdir.join(format!("live_sess_{}.json", ev.session_id));
         let _ = atomic_write(&p, rec.as_bytes());
     }
-    if !yid.is_empty() {
+    if !is_worker && !yid.is_empty() {
         let _ = atomic_write(&cdir.join(format!("live_tab_{yid}.json")), rec.as_bytes());
         if !cdir.join(format!("tab_agent_{yid}.txt")).is_file() {
             write_tab_agent(home, yid, ev.agent);

@@ -26,9 +26,16 @@ pub fn remove_tab_state(yid: &str) {
         let _ = fs::remove_file(ipc_path(&format!("geom_{yid}_{role}.txt")));
     }
     let cdir = cache_dir(&user_home_dir());
-    let _ = fs::remove_file(cdir.join(format!("tab_agent_{yid}.txt")));
-    let _ = fs::remove_file(cdir.join(format!("tab_conv_{yid}.txt")));
-    let _ = fs::remove_file(cdir.join(format!("live_tab_{yid}.json")));
+    for f in [
+        format!("tab_agent_{yid}.txt"),
+        format!("tab_conv_{yid}.txt"),
+        format!("live_tab_{yid}.json"),
+        format!("active_view_{yid}.txt"),
+        format!("main_last_file_{yid}.json"),
+        format!("tab_shell_{yid}.txt"),
+    ] {
+        let _ = fs::remove_file(cdir.join(f));
+    }
 }
 
 pub fn prune_dead_specs(home: &str) -> usize {
@@ -58,9 +65,16 @@ pub fn prune_dead_specs(home: &str) -> usize {
         };
         if !alive {
             remove_tab_state(yid);
-            let _ = fs::remove_file(cdir.join(format!("tab_agent_{yid}.txt")));
-            let _ = fs::remove_file(cdir.join(format!("tab_conv_{yid}.txt")));
-            let _ = fs::remove_file(cdir.join(format!("live_tab_{yid}.json")));
+            for f in [
+                format!("tab_agent_{yid}.txt"),
+                format!("tab_conv_{yid}.txt"),
+                format!("live_tab_{yid}.json"),
+                format!("active_view_{yid}.txt"),
+                format!("main_last_file_{yid}.json"),
+                format!("tab_shell_{yid}.txt"),
+            ] {
+                let _ = fs::remove_file(cdir.join(f));
+            }
             pruned += 1;
         }
     }

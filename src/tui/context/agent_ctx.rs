@@ -9,7 +9,9 @@ use std::time::Instant;
 use crate::budget::{compute_context_budget, CompactConfig};
 use crate::session::{classify_model_family_for, short_model_label, AgentKind, AgentSession};
 use crate::tui::context::agy_parser::update_agy_ctx;
-use crate::tui::context::agy_swarm_ctx::{pick_eff_model, resolve_agent_window};
+use crate::tui::context::agy_swarm_ctx::{
+    pick_eff_model, resolve_agent_window, seed_agy_model, TRACKER_IDLE_TTL,
+};
 use crate::tui::context::analyzer::apportion_tokens;
 use crate::tui::context::bar::compute_cache_hit_pct;
 use crate::tui::context::codex_parser::update_codex_ctx;
@@ -32,11 +34,11 @@ pub struct AgentCtxSample {
     pub turns: usize,
     pub weights: [u64; 5],
     pub perf: Vec<RawPerfSample>,
-    pub per_model: Vec<(String, u64, u64, u64)>,
+    pub per_model: Vec<(String, u64, u64, u64, usize)>,
 }
 
 impl AgentCtxSample {
-    /// Aggregates `(uncached_in, cached_in, out_tok)` in-place so `per_model` holds at most one entry per model.
+    /// Aggregates `(uncached_in, cached_in, out_tok, turns)` in-place so `per_model` holds at most one entry per model.
     pub fn aggregate_per_model(
         &mut self,
         model: &str,
@@ -48,9 +50,10 @@ impl AgentCtxSample {
             entry.1 = entry.1.saturating_add(uncached_in);
             entry.2 = entry.2.saturating_add(cached_in);
             entry.3 = entry.3.saturating_add(out_tok);
+            entry.4 = entry.4.saturating_add(1);
         } else {
             self.per_model
-                .push((model.to_string(), uncached_in, cached_in, out_tok));
+                .push((model.to_string(), uncached_in, cached_in, out_tok, 1));
         }
     }
 }
@@ -133,20 +136,20 @@ impl SessionContextAnalyzer {
                     .or_default()
                     .record_exact(ps);
             }
-            let add_turns = if src.per_model.len() <= 1 {
-                src.turns.max(1)
-            } else {
-                1
-            };
-            for (m_raw, uncached_in, cached_in, out_tok) in &src.per_model {
+            for (m_raw, uncached_in, cached_in, out_tok, m_turns) in &src.per_model {
                 let m_use = pick_eff_model(m_raw, fb_model);
                 let short = short_model_label(&m_use);
-                let (act, unc) = self.pricing.resolve(&m_use).compute_turn_cost(
-                    *uncached_in,
-                    0,
-                    0,
-                    *cached_in,
-                    *out_tok,
+                let t = (*m_turns).max(1) as u64;
+                let (q_in, r_in) = (*uncached_in / t, *uncached_in % t);
+                let (q_cr, r_cr) = (*cached_in / t, *cached_in % t);
+                let (q_out, r_out) = (*out_tok / t, *out_tok % t);
+                let rate = self.pricing.resolve(&m_use);
+                let (act_q, unc_q) = rate.compute_turn_cost(q_in, 0, 0, q_cr, q_out);
+                let (act_r, unc_r) =
+                    rate.compute_turn_cost(q_in + r_in, 0, 0, q_cr + r_cr, q_out + r_out);
+                let (act, unc) = (
+                    act_q * ((t - 1) as f64) + act_r,
+                    unc_q * ((t - 1) as f64) + unc_r,
                 );
                 cost_usd += act;
                 uncached_usd += unc;
@@ -163,7 +166,7 @@ impl SessionContextAnalyzer {
                     tps: None,
                     ttft_ms: None,
                 });
-                entry.turns = entry.turns.saturating_add(add_turns);
+                entry.turns = entry.turns.saturating_add((*m_turns).max(1));
                 entry.input_tokens = entry.input_tokens.saturating_add(*uncached_in);
                 entry.cache_read_tokens = entry.cache_read_tokens.saturating_add(*cached_in);
                 entry.output_tokens = entry.output_tokens.saturating_add(*out_tok);
@@ -238,6 +241,12 @@ impl SessionContextAnalyzer {
         view_id: &str,
     ) -> ContextSnapshot {
         self.pricing.reload_if_changed(home);
+        let now = Instant::now();
+        self.agent_trackers.retain(|_, tr| {
+            tr.last_seen.map_or(true, |t| {
+                now.saturating_duration_since(t) <= TRACKER_IDLE_TTL
+            })
+        });
         let is_sub = !view_id.is_empty() && view_id != "main";
         let (primary, eff_model) = {
             let tr = self
@@ -245,7 +254,10 @@ impl SessionContextAnalyzer {
                 .entry(sess.transcript_path.clone())
                 .or_default();
             match sess.kind {
-                AgentKind::Agy => update_agy_ctx(&sess.transcript_path, tr),
+                AgentKind::Agy => {
+                    seed_agy_model(&mut tr.s.model, &sess.model_id);
+                    update_agy_ctx(&sess.transcript_path, tr);
+                }
                 AgentKind::Codex => update_codex_ctx(&sess.transcript_path, tr),
                 AgentKind::Claude => {}
             }
