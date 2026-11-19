@@ -15,13 +15,15 @@ param(
     [switch]$Doctor,
     [switch]$Json,
     [switch]$PatchOnly,
+    [switch]$WithAgy,
+    [switch]$WithCodex,
     [switch]$Uninstall,
     [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$PluginVersion = "0.10.1"
+$PluginVersion = "0.11.0"
 $HomeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 $ClaudeDir = Join-Path $HomeDir ".claude"
 $CacheDir = Join-Path $HomeDir ".cache\cc-ide"
@@ -41,6 +43,8 @@ Usage: .\install.ps1 [options]  (or `install.cmd [options]` from cmd.exe)
 Options:
   (no args)        Launch interactive TUI Setup & Doctor (falls back to -Yes if non-interactive)
   -Yes             Non-interactive full build/download, plugin install, claude.exe patch & PATH setup
+  -WithAgy         Force Antigravity (`agy`) plugin installation even if `agy` is not on PATH
+  -WithCodex       Force Codex CLI hook installation even if `codex` is not on PATH
   -Doctor [-Json]  Run environment, WezTerm/WT & patch-anchor health check (TUI or JSON)
   -PatchOnly       Re-apply structural patches to Windows claude.exe
   -Uninstall       Cleanly restore claude.exe.bak, remove managed configs & strip User PATH entry
@@ -184,6 +188,17 @@ if ($Uninstall) {
     if (Test-Path $PluginCacheDir) {
         Remove-Item -LiteralPath $PluginCacheDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+    $AgyPluginDir = Join-Path $HomeDir ".gemini\config\plugins\cc-ide"
+    if (Test-Path (Join-Path $AgyPluginDir ".ccide-managed")) {
+        Remove-Item -LiteralPath $AgyPluginDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $CodexHomeDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HomeDir ".codex" }
+    $CodexHooks = Join-Path $CodexHomeDir "hooks.json"
+    if ((Test-Path $CodexHooks) -and $PyExe) {
+        & $PyExe -I (Join-Path $ProjectRoot "scripts\merge_agent_hooks.py") --remove --target $CodexHooks 2>$null
+    }
+    $CodexWrapperDir = Join-Path $CodexHomeDir "cc-ide"
+    if (Test-Path $CodexWrapperDir) { Remove-Item -LiteralPath $CodexWrapperDir -Recurse -Force -ErrorAction SilentlyContinue }
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($UserPath -and $UserPath.Contains($LocalBinDir)) {
         $Cleaned = (($UserPath -split ";") | Where-Object { $_ -and ($_ -ne $LocalBinDir) }) -join ";"
@@ -474,6 +489,32 @@ json.dump(st, open(st_p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
 "@
     $RegScript | & $PyExe -I - $ProjectRoot $PluginCacheDir $PluginVersion $ClaudeDir $StatusCmd
     Write-Ok "Registered cc-ide@cc-ide & quoted statusLine in $ClaudeDir\settings.json"
+}
+
+if ($WithAgy -or ($env:CCIDE_WITH_AGY -eq "1") -or (Get-Command agy -ErrorAction SilentlyContinue)) {
+    $AgyPluginDir = Join-Path $HomeDir ".gemini\config\plugins\cc-ide"
+    $AgyMarker = Join-Path $AgyPluginDir ".ccide-managed"
+    if ((Test-Path $AgyPluginDir) -and -not (Test-Path $AgyMarker)) {
+        Write-Warn "Skipping Antigravity plugin: $AgyPluginDir exists without .ccide-managed marker"
+    } else {
+        New-Item -ItemType Directory -Force -Path $AgyPluginDir | Out-Null
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "integrations\antigravity\plugin.json") -Destination (Join-Path $AgyPluginDir "plugin.json") -Force
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "integrations\antigravity\hooks.windows.json") -Destination (Join-Path $AgyPluginDir "hooks.json") -Force
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "integrations\antigravity\hook.cmd") -Destination (Join-Path $AgyPluginDir "hook.cmd") -Force
+        Set-Content -LiteralPath $AgyMarker -Value "managed-by=cc-ide`n" -NoNewline -Encoding ASCII
+        Write-Ok "Installed Antigravity plugin -> $AgyPluginDir"
+    }
+}
+
+if (($WithCodex -or ($env:CCIDE_WITH_CODEX -eq "1") -or (Get-Command codex -ErrorAction SilentlyContinue)) -and $PyExe) {
+    $CodexHomeDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HomeDir ".codex" }
+    $CodexWrapDir = Join-Path $CodexHomeDir "cc-ide"
+    New-Item -ItemType Directory -Force -Path $CodexWrapDir | Out-Null
+    $CodexHookCmd = Join-Path $CodexWrapDir "hook.cmd"
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot "integrations\codex\hook.sh") -Destination (Join-Path $CodexWrapDir "hook.sh") -Force
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot "integrations\codex\hook.cmd") -Destination $CodexHookCmd -Force
+    & $PyExe -I (Join-Path $ProjectRoot "scripts\merge_agent_hooks.py") --target (Join-Path $CodexHomeDir "hooks.json") --template (Join-Path $ProjectRoot "integrations\codex\hooks.json") --hook-bin $CodexHookCmd
+    Write-Ok "Merged Codex CLI hooks -> $(Join-Path $CodexHomeDir 'hooks.json')"
 }
 
 Write-Step "5/6 Applying structural patches to Windows claude.exe..."

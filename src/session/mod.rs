@@ -1,6 +1,11 @@
 //! Strict Process-Isolated Session & Tab Resolution (`src/session/mod.rs`).
 
+pub mod agent;
+pub mod agent_bind;
+pub mod agy;
 pub mod binding;
+pub mod codex;
+pub mod codex_discover;
 pub mod focus;
 pub mod model;
 pub mod model_compact;
@@ -19,14 +24,29 @@ use crate::platform::{cache_dir, clean_canonicalize, find_executable, ipc_path};
 
 pub use crate::model_id::is_valid_model_name;
 #[allow(unused_imports)]
+pub use agent::{agy_home, codex_home, is_safe_id, read_tab_agent, write_tab_agent, AgentKind};
+#[allow(unused_imports)]
+pub use agent_bind::{agent_session_to_binding, resolve_agent_session, AgentSession};
+#[allow(unused_imports)]
+pub use agy::{
+    agy_cid_for_cwd, agy_main_file_ops, agy_settings_model, agy_subagents, agy_transcript_path,
+};
+#[allow(unused_imports)]
 pub use binding::{choose_binding, commit_binding, BindingChoice, SessionBinding};
+#[allow(unused_imports)]
+pub use codex::{
+    codex_config, codex_main_file_ops, codex_subagents, find_rollout_by_id, find_rollout_for_cwd,
+    CodexConfig,
+};
 pub use focus::{emit_yazi_blur, emit_yazi_reveal_at, extract_tool_line_target};
+#[allow(unused_imports)]
 pub use model::{
-    classify_model_family, compact_model_for_width, load_config_models, map_alias_with_settings,
-    short_model_label, ConfigModels,
+    classify_model_family, classify_model_family_for, compact_model_for_width, load_config_models,
+    load_config_models_for, map_alias_with_settings, short_model_label, ConfigModels,
 };
 pub use scan::{resolve_live_yazi_tab, resolve_yazi_id_from_ppid};
-pub use transcript_main::normalize_path_under_cwd;
+#[allow(unused_imports)]
+pub use transcript_main::{normalize_path_under_cwd, MainSessionOps};
 
 fn ancestor_distance(mut pid: u32, target_ancestor: u32) -> Option<usize> {
     if target_ancestor == 0 || pid == 0 {
@@ -153,15 +173,15 @@ fn read_tab_pane_title(home: &str, tab_yazi_id: &str, query_tmux: bool) -> Optio
     clean_claude_pane_title(&raw)
 }
 
-fn is_claimed_by_live_sibling(cdir: &Path, session_id: &str, my_yid: &str) -> bool {
-    if session_id.is_empty() {
+pub(crate) fn is_claimed_by_live_sibling(cdir: &Path, session_id: &str, my_yid: &str) -> bool {
+    if !is_safe_id(session_id) {
         return false;
     }
     let Ok(raw) = fs::read_to_string(cdir.join(format!("session_{session_id}.yazi"))) else {
         return false;
     };
     let other_yid = raw.trim();
-    if other_yid.is_empty() || other_yid == my_yid {
+    if !is_safe_id(other_yid) || other_yid == my_yid {
         return false;
     }
     let Ok(reg) = fs::read_to_string(ipc_path(&format!("sidebar_tab_{other_yid}.json"))) else {
@@ -244,38 +264,25 @@ mod tests {
 
     #[test]
     fn cleans_titles_and_parses_v1_v2_tmux_specs() {
-        let cases = [
-            (
-                "palette-syntax-ghostty-support (claude)",
-                Some("palette-syntax-ghostty-support"),
-            ),
-            (
-                "✳ high-concurrency-optimization (claude)",
-                Some("high-concurrency-optimization"),
-            ),
-            (
-                "✳ agent connection test (claude)",
-                Some("agent connection test"),
-            ),
-            ("◐ 并发优化测试 (claude.exe)", Some("并发优化测试")),
-            (
-                "✳ [v0.10] .github fix (claude)",
-                Some("[v0.10] .github fix"),
-            ),
-            ("Claude Code (claude)", None),
-            ("claude", None),
-        ];
-        for (raw, expected) in cases {
-            assert_eq!(clean_claude_pane_title(raw).as_deref(), expected);
-        }
+        let chk = |raw, exp| assert_eq!(clean_claude_pane_title(raw).as_deref(), exp);
+        chk("palette-syntax (claude)", Some("palette-syntax"));
+        chk("✳ high-concurrency (claude)", Some("high-concurrency"));
+        chk(
+            "✳ agent connection test (claude)",
+            Some("agent connection test"),
+        );
+        chk("◐ 并发优化测试 (claude.exe)", Some("并发优化测试"));
+        chk(
+            "✳ [v0.10] .github fix (claude)",
+            Some("[v0.10] .github fix"),
+        );
+        chk("Claude Code (claude)", None);
+        chk("claude", None);
         assert_eq!(
-            parse_tmux_spec("v2;b=tmux;k=1234;c=%12;y=%2;lp=30;f=gr"),
+            parse_tmux_spec("v2;b=tmux;k=1;c=%12;lp=30"),
             (true, Some("%12"))
         );
         assert_eq!(parse_tmux_spec("tmux:%1:%2,%3"), (true, Some("%1")));
-        assert_eq!(
-            parse_tmux_spec("v2;b=wezterm;k=1234;c=5;lp=30;f=gr"),
-            (false, None)
-        );
+        assert_eq!(parse_tmux_spec("v2;b=wezterm;k=1;c=5;lp=30"), (false, None));
     }
 }

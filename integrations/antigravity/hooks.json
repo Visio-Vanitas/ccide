@@ -1,0 +1,23 @@
+{
+  "cc-ide": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "./hook.sh yazi-hook --agent agy",
+        "timeout": 5
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "read_file|view_file|edit_file|replace_file_content|multi_replace_file_content|write_file|write_to_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./hook.sh yazi-hook --agent agy",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

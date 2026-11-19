@@ -1,0 +1,20 @@
+{
+  "name": "cc-ide",
+  "version": "0.11.0",
+  "description": "3-column adaptive terminal IDE workspace, context monitor, and live file reveal for Codex CLI",
+  "author": {
+    "name": "Visio-Vanitas"
+  },
+  "homepage": "https://github.com/Visio-Vanitas/ccide",
+  "repository": "https://github.com/Visio-Vanitas/ccide",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "workspace",
+    "yazi",
+    "lazygit",
+    "sidebar",
+    "telemetry"
+  ],
+  "hooks": "./hooks.json"
+}

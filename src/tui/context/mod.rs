@@ -1,84 +1,46 @@
 //! Live Per-Session `CONTEXT` Window & Per-Model `COST` Breakdown Analyzer (`src/tui/context/`).
 
+pub mod agent_ctx;
+pub mod agy_parser;
 pub mod analyzer;
 pub mod bar;
+pub mod codex_parser;
 pub mod cost_panel;
 pub mod json_scan;
 pub mod parser;
 pub mod perf;
 pub mod render;
+pub mod snapshot;
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::budget::{compute_context_budget, load_compact_config, CompactConfig, ContextBudget};
+use crate::budget::{compute_context_budget, load_compact_config, CompactConfig};
 use crate::json::{extract_json_f64, extract_json_str, extract_json_u64};
 use crate::platform::{cache_dir, user_home_dir};
 use crate::tui::pricing::PricingCatalog;
+#[allow(unused_imports)]
+pub use agent_ctx::{AgentCtxSample, AgentCtxTracker};
+#[allow(unused_imports)]
+pub use agy_parser::{agy_occupancy, update_agy_ctx};
 use analyzer::{aggregate_session_model_costs, list_subagent_files, resolve_transcript_file};
 pub use analyzer::{apportion_tokens, resolve_model_window_hint};
 use bar::compute_cache_hit_pct;
+#[allow(unused_imports)]
+pub use codex_parser::update_codex_ctx;
 pub use cost_panel::build_cost_panel;
 use parser::{update_transcript_ctx_tracker, TranscriptCtxTracker};
 use perf::PerfStreamTracker;
 pub use render::build_context_panel;
+pub use snapshot::{ContextSnapshot, ModelCostEntry};
 
 pub const TAG_CTX_TOGGLE: u8 = 12;
 
-#[derive(Clone, Debug)]
-pub struct ModelCostEntry {
-    pub model_short: String,
-    pub family: &'static str,
-    pub turns: usize,
-    pub input_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub output_tokens: u64,
-    pub cost_usd: f64,
-    pub saved_usd: f64,
-    pub share_pct: u64,
-    pub tps: Option<f64>,
-    pub ttft_ms: Option<u64>,
-}
-
-impl ModelCostEntry {
-    pub fn total_tokens(&self) -> u64 {
-        self.input_tokens
-            .saturating_add(self.cache_read_tokens)
-            .saturating_add(self.output_tokens)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ContextSnapshot {
-    pub is_subagent: bool,
-    pub model_win_tokens: u64,
-    pub budget: ContextBudget,
-    pub total_in_tokens: u64,
-    pub sys_md_tokens: u64,
-    pub tools_tokens: u64,
-    pub tool_io_tokens: u64,
-    pub thinking_tokens: u64,
-    pub chat_tokens: u64,
-    pub cum_cache_read_tokens: u64,
-    pub session_hit_pct: f64,
-    pub last_hit_pct: f64,
-    pub turns: usize,
-    pub session_turns: usize,
-    pub cost_usd: f64,
-    pub saved_usd: f64,
-    pub saved_pct: u64,
-    pub burn_usd_per_hr: Option<f64>,
-    pub rl_5h_pct: Option<u64>,
-    pub rl_7d_pct: Option<u64>,
-    pub lines_added: u64,
-    pub lines_removed: u64,
-    pub model_costs: Vec<ModelCostEntry>,
-}
-
 pub struct SessionContextAnalyzer {
     trackers: HashMap<PathBuf, TranscriptCtxTracker>,
+    pub(crate) agent_trackers: HashMap<PathBuf, AgentCtxTracker>,
     path_cache: HashMap<String, PathBuf>,
     sub_dir_cache: HashMap<String, (Option<SystemTime>, Vec<PathBuf>)>,
     perf_tracker: PerfStreamTracker,
@@ -86,7 +48,7 @@ pub struct SessionContextAnalyzer {
     cached_cfg: CompactConfig,
     cached_cfg_key: String,
     cached_settings_txt: String,
-    pricing: PricingCatalog,
+    pub(crate) pricing: PricingCatalog,
 }
 
 impl SessionContextAnalyzer {
@@ -94,6 +56,7 @@ impl SessionContextAnalyzer {
         let home = user_home_dir();
         Self {
             trackers: HashMap::new(),
+            agent_trackers: HashMap::new(),
             path_cache: HashMap::new(),
             sub_dir_cache: HashMap::new(),
             perf_tracker: PerfStreamTracker::default(),
@@ -107,6 +70,7 @@ impl SessionContextAnalyzer {
 
     pub fn clear(&mut self) {
         self.trackers.clear();
+        self.agent_trackers.clear();
         self.path_cache.clear();
         self.sub_dir_cache.clear();
         self.perf_tracker.clear();
@@ -131,7 +95,7 @@ impl SessionContextAnalyzer {
         };
         let st_path = Path::new(home).join(".claude/settings.json");
         let mtime = fs::metadata(&st_path).and_then(|m| m.modified()).ok();
-        let key = format!("{}|{}", cwd, active_label);
+        let key = format!("{cwd}|{active_label}");
         if self.cached_cfg_key != key || mtime != self.last_cfg_refresh {
             self.cached_settings_txt = fs::read_to_string(&st_path).unwrap_or_default();
             self.cached_cfg = load_compact_config(home, cwd, cwd, active_label, active_label);
@@ -147,7 +111,7 @@ impl SessionContextAnalyzer {
 
         if !session_id.is_empty() {
             if let Ok(stxt) =
-                fs::read_to_string(cache_dir(home).join(format!("live_sess_{}.json", session_id)))
+                fs::read_to_string(cache_dir(home).join(format!("live_sess_{session_id}.json")))
             {
                 rl_5h_pct = extract_json_u64(&stxt, "rl_5h_pct");
                 rl_7d_pct = extract_json_u64(&stxt, "rl_7d_pct");

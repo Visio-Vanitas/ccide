@@ -7,6 +7,7 @@ $ShowRight = "1"
 $LeftPct = "30"
 $KeepPanes = $false
 $IsWtChild = $false
+$Agent = if ($env:CCIDE_AGENT) { $env:CCIDE_AGENT } else { "claude" }
 $Backend = if ($env:CCIDE_BACKEND) { $env:CCIDE_BACKEND } else { "auto" }
 $TargetDir = (Get-Location).Path
 $ClaudeArgs = New-Object System.Collections.Generic.List[string]
@@ -73,6 +74,13 @@ while ($i -lt $args.Count) {
         }
         "^--keep-panes$"           { $KeepPanes = $true; $i++; continue }
         "^--wt-child$"             { $IsWtChild = $true; $i++; continue }
+        "^--agy$"                  { $Agent = "agy"; $i++; continue }
+        "^--codex$"                { $Agent = "codex"; $i++; continue }
+        "^--agent$"                {
+            if ($i + 1 -lt $args.Count) { $Agent = [string]$args[$i + 1]; $i += 2; continue }
+            Write-Error "Error: --agent requires claude|agy|codex"; exit 2
+        }
+        "^--agent=(.+)$"          { $Agent = $Matches[1]; $i++; continue }
         "^(--clear-subagents|--clear-done)$" {
             Assert-CoreBin
             $sid = if ($i + 1 -lt $args.Count) { [string]$args[$i + 1] } else { "" }
@@ -143,6 +151,11 @@ Windows Workspace Backends:
   --wezterm          Force WezTerm native CLI 3-column split (`30% | 54% | 16%`)
   --wt               Force Windows Terminal (`wt.exe -w 0`) 3-column split
 
+Agent Selection:
+  --agent <name>     Select CLI host: claude (default), agy, or codex (env: CCIDE_AGENT)
+  --agy              Shorthand for --agent agy (Google Antigravity CLI)
+  --codex            Shorthand for --agent codex (OpenAI Codex CLI)
+
 Commands & Maintenance:
   --no-git           Hide bottom-left Lazygit pane
   --width <pct>      Left column width percentage (default: 30)
@@ -163,6 +176,34 @@ Commands & Maintenance:
             $i++
         }
     }
+}
+
+switch ($Agent.ToLowerInvariant()) {
+    { $_ -in @("claude", "claude-code") } { $Agent = "claude" }
+    { $_ -in @("agy", "antigravity") }    { $Agent = "agy" }
+    { $_ -in @("codex", "openai-codex") } { $Agent = "codex" }
+    default {
+        Write-Error "Error: unknown agent '$Agent' (expected: claude, agy, or codex)"
+        exit 2
+    }
+}
+$env:CCIDE_AGENT = $Agent
+
+function Resolve-ClaudeExe {
+    # Prefer a real `claude.exe` (patchable Bun standalone) over a `claude` shell shim.
+    $Direct = Get-Command claude.exe -CommandType Application -ErrorAction SilentlyContinue
+    if ($Direct) { return $Direct.Source }
+    $ClaudeCmd = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $ClaudeCmd) { return $null }
+    $Sibling = Join-Path (Split-Path -Parent $ClaudeCmd.Source) "bin\claude.exe"
+    if (Test-Path $Sibling) { return $Sibling }
+    return $ClaudeCmd.Source
+}
+
+$AgentCmd = if ($Agent -eq "claude") { Resolve-ClaudeExe } else { (Get-Command $Agent -ErrorAction SilentlyContinue).Source }
+if (-not $AgentCmd) {
+    Write-Error "Error: '$Agent' CLI not found in PATH."
+    exit 127
 }
 
 # Detect workspace backend canonically via `ccide-core workspace detect` (treating failure/pre-0.10 as `none`).
@@ -208,6 +249,12 @@ if (-not $GitRoot) { $ShowGit = "0" }
 
 $env:CCIDE_SHELL_PID = "$PID"
 $env:CC_YAZI_ID = $YaziId
+$CacheDir = Join-Path $HomeDir ".cache\cc-ide"
+New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
+$TabAgentPath = Join-Path $CacheDir "tab_agent_$YaziId.txt"
+$TabAgentTmp = "$TabAgentPath.tmp.$PID"
+Set-Content -LiteralPath $TabAgentTmp -Value "$Agent`n" -NoNewline -Encoding ASCII
+Move-Item -LiteralPath $TabAgentTmp -Destination $TabAgentPath -Force
 
 $PaneSpec = ""
 if (Test-Path $CoreBin) {
@@ -226,17 +273,6 @@ if ($env:CLAUDECODE) {
     }
     Write-Host "Workspace panes ready ($PaneSpec, Yazi ID: $YaziId)."
     exit 0
-}
-
-function Resolve-ClaudeExe {
-    # Prefer a real `claude.exe` (patchable Bun standalone) over a `claude` shell shim.
-    $Direct = Get-Command claude.exe -CommandType Application -ErrorAction SilentlyContinue
-    if ($Direct) { return $Direct.Source }
-    $ClaudeCmd = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $ClaudeCmd) { return $null }
-    $Sibling = Join-Path (Split-Path -Parent $ClaudeCmd.Source) "bin\claude.exe"
-    if (Test-Path $Sibling) { return $Sibling }
-    return $ClaudeCmd.Source
 }
 
 function Invoke-AutoEnsureClaudePatched {
@@ -270,13 +306,15 @@ function Invoke-AutoEnsureClaudePatched {
         }
     }
 }
-Invoke-AutoEnsureClaudePatched
+if ($Agent -eq "claude") { Invoke-AutoEnsureClaudePatched }
 
 $ClaudeExit = 0
 try {
-    $ClaudeExe = Resolve-ClaudeExe
-    $ClaudeInvoke = if ($ClaudeExe) { $ClaudeExe } else { "claude" }
-    & $ClaudeInvoke --dangerously-skip-permissions @ClaudeArgs
+    if ($Agent -eq "claude") {
+        & $AgentCmd --dangerously-skip-permissions @ClaudeArgs
+    } else {
+        & $AgentCmd @ClaudeArgs
+    }
     $ClaudeExit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
 } finally {
     if (-not $KeepPanes -and $PaneSpec -and (Test-Path $CoreBin)) {

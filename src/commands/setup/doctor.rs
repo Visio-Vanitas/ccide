@@ -1,5 +1,7 @@
 //! Environment, Companion Tool & Binary Patch Health Diagnostics (`ccide-core doctor [--json]`).
 
+#[path = "doctor_agents.rs"]
+pub(crate) mod doctor_agents;
 #[path = "doctor_probes.rs"]
 mod doctor_probes;
 
@@ -12,6 +14,7 @@ use crate::commands::workspace::ghostty::{probe_ghostty, GhosttyCap};
 use crate::json::extract_json_str;
 use crate::platform::{clean_canonicalize, find_executable, ipc_dir, user_home_dir};
 
+use doctor_agents::format_doctor_json_with_agents;
 use doctor_probes::{
     cmd_first_line, probe_claude_and_orchestrator, probe_companion_tools, probe_legacy_patch_proto,
     probe_macos_iterm,
@@ -42,7 +45,6 @@ pub struct DoctorReport {
     pub missing_hint: String,
 }
 
-/// Shorthand for a `DoctorItem`.
 pub(super) fn item(status: CheckStatus, label: &str, detail: String) -> DoctorItem {
     DoctorItem {
         status,
@@ -51,39 +53,34 @@ pub(super) fn item(status: CheckStatus, label: &str, detail: String) -> DoctorIt
     }
 }
 
-fn has_installer_marker(dir: &Path) -> bool {
-    dir.join("install.sh").is_file() || dir.join("install.ps1").is_file()
-}
-
 pub fn resolve_project_root(explicit_arg: Option<&str>, home: &str) -> PathBuf {
-    if let Some(s) = explicit_arg {
-        let t = s.trim();
-        if !t.is_empty() && !t.starts_with('-') {
-            let p = PathBuf::from(t);
-            if has_installer_marker(&p) {
-                return p;
-            }
-        }
+    let ok = |p: &Path| p.join("install.sh").is_file() || p.join("install.ps1").is_file();
+    if let Some(p) = explicit_arg
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && !t.starts_with('-'))
+        .map(PathBuf::from)
+        .filter(|p| ok(p))
+    {
+        return p;
     }
-    if let Ok(exe) = env::current_exe().and_then(clean_canonicalize) {
-        if let Some(parent) = exe.parent().and_then(|p| p.parent()) {
-            if has_installer_marker(parent) {
-                return parent.to_path_buf();
-            }
-        }
+    if let Some(parent) = env::current_exe()
+        .and_then(clean_canonicalize)
+        .ok()
+        .and_then(|e| e.parent().and_then(|p| p.parent()).map(Path::to_path_buf))
+        .filter(|p| ok(p))
+    {
+        return parent;
     }
-    if let Ok(cwd) = env::current_dir() {
-        if has_installer_marker(&cwd) {
-            return cwd;
-        }
+    if let Some(cwd) = env::current_dir().ok().filter(|p| ok(p)) {
+        return cwd;
     }
-    if let Ok(txt) = fs::read_to_string(Path::new(home).join(".claude/settings.json")) {
-        if let Some(p) = extract_json_str(&txt, "path") {
-            let pb = PathBuf::from(&p);
-            if has_installer_marker(&pb) {
-                return pb;
-            }
-        }
+    if let Some(pb) = fs::read_to_string(Path::new(home).join(".claude/settings.json"))
+        .ok()
+        .and_then(|t| extract_json_str(&t, "path"))
+        .map(PathBuf::from)
+        .filter(|p| ok(p))
+    {
+        return pb;
     }
     PathBuf::from(".")
 }
@@ -244,7 +241,10 @@ pub fn run_doctor(args: &[String]) {
     let root = resolve_project_root(root_arg, &home);
     let report = collect_doctor_report(&home, &root);
     if json_mode {
-        println!("{}", format_doctor_json(&report));
+        println!(
+            "{}",
+            format_doctor_json_with_agents(&report, &format_doctor_json(&report), &home)
+        );
     } else {
         print_doctor_tui(&report, &home);
     }
@@ -252,6 +252,7 @@ pub fn run_doctor(args: &[String]) {
 
 #[cfg(test)]
 mod tests {
+    use super::doctor_agents::inject_multi_agent_json;
     use super::*;
 
     #[test]
@@ -269,7 +270,14 @@ mod tests {
             )],
             missing_hint: "All good.".to_string(),
         };
-        let js = format_doctor_json(&rep);
+        let js = inject_multi_agent_json(
+            &format_doctor_json(&rep),
+            Some("2.1.323"),
+            Some("1.4.7"),
+            None,
+            true,
+            false,
+        );
         assert!(js.contains("\"schema_version\": 1"));
         assert!(js.contains("\"healthy\": true"));
         assert!(js.contains("2.1.323 \\\"ok\\\""));
@@ -278,5 +286,9 @@ mod tests {
         assert!(js.contains("\"patch_proto\": 1"));
         assert!(js.contains("\"ghostty_cap\": \"none\""));
         assert!(js.contains("\"legacy_patch\": false"));
+        assert!(js.contains(
+            "\"agents\": {\"claude\": \"2.1.323\", \"agy\": \"1.4.7\", \"codex\": null}"
+        ));
+        assert!(js.contains("\"agent_hooks\": {\"agy\": true, \"codex\": false}"));
     }
 }

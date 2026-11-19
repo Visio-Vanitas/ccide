@@ -100,6 +100,7 @@ pub(super) fn probe_claude_and_orchestrator(
         );
         items.push(item(CheckStatus::Warn, "Orchestrator", d));
     }
+    crate::commands::setup::doctor::doctor_agents::probe_extra_agents(home, items);
 }
 
 pub(super) fn probe_legacy_patch_proto(home: &str, items: &mut Vec<DoctorItem>) -> bool {

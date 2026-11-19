@@ -128,6 +128,10 @@ pub fn parse_section_into(section_obj: &str, dst: &mut HashMap<String, ModelRate
                                         if let Some(rate) =
                                             parse_rate_obj(&section_obj[obj_start..=j], &key)
                                         {
+                                            let norm_k = normalize_model_key(&key);
+                                            if !norm_k.is_empty() && norm_k != key {
+                                                dst.insert(norm_k, rate);
+                                            }
                                             dst.insert(key, rate);
                                         }
                                         break;
@@ -191,7 +195,33 @@ pub fn normalize_model_key(raw: &str) -> String {
     if let Some(last_slash) = s.rsplit('/').next() {
         s = last_slash.to_string();
     }
-    s.trim().to_string()
+    let trimmed = s.trim();
+    let bytes = trimmed.as_bytes();
+    let mut out = String::with_capacity(trimmed.len());
+    let mut prev_dash = false;
+    for (i, ch) in trimmed.char_indices() {
+        if ch.is_ascii_whitespace() {
+            if !prev_dash && !out.is_empty() {
+                out.push('-');
+                prev_dash = true;
+            }
+        } else if ch == '.'
+            && i > 0
+            && i + 1 < bytes.len()
+            && bytes[i - 1].is_ascii_digit()
+            && bytes[i + 1].is_ascii_digit()
+        {
+            out.push('-');
+            prev_dash = true;
+        } else {
+            out.push(ch);
+            prev_dash = ch == '-';
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 pub fn lookup_in_maps(
@@ -207,7 +237,6 @@ pub fn lookup_in_maps(
             return Some(r);
         }
     }
-    // Progressive suffix stripping (`-tiered`, `-xhigh`, `-preview`, `-20251001`, `-v1:0`)
     let mut cand = norm.to_string();
     for _ in 0..MAX_SUFFIX_STRIP_SEGMENTS {
         if let Some((head, _)) = cand.rsplit_once('-') {
@@ -224,7 +253,6 @@ pub fn lookup_in_maps(
             break;
         }
     }
-    // Longest deterministic prefix match (guarding against `FUZZY_BLOCKLIST`)
     if norm.len() >= 5 && !FUZZY_BLOCKLIST.contains(&norm) {
         for map in [overrides, rates] {
             let mut best: Option<(usize, &str, ModelRate)> = None;

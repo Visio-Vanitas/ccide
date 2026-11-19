@@ -5,8 +5,16 @@
   // Upstream reference: https://github.com/pydantic/genai-prices & vendor docs.
   // Run `ccide --sync-pricing` to refresh upstream rates into `~/.config/cc-ide/pricing.json`.
   // Any entry added to `custom_overrides` takes highest priority and is preserved across syncs.
-  "updated_at": "2026-11-13",
+  "updated_at": "2026-11-19",
   "source": "anthropic + google + deepseek + openai + xai + pydantic/genai-prices",
+
+  // Canonical display-name & multi-agent (`agy` / `codex`) alias notes (resolved via
+  // `normalize_model_key` -> progressive lookup against `"models"` below; no hand-typed rates):
+  // - "Claude Opus 4.6 (Thinking)" -> "claude-opus-4-6"
+  // - "Claude Sonnet 4.6 (Thinking)" -> "claude-sonnet-4-6"
+  // - "Claude Sonnet 4.5" -> "claude-sonnet-4-5"
+  // - "gpt-5.4-codex" -> "gpt-5.4"
+  // - "gpt-5.3-codex" -> "gpt-5.3"
 
   "custom_overrides": {
     // Example custom gateway override:

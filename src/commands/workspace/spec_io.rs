@@ -4,7 +4,7 @@ use std::fs;
 
 use crate::commands::workspace::spec::PaneSpec;
 use crate::ffi::{is_pid_alive, ProcToken};
-use crate::platform::{atomic_write, cache_dir, ipc_dir, ipc_path};
+use crate::platform::{atomic_write, cache_dir, ipc_dir, ipc_path, user_home_dir};
 
 pub fn read_pane_spec(yid: &str) -> Option<PaneSpec> {
     let raw = fs::read_to_string(ipc_path(&format!("panes_{yid}.txt"))).ok()?;
@@ -25,6 +25,9 @@ pub fn remove_tab_state(yid: &str) {
     for role in ["yazi", "lazygit", "mon", "sidebar"] {
         let _ = fs::remove_file(ipc_path(&format!("geom_{yid}_{role}.txt")));
     }
+    let cdir = cache_dir(&user_home_dir());
+    let _ = fs::remove_file(cdir.join(format!("tab_agent_{yid}.txt")));
+    let _ = fs::remove_file(cdir.join(format!("live_tab_{yid}.json")));
 }
 
 pub fn prune_dead_specs(home: &str) -> usize {
@@ -54,6 +57,8 @@ pub fn prune_dead_specs(home: &str) -> usize {
         };
         if !alive {
             remove_tab_state(yid);
+            let _ = fs::remove_file(cdir.join(format!("tab_agent_{yid}.txt")));
+            let _ = fs::remove_file(cdir.join(format!("live_tab_{yid}.json")));
             pruned += 1;
         }
     }

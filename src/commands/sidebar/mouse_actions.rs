@@ -6,10 +6,12 @@ use std::time::{Duration, Instant};
 use crate::commands::sidebar::hit_mask::{
     FocusZone, MaskedAction, PointerCapture, SidebarGeomMask,
 };
-use crate::commands::sidebar::ipc::{trigger_native_view_switch, trigger_yazi_reveal};
+use crate::commands::sidebar::ipc::{
+    spawn_center_focus_restore, trigger_native_view_switch, trigger_yazi_reveal,
+};
 use crate::orchestrator::{OrchestratorConfig, ALL_ROLES};
-use crate::session::emit_yazi_blur;
 use crate::session::transcript::{append_dismissed_subagents, SubagentItem};
+use crate::session::{emit_yazi_blur, AgentKind};
 
 pub struct DispatchEnv<'a> {
     pub home: &'a str,
@@ -17,6 +19,7 @@ pub struct DispatchEnv<'a> {
     pub cwd: &'a str,
     pub sid: &'a str,
     pub cpid: u32,
+    pub agent: AgentKind,
     pub main_file: &'a str,
     pub main_line: usize,
     pub main_span: usize,
@@ -41,6 +44,16 @@ impl<'a> DispatchEnv<'a> {
         active_view: &mut String,
         last_click: &mut Instant,
     ) {
+        if !self.agent.supports_view_switch() {
+            *active_view = "main".to_string();
+            *last_click = Instant::now();
+            self.switch_signal_ok.set(Some(true));
+            if !fp.is_empty() {
+                trigger_yazi_reveal(self.home, self.yazi_id, self.cwd, fp, ln, sp);
+            }
+            spawn_center_focus_restore(self.home, self.yazi_id, self.sid, "main", 0);
+            return;
+        }
         *active_view = vid.to_string();
         *last_click = Instant::now();
         let ok = trigger_native_view_switch(
@@ -57,6 +70,16 @@ impl<'a> DispatchEnv<'a> {
         self.switch_signal_ok.set(Some(ok));
         if !fp.is_empty() {
             trigger_yazi_reveal(self.home, self.yazi_id, self.cwd, fp, ln, sp);
+        }
+    }
+
+    pub(crate) fn sync_notice(&self, notice: &mut Option<String>) {
+        if self.agent.supports_view_switch() {
+            if let Some(ok) = self.switch_signal_ok.get() {
+                *notice = (!ok).then(|| "repatch needed (ccide doctor)".to_string());
+            }
+        } else {
+            *notice = None;
         }
     }
 
@@ -97,7 +120,6 @@ impl<'a> DispatchEnv<'a> {
 }
 
 pub struct SidebarSelectState {
-    /// Position-driven panel selection (`None` until the user clicks a panel; cleared on `FocusOut`).
     pub focus_zone: Option<FocusZone>,
     pub pane_has_focus: bool,
     pub sub_cursor: Option<usize>,
@@ -131,6 +153,14 @@ impl Default for SidebarSelectState {
     }
 }
 
+impl SidebarSelectState {
+    fn focus_sub(&mut self, env: &DispatchEnv<'_>) {
+        self.pane_has_focus = true;
+        self.focus_zone = Some(FocusZone::Subagents);
+        emit_yazi_blur(env.home, env.yazi_id);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn apply_masked_action(
     act: MaskedAction,
@@ -148,30 +178,24 @@ pub fn apply_masked_action(
         MaskedAction::SelectMain => {
             (sel.pane_has_focus, sel.focus_zone, sel.sub_cursor) = (false, None, None);
             env.switch_to_main(active_view_id, &mut sel.last_click_instant);
-            if let Some(ok) = env.switch_signal_ok.get() {
-                sel.status_notice = (!ok).then(|| "repatch needed (ccide doctor)".to_string());
-            }
+            env.sync_notice(&mut sel.status_notice);
             *switched_view = true;
         }
         MaskedAction::SelectSubagent(idx) => {
             if let Some(ag) = subagents.get(idx) {
                 (sel.pane_has_focus, sel.focus_zone, sel.sub_cursor) = (false, None, None);
                 env.switch_to_agent(ag, active_view_id, &mut sel.last_click_instant);
-                if let Some(ok) = env.switch_signal_ok.get() {
-                    sel.status_notice = (!ok).then(|| "repatch needed (ccide doctor)".to_string());
-                }
+                env.sync_notice(&mut sel.status_notice);
                 *switched_view = true;
             }
         }
         MaskedAction::DismissSubagent(idx) => {
-            (sel.pane_has_focus, sel.focus_zone, *dismiss_idx) =
-                (true, Some(FocusZone::Subagents), Some(idx));
-            emit_yazi_blur(env.home, env.yazi_id);
+            sel.focus_sub(env);
+            *dismiss_idx = Some(idx);
         }
         MaskedAction::ClearAllDone => {
-            (sel.pane_has_focus, sel.focus_zone, *clear_all_done) =
-                (true, Some(FocusZone::Subagents), true);
-            emit_yazi_blur(env.home, env.yazi_id);
+            sel.focus_sub(env);
+            *clear_all_done = true;
         }
         MaskedAction::ToggleBottomPanel => {
             sel.pane_has_focus = true;
@@ -185,36 +209,31 @@ pub fn apply_masked_action(
             emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::ToggleOrchestrator => {
-            sel.pane_has_focus = true;
+            sel.focus_sub(env);
             sel.show_orchestrator = !sel.show_orchestrator;
             (sel.sub_cursor, sel.orch_cursor) = (None, None);
-            sel.focus_zone = Some(FocusZone::Subagents);
-            emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::OrchCyclePreset(fwd) => {
-            (sel.pane_has_focus, sel.focus_zone, sel.orch_cursor) =
-                (true, Some(FocusZone::Subagents), Some(0));
+            sel.focus_sub(env);
+            sel.orch_cursor = Some(0);
             orch_cfg.cycle_preset(fwd);
             orch_cfg.save(env.home);
-            emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::OrchCycleModel(idx, fwd) => {
-            (sel.pane_has_focus, sel.focus_zone) = (true, Some(FocusZone::Subagents));
+            sel.focus_sub(env);
             if let Some(&role) = ALL_ROLES.get(idx) {
                 sel.orch_cursor = Some(idx + 1);
                 orch_cfg.cycle_role_model(role, fwd);
                 orch_cfg.save(env.home);
             }
-            emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::OrchCycleEffort(idx, fwd) => {
-            (sel.pane_has_focus, sel.focus_zone) = (true, Some(FocusZone::Subagents));
+            sel.focus_sub(env);
             if let Some(&role) = ALL_ROLES.get(idx) {
                 sel.orch_cursor = Some(idx + 1);
                 orch_cfg.cycle_role_effort(role, fwd);
                 orch_cfg.save(env.home);
             }
-            emit_yazi_blur(env.home, env.yazi_id);
         }
         MaskedAction::FocusZoneOnly(z) => {
             (sel.pane_has_focus, sel.focus_zone) = (z.is_some(), z);
@@ -226,12 +245,8 @@ pub fn apply_masked_action(
             }
         }
         MaskedAction::RestoreCenterFocusOnly => {
-            (
-                sel.pane_has_focus,
-                sel.focus_zone,
-                sel.sub_cursor,
-                *restore_focus,
-            ) = (false, None, None, true);
+            (sel.pane_has_focus, sel.focus_zone, sel.sub_cursor) = (false, None, None);
+            *restore_focus = true;
         }
     }
 }

@@ -1,0 +1,8 @@
+{"timestamp":"2026-11-19T10:20:00Z","type":"session_meta","payload":{"id":"0194b8c2-2222-7000-8000-000000000167","session_id":"0194b8c2-2222-7000-8000-000000000167","cwd":"/workspace/demo","context_window":{"window_id":"main"},"cli_version":"0.167.0","model_provider":"openai"}}
+{"timestamp":"2026-11-19T10:20:01Z","type":"world_state","payload":{"cwd":"/workspace/demo","dirty":true}}
+{"timestamp":"2026-11-19T10:20:01Z","type":"token_usage_record","payload":{"raw_units":999}}
+{"timestamp":"2026-11-19T10:20:01Z","type":"event_msg","payload":{"type":"task_started","model_context_window":1000000}}
+{"timestamp":"2026-11-19T10:20:01Z","type":"turn_context","payload":{"model":"gpt-6-codex","effort":"medium","cwd":"/workspace/demo","turn_id":"turn-167"}}
+{"timestamp":"2026-11-19T10:20:02Z","type":"response_item","payload":{"type":"function_call","name":"apply_patch","call_id":"fc_ap_1","arguments":"{\"input\":\"*** Begin Patch\\n*** Add File: src/new.rs\\n@@ -0,0 +1,2 @@\\n+pub fn fresh() {}\\n*** End Patch\"}"}}
+{"timestamp":"2026-11-19T10:20:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9200,"cached_input_tokens":4000,"cache_write_input_tokens":0,"output_tokens":210,"reasoning_output_tokens":50,"total_tokens":9410},"total_token_usage":{"input_tokens":9200,"cached_input_tokens":4000,"cache_write_input_tokens":0,"output_tokens":210,"reasoning_output_tokens":50,"total_tokens":9410},"model_context_window":1000000}}}
+{"timestamp":"2026-11-19T10:20:04Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-167","duration_ms":2100,"time_to_first_token_ms":610}}

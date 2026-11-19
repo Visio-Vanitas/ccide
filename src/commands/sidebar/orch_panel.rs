@@ -226,6 +226,7 @@ mod tests {
             cwd: "",
             sid: "",
             cpid: 0,
+            agent: crate::session::AgentKind::Claude,
             main_file: "",
             main_line: 0,
             main_span: 0,

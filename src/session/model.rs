@@ -7,12 +7,14 @@ use crate::json::extract_json_str;
 use crate::platform::ipc_path;
 
 pub use crate::model_id::is_valid_model_name;
+pub use crate::session::agent_bind::load_config_models_for;
 pub use crate::session::model_compact::{
-    classify_model_family, compact_model_for_width, short_model_label,
+    classify_model_family, classify_model_family_for, compact_model_for_width, short_model_label,
 };
 
 #[derive(Clone)]
 pub struct ConfigModels {
+    #[allow(dead_code)]
     pub main_family: &'static str,
     pub main_model_raw: String,
     pub main_model_short: String,

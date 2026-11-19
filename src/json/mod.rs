@@ -3,10 +3,12 @@
 pub mod extract;
 pub mod jsonc;
 pub mod scan;
+pub mod toml_lite;
 
 pub use extract::*;
 pub use jsonc::*;
 pub use scan::*;
+pub use toml_lite::*;
 
 #[cfg(test)]
 mod tests {
