@@ -7,6 +7,10 @@ $ShowRight = "1"
 $LeftPct = "30"
 $KeepPanes = $false
 $IsWtChild = $false
+$Agent = if ($env:CCIDE_AGENT) { $env:CCIDE_AGENT } else { "claude" }
+$ConvId = if ($env:CCIDE_AGY_CONVERSATION) { $env:CCIDE_AGY_CONVERSATION } else { "" }
+$ExplicitConv = $false
+$ConvOrigArgs = @()
 $Backend = if ($env:CCIDE_BACKEND) { $env:CCIDE_BACKEND } else { "auto" }
 $TargetDir = (Get-Location).Path
 $ClaudeArgs = New-Object System.Collections.Generic.List[string]
@@ -17,7 +21,20 @@ $RepoRoot = Split-Path -Parent $ScriptDir
 $ResolverMjs = Join-Path $HomeDir ".claude\scripts\ensure-ccide-core.mjs"
 if (-not (Test-Path $ResolverMjs)) { $ResolverMjs = Join-Path $ScriptDir "ensure-ccide-core.mjs" }
 if ((Test-Path $ResolverMjs) -and (Get-Command node -ErrorAction SilentlyContinue)) {
-    & node $ResolverMjs --version *> $null
+    $HadPlugRoot = Test-Path Env:CLAUDE_PLUGIN_ROOT
+    $PrevPlugRoot = $env:CLAUDE_PLUGIN_ROOT
+    if (-not $HadPlugRoot -and (Test-Path (Join-Path $RepoRoot ".claude-plugin\plugin.json"))) {
+        $env:CLAUDE_PLUGIN_ROOT = $RepoRoot
+    }
+    try {
+        & node $ResolverMjs --version *> $null
+    } finally {
+        if (-not $HadPlugRoot) {
+            Remove-Item Env:CLAUDE_PLUGIN_ROOT -ErrorAction SilentlyContinue
+        } else {
+            $env:CLAUDE_PLUGIN_ROOT = $PrevPlugRoot
+        }
+    }
 }
 $CoreBin = Join-Path $HomeDir ".claude\bin\ccide-core.exe"
 if (-not (Test-Path $CoreBin)) {
@@ -64,15 +81,38 @@ while ($i -lt $args.Count) {
         "^--wezterm$"              { $Backend = "wezterm"; $i++; continue }
         "^--wt$"                   { $Backend = "wt"; $i++; continue }
         "^(--backend)$"            {
-            if ($i + 1 -lt $args.Count) { $Backend = [string]$args[$i + 1]; $i += 2 } else { $i++ }
-            continue
+            if ($i + 1 -lt $args.Count -and [string]$args[$i + 1]) { $Backend = [string]$args[$i + 1]; $i += 2; continue }
+            Write-Error "Error: --backend requires a value"; exit 2
         }
         "^(--width)$"              {
-            if ($i + 1 -lt $args.Count) { $LeftPct = [string]$args[$i + 1]; $i += 2 } else { $i++ }
-            continue
+            if ($i + 1 -lt $args.Count -and [string]$args[$i + 1]) { $LeftPct = [string]$args[$i + 1]; $i += 2; continue }
+            Write-Error "Error: --width requires a percentage"; exit 2
         }
         "^--keep-panes$"           { $KeepPanes = $true; $i++; continue }
         "^--wt-child$"             { $IsWtChild = $true; $i++; continue }
+        "^--wt-conv$"              {
+            if ($i + 1 -lt $args.Count) { $ConvId = [string]$args[$i + 1]; $i += 2; continue }
+            $i++; continue
+        }
+        "^--wt-agy-home$"          {
+            if ($i + 1 -lt $args.Count) { $env:CCIDE_AGY_HOME = [string]$args[$i + 1]; $i += 2; continue }
+            $i++; continue
+        }
+        "^--agy$"                  { $Agent = "agy"; $i++; continue }
+        "^--codex$"                { $Agent = "codex"; $i++; continue }
+        "^--agent$"                {
+            if ($i + 1 -lt $args.Count) { $Agent = [string]$args[$i + 1]; $i += 2; continue }
+            Write-Error "Error: --agent requires claude|agy|codex"; exit 2
+        }
+        "^--agent=(.*)$"          { $Agent = $Matches[1]; $i++; continue }
+        "^--conversation$"         {
+            if ($i + 1 -lt $args.Count) {
+                $ConvId = [string]$args[$i + 1]; $ExplicitConv = $true
+                $ConvOrigArgs = @($arg, $ConvId); $i += 2; continue
+            }
+            Write-Error "Error: --conversation requires an id"; exit 2
+        }
+        "^--conversation=(.*)$"   { $ConvId = $Matches[1]; $ExplicitConv = $true; $ConvOrigArgs = @($arg); $i++; continue }
         "^(--clear-subagents|--clear-done)$" {
             Assert-CoreBin
             $sid = if ($i + 1 -lt $args.Count) { [string]$args[$i + 1] } else { "" }
@@ -143,6 +183,11 @@ Windows Workspace Backends:
   --wezterm          Force WezTerm native CLI 3-column split (`30% | 54% | 16%`)
   --wt               Force Windows Terminal (`wt.exe -w 0`) 3-column split
 
+Agent Selection:
+  --agent <name>     Select CLI host: claude (default), agy, or codex (env: CCIDE_AGENT)
+  --agy              Shorthand for --agent agy (Google Antigravity CLI)
+  --codex            Shorthand for --agent codex (OpenAI Codex CLI)
+
 Commands & Maintenance:
   --no-git           Hide bottom-left Lazygit pane
   --width <pct>      Left column width percentage (default: 30)
@@ -163,6 +208,52 @@ Commands & Maintenance:
             $i++
         }
     }
+}
+
+switch ($Agent.ToLowerInvariant()) {
+    { $_ -in @("claude", "claude-code") } { $Agent = "claude" }
+    { $_ -in @("agy", "antigravity") }    { $Agent = "agy" }
+    { $_ -in @("codex", "openai-codex") } { $Agent = "codex" }
+    default {
+        Write-Error "Error: unknown agent '$Agent' (expected: claude, agy, or codex)"
+        exit 2
+    }
+}
+$env:CCIDE_AGENT = $Agent
+if ($ExplicitConv) {
+    if ($ConvId -cnotmatch '\A[A-Za-z0-9_-]{8,64}\z') {
+        Write-Error "Error: invalid --conversation id '$ConvId' (expected 8-64 [A-Za-z0-9_-] chars)"
+        exit 2
+    }
+    if ($Agent -ne "agy") {
+        Write-Error "Error: --conversation is only supported for --agent agy"
+        exit 2
+    }
+    foreach ($ca in $ConvOrigArgs) { $ClaudeArgs.Add($ca) }
+    $env:CCIDE_AGY_CONVERSATION = $ConvId
+} elseif ($Agent -eq "agy" -and $ConvId) {
+    if ($ConvId -cnotmatch '\A[A-Za-z0-9_-]{8,64}\z') {
+        Write-Error "Error: invalid CCIDE_AGY_CONVERSATION '$ConvId' (expected 8-64 [A-Za-z0-9_-] chars)"
+        exit 2
+    }
+    $env:CCIDE_AGY_CONVERSATION = $ConvId
+}
+
+function Resolve-ClaudeExe {
+    # Prefer a real `claude.exe` (patchable Bun standalone) over a `claude` shell shim.
+    $Direct = Get-Command claude.exe -CommandType Application -ErrorAction SilentlyContinue
+    if ($Direct) { return $Direct.Source }
+    $ClaudeCmd = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $ClaudeCmd) { return $null }
+    $Sibling = Join-Path (Split-Path -Parent $ClaudeCmd.Source) "bin\claude.exe"
+    if (Test-Path $Sibling) { return $Sibling }
+    return $ClaudeCmd.Source
+}
+
+$AgentCmd = if ($Agent -eq "claude") { Resolve-ClaudeExe } else { (Get-Command $Agent -ErrorAction SilentlyContinue).Source }
+if (-not $AgentCmd) {
+    Write-Error "Error: '$Agent' CLI not found in PATH."
+    exit 127
 }
 
 # Detect workspace backend canonically via `ccide-core workspace detect` (treating failure/pre-0.10 as `none`).
@@ -191,7 +282,10 @@ if ($Backend -ne "wezterm" -and -not $IsWtChild -and $DetectedBackend -eq "none"
         # `wt.exe` parses `;` as a subcommand separator, so escape it inside paths.
         $WtDir = $TargetDir.Replace(";", "\;")
         $WtSelf = $SelfPs1.Replace(";", "\;")
-        & $WtCmd.Source -d $WtDir $SelfShell -ExecutionPolicy Bypass -File $WtSelf @args "--wt-child"
+        $WtExtra = @("--wt-child", "--agent", $Agent)
+        if ($Agent -eq "agy" -and $ConvId -and -not $ExplicitConv) { $WtExtra += @("--wt-conv", $ConvId) }
+        if ($env:CCIDE_AGY_HOME) { $WtExtra += @("--wt-agy-home", $env:CCIDE_AGY_HOME) }
+        & $WtCmd.Source -d $WtDir $SelfShell -ExecutionPolicy Bypass -File $WtSelf @args @WtExtra
         $WtExit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
         exit $WtExit
     }
@@ -208,6 +302,18 @@ if (-not $GitRoot) { $ShowGit = "0" }
 
 $env:CCIDE_SHELL_PID = "$PID"
 $env:CC_YAZI_ID = $YaziId
+$CacheDir = Join-Path $HomeDir ".cache\cc-ide"
+New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
+$TabAgentPath = Join-Path $CacheDir "tab_agent_$YaziId.txt"
+$TabAgentTmp = "$TabAgentPath.tmp.$PID"
+Set-Content -LiteralPath $TabAgentTmp -Value "$Agent`n" -NoNewline -Encoding ASCII
+Move-Item -LiteralPath $TabAgentTmp -Destination $TabAgentPath -Force
+if ($Agent -eq "agy" -and $ConvId) {
+    $TabConvPath = Join-Path $CacheDir "tab_conv_$YaziId.txt"
+    $TabConvTmp = "$TabConvPath.tmp.$PID"
+    Set-Content -LiteralPath $TabConvTmp -Value "$ConvId`n" -NoNewline -Encoding ASCII
+    Move-Item -LiteralPath $TabConvTmp -Destination $TabConvPath -Force
+}
 
 $PaneSpec = ""
 if (Test-Path $CoreBin) {
@@ -226,17 +332,6 @@ if ($env:CLAUDECODE) {
     }
     Write-Host "Workspace panes ready ($PaneSpec, Yazi ID: $YaziId)."
     exit 0
-}
-
-function Resolve-ClaudeExe {
-    # Prefer a real `claude.exe` (patchable Bun standalone) over a `claude` shell shim.
-    $Direct = Get-Command claude.exe -CommandType Application -ErrorAction SilentlyContinue
-    if ($Direct) { return $Direct.Source }
-    $ClaudeCmd = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $ClaudeCmd) { return $null }
-    $Sibling = Join-Path (Split-Path -Parent $ClaudeCmd.Source) "bin\claude.exe"
-    if (Test-Path $Sibling) { return $Sibling }
-    return $ClaudeCmd.Source
 }
 
 function Invoke-AutoEnsureClaudePatched {
@@ -270,13 +365,15 @@ function Invoke-AutoEnsureClaudePatched {
         }
     }
 }
-Invoke-AutoEnsureClaudePatched
+if ($Agent -eq "claude") { Invoke-AutoEnsureClaudePatched }
 
 $ClaudeExit = 0
 try {
-    $ClaudeExe = Resolve-ClaudeExe
-    $ClaudeInvoke = if ($ClaudeExe) { $ClaudeExe } else { "claude" }
-    & $ClaudeInvoke --dangerously-skip-permissions @ClaudeArgs
+    if ($Agent -eq "claude") {
+        & $AgentCmd --dangerously-skip-permissions @ClaudeArgs
+    } else {
+        & $AgentCmd @ClaudeArgs
+    }
     $ClaudeExit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
 } finally {
     if (-not $KeepPanes -and $PaneSpec -and (Test-Path $CoreBin)) {

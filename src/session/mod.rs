@@ -1,6 +1,12 @@
 //! Strict Process-Isolated Session & Tab Resolution (`src/session/mod.rs`).
 
+pub mod agent;
+pub mod agent_bind;
+pub mod agy;
+pub mod agy_swarm;
 pub mod binding;
+pub mod codex;
+pub mod codex_discover;
 pub mod focus;
 pub mod model;
 pub mod model_compact;
@@ -19,25 +25,48 @@ use crate::platform::{cache_dir, clean_canonicalize, find_executable, ipc_path};
 
 pub use crate::model_id::is_valid_model_name;
 #[allow(unused_imports)]
+pub use agent::{agy_home, codex_home, is_safe_id, read_tab_agent, write_tab_agent, AgentKind};
+#[allow(unused_imports)]
+pub use agent_bind::{agent_session_to_binding, resolve_agent_session, AgentSession};
+#[allow(unused_imports)]
+pub use agy::{
+    agy_cid_for_cwd, agy_main_file_ops, agy_settings_model, agy_subagents, agy_transcript_path,
+};
+#[allow(unused_imports)]
+pub use agy_swarm::{
+    agy_brain_root, agy_is_member_of, agy_parent_coordinator, agy_resolve_cid,
+    agy_resolve_cid_detail, agy_sys_gen, load_agy_swarm, read_board_tail, swarm_member_status,
+    AgySwarmSnapshot,
+};
+#[allow(unused_imports)]
 pub use binding::{choose_binding, commit_binding, BindingChoice, SessionBinding};
+#[allow(unused_imports)]
+pub use codex::{
+    codex_config, codex_main_file_ops, codex_subagents, find_rollout_by_id, find_rollout_for_cwd,
+    CodexConfig,
+};
 pub use focus::{emit_yazi_blur, emit_yazi_reveal_at, extract_tool_line_target};
+#[allow(unused_imports)]
 pub use model::{
-    classify_model_family, compact_model_for_width, load_config_models, map_alias_with_settings,
-    short_model_label, ConfigModels,
+    classify_model_family, classify_model_family_for, compact_model_for_width, load_config_models,
+    load_config_models_for, map_alias_with_settings, short_model_label, ConfigModels,
 };
 pub use scan::{resolve_live_yazi_tab, resolve_yazi_id_from_ppid};
-pub use transcript_main::normalize_path_under_cwd;
+#[allow(unused_imports)]
+pub use subagents::is_subagent_alive;
+#[allow(unused_imports)]
+pub use transcript_main::{normalize_path_under_cwd, MainSessionOps};
 
 fn ancestor_distance(mut pid: u32, target_ancestor: u32) -> Option<usize> {
     if target_ancestor == 0 || pid == 0 {
         return None;
     }
+    let root = if cfg!(windows) { 4 } else { 1 };
     for hops in 0..32 {
         if pid == target_ancestor {
             return Some(hops);
         }
-        let at_root = if cfg!(windows) { pid == 4 } else { pid <= 1 };
-        if at_root {
+        if pid <= root {
             return None;
         }
         match get_ppid_of(pid) {
@@ -140,28 +169,23 @@ fn read_tab_pane_title(home: &str, tab_yazi_id: &str, query_tmux: bool) -> Optio
         fs::read_to_string(ipc_path(&format!("panes_{tab_yazi_id}.txt"))).unwrap_or_default();
     let (is_tmux, center_opt) = parse_tmux_spec(&spec);
     if is_tmux {
-        if query_tmux {
-            if let Some(center_pane) = center_opt {
-                if let Some(tmux) = find_executable("tmux", home) {
-                    return query_tmux_pane_title_bounded(&tmux, center_pane);
-                }
-            }
-        }
-        return None;
+        return center_opt
+            .filter(|_| query_tmux)
+            .and_then(|cp| query_tmux_pane_title_bounded(&find_executable("tmux", home)?, cp));
     }
     let raw = fs::read_to_string(ipc_path(&format!("tab_title_{tab_yazi_id}.txt"))).ok()?;
     clean_claude_pane_title(&raw)
 }
 
-fn is_claimed_by_live_sibling(cdir: &Path, session_id: &str, my_yid: &str) -> bool {
-    if session_id.is_empty() {
+pub(crate) fn is_claimed_by_live_sibling(cdir: &Path, session_id: &str, my_yid: &str) -> bool {
+    if !is_safe_id(session_id) {
         return false;
     }
     let Ok(raw) = fs::read_to_string(cdir.join(format!("session_{session_id}.yazi"))) else {
         return false;
     };
     let other_yid = raw.trim();
-    if other_yid.is_empty() || other_yid == my_yid {
+    if !is_safe_id(other_yid) || other_yid == my_yid {
         return false;
     }
     let Ok(reg) = fs::read_to_string(ipc_path(&format!("sidebar_tab_{other_yid}.json"))) else {
@@ -183,21 +207,19 @@ pub fn resolve_isolated_session_binding(
     shell_pid_arg: u32,
 ) -> SessionBinding {
     let cdir = cache_dir(home);
-    let shell_tok = if shell_pid_arg > 0 {
-        ProcToken::current(shell_pid_arg).unwrap_or(ProcToken {
-            pid: shell_pid_arg,
-            start_ms: 0,
-        })
-    } else {
-        fs::read_to_string(cdir.join(format!("tab_shell_{}.txt", tab_yazi_id)))
-            .ok()
-            .filter(|_| !tab_yazi_id.is_empty())
-            .and_then(|s| ProcToken::parse(&s))
-            .unwrap_or(ProcToken {
-                pid: 0,
-                start_ms: 0,
-            })
+    let mut shell_tok = ProcToken {
+        pid: shell_pid_arg,
+        start_ms: 0,
     };
+    if shell_pid_arg > 0 {
+        shell_tok = ProcToken::current(shell_pid_arg).unwrap_or(shell_tok);
+    } else if !tab_yazi_id.is_empty() {
+        let p = cdir.join(format!("tab_shell_{tab_yazi_id}.txt"));
+        shell_tok = fs::read_to_string(p)
+            .ok()
+            .and_then(|s| ProcToken::parse(&s))
+            .unwrap_or(shell_tok);
+    }
     let shell_pid = shell_tok.pid;
     let canon_target = clean_canonicalize(target_cwd).unwrap_or_else(|_| PathBuf::from(target_cwd));
     let alive_entries = scan::scan_alive_sessions(home);
@@ -217,9 +239,9 @@ pub fn resolve_isolated_session_binding(
         |qt| read_tab_pane_title(home, tab_yazi_id, qt),
         |sid| is_claimed_by_live_sibling(&cdir, sid, tab_yazi_id),
         |sid| {
-            fs::read_to_string(cdir.join(format!("session_{}.yazi", sid)))
-                .map(|s| s.trim() == tab_yazi_id)
-                .unwrap_or(false)
+            fs::read_to_string(cdir.join(format!("session_{sid}.yazi")))
+                .ok()
+                .is_some_and(|s| s.trim() == tab_yazi_id)
         },
     );
     if choice.should_commit {
@@ -244,38 +266,25 @@ mod tests {
 
     #[test]
     fn cleans_titles_and_parses_v1_v2_tmux_specs() {
-        let cases = [
-            (
-                "palette-syntax-ghostty-support (claude)",
-                Some("palette-syntax-ghostty-support"),
-            ),
-            (
-                "✳ high-concurrency-optimization (claude)",
-                Some("high-concurrency-optimization"),
-            ),
-            (
-                "✳ agent connection test (claude)",
-                Some("agent connection test"),
-            ),
-            ("◐ 并发优化测试 (claude.exe)", Some("并发优化测试")),
-            (
-                "✳ [v0.10] .github fix (claude)",
-                Some("[v0.10] .github fix"),
-            ),
-            ("Claude Code (claude)", None),
-            ("claude", None),
-        ];
-        for (raw, expected) in cases {
-            assert_eq!(clean_claude_pane_title(raw).as_deref(), expected);
-        }
+        let chk = |raw, exp| assert_eq!(clean_claude_pane_title(raw).as_deref(), exp);
+        chk("palette-syntax (claude)", Some("palette-syntax"));
+        chk("✳ high-concurrency (claude)", Some("high-concurrency"));
+        chk(
+            "✳ agent connection test (claude)",
+            Some("agent connection test"),
+        );
+        chk("◐ 并发优化测试 (claude.exe)", Some("并发优化测试"));
+        chk(
+            "✳ [v0.10] .github fix (claude)",
+            Some("[v0.10] .github fix"),
+        );
+        chk("Claude Code (claude)", None);
+        chk("claude", None);
         assert_eq!(
-            parse_tmux_spec("v2;b=tmux;k=1234;c=%12;y=%2;lp=30;f=gr"),
+            parse_tmux_spec("v2;b=tmux;k=1;c=%12;lp=30"),
             (true, Some("%12"))
         );
         assert_eq!(parse_tmux_spec("tmux:%1:%2,%3"), (true, Some("%1")));
-        assert_eq!(
-            parse_tmux_spec("v2;b=wezterm;k=1234;c=5;lp=30;f=gr"),
-            (false, None)
-        );
+        assert_eq!(parse_tmux_spec("v2;b=wezterm;k=1;c=5;lp=30"), (false, None));
     }
 }

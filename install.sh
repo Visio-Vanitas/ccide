@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${0:A:h}"
-PLUGIN_VERSION="0.10.0"
+PLUGIN_VERSION="0.11.3"
 HOME_DIR="$HOME"
 CLAUDE_DIR="$HOME_DIR/.claude"
 CACHE_DIR="$HOME_DIR/.cache/cc-ide"
@@ -99,7 +99,23 @@ ensure_engine_built() {
   fi
 }
 
-MODE="${1:-auto}"
+MODE="auto"
+WITH_AGY="${CCIDE_WITH_AGY:-0}"
+WITH_CODEX="${CCIDE_WITH_CODEX:-0}"
+EXTRA_ARGS=()
+for _arg in "$@"; do
+  case "$_arg" in
+    --with-agy) WITH_AGY=1 ;;
+    --with-codex) WITH_CODEX=1 ;;
+    *)
+      if [[ "$MODE" == "auto" ]]; then
+        MODE="$_arg"
+      else
+        EXTRA_ARGS+=("$_arg")
+      fi
+      ;;
+  esac
+done
 
 log_step() {
   printf "\033[1;36m==>\033[0m \033[1m%s\033[0m\n" "$1"
@@ -109,6 +125,10 @@ log_ok() {
   printf "  \033[1;32m[OK]\033[0m %s\n" "$1"
 }
 
+log_warn() {
+  printf "  \033[1;33m[WARN]\033[0m %s\n" "$1"
+}
+
 if [[ "$MODE" == "-h" || "$MODE" == "--help" ]]; then
   cat <<'EOF'
 Usage: ./install.sh [option]
@@ -116,6 +136,8 @@ Usage: ./install.sh [option]
 Options:
   (no args)                     Launch interactive TUI Setup, Theme Studio & Doctor (falls back to --yes if non-TTY)
   --yes, -y, --apply            Non-interactive full build, plugin install, binary patch & hot-reload
+  --with-agy                    Force Antigravity (`agy`) plugin installation even if `agy` is not on PATH
+  --with-codex                  Force Codex CLI hook installation even if `codex` is not on PATH
   --doctor [--json]             Run environment & companion dependency health check (human TUI or JSON)
   --patch-only                  Re-apply only the claude.exe structural binary patches
   --iterm-preferences-only      Back up & apply ccide's recommended iTerm2 preferences (idempotent)
@@ -126,15 +148,13 @@ EOF
 fi
 
 if [[ "$MODE" == "--iterm-preferences-only" ]]; then
-  shift || true
   log_step "Applying reversible ccide iTerm2 display & Python API preferences..."
-  exec "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --apply "$@"
+  exec "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --apply "${EXTRA_ARGS[@]}"
 fi
 
 if [[ "$MODE" == "--restore-iterm-preferences" ]]; then
-  shift || true
   log_step "Restoring original iTerm2 preferences from backup..."
-  exec "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --restore "$@"
+  exec "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/iterm-preferences.py" --restore "${EXTRA_ARGS[@]}"
 fi
 
 if [[ "$MODE" == "--uninstall" ]]; then
@@ -153,6 +173,16 @@ if [[ "$MODE" == "--uninstall" ]]; then
   rm -rf "$HOME_DIR/.config/yazi/plugins/hscroll.yazi" 2>/dev/null || true
   rm -f "$HOME_DIR/.config/cc-ide/ccide.tmTheme" 2>/dev/null || true
   rm -f "$HOME/.claude/scripts/cc_tui_lib.py" "$CLAUDE_DIR/scripts/cc_tui_lib.py" 2>/dev/null || true
+  AGY_PLUGIN_DIR="$HOME_DIR/.gemini/config/plugins/cc-ide"
+  if [[ -f "$AGY_PLUGIN_DIR/.ccide-managed" ]]; then
+    rm -rf "$AGY_PLUGIN_DIR" 2>/dev/null || true
+    log_ok "Removed managed Antigravity plugin -> $AGY_PLUGIN_DIR"
+  fi
+  CODEX_HOME_DIR="${CODEX_HOME:-$HOME_DIR/.codex}"
+  if [[ -f "$CODEX_HOME_DIR/hooks.json" && -f "$PROJECT_ROOT/scripts/merge_agent_hooks.py" ]]; then
+    "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/merge_agent_hooks.py" --remove --target "$CODEX_HOME_DIR/hooks.json" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$CODEX_HOME_DIR/cc-ide" 2>/dev/null || true
 
   for cfg_p in \
     "$HOME_DIR/.config/yazi/yazi.toml" \
@@ -235,9 +265,8 @@ if [[ "$MODE" == "--patch-only" ]]; then
 fi
 
 if [[ "$MODE" == "--doctor" || "$MODE" == "doctor" ]]; then
-  shift || true
   ensure_engine_built >/dev/null
-  exec "$PROJECT_ROOT/bin/ccide-core" doctor "$PROJECT_ROOT" "$@"
+  exec "$PROJECT_ROOT/bin/ccide-core" doctor "$PROJECT_ROOT" "${EXTRA_ARGS[@]}"
 fi
 
 if [[ "$MODE" == "--tui" || ( "$MODE" == "auto" && -t 0 && -t 1 && "${CCIDE_NONINTERACTIVE:-0}" != "1" ) ]]; then
@@ -293,7 +322,7 @@ if [[ -d "$PROJECT_ROOT/assets/workflows" ]]; then
 fi
 
 rm -f "$CLAUDE_DIR/scripts/cc_tui_lib.py" 2>/dev/null || true
-for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py bun_pe.py cc_patch_rules.py cc_schema_inspector.py cc-maint.py ccide_syntax_pal.py ccide_workflow_runner.py ccide_workflow_server.py pane-runner.sh lazygit-pager.sh lazygit-log.py git_smooth_graph.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py ccide ensure-ccide-core.sh ensure-ccide-core.mjs; do
+for script_name in ccide_daemon.py iterm2_workspace.py iterm-preferences.py iterm-pyenv.py agent-task-context.py bun_pe.py cc_patch_rules.py cc_schema_inspector.py cc-maint.py ccide_syntax_pal.py ccide_workflow_runner.py ccide_workflow_server.py merge_agent_hooks.py pane-runner.sh lazygit-pager.sh lazygit-log.py git_smooth_graph.py pty-hscroll-bridge.py md-render.py patch_claude_binary.py sync-pricing.py ccide ensure-ccide-core.sh ensure-ccide-core.mjs; do
   chmod +x "$PROJECT_ROOT/scripts/$script_name"
   ln -sf "$PROJECT_ROOT/scripts/$script_name" "$CLAUDE_DIR/scripts/$script_name"
 done
@@ -669,7 +698,7 @@ done
 if [[ "$OPT_PLUGIN" == "1" ]]; then
   backup_once "$CLAUDE_DIR/settings.json"
   "$PYTHON_BIN" -I - "$PROJECT_ROOT" "$PLUGIN_CACHE_DIR" "$PLUGIN_VERSION" <<'PYEOF'
-import datetime, json, os, sys
+import datetime, json, os, shlex, sys
 
 project_root, plugin_cache_dir, version = sys.argv[1], sys.argv[2], sys.argv[3]
 claude_dir = os.path.expanduser("~/.claude")
@@ -725,7 +754,7 @@ st.setdefault("extraKnownMarketplaces", {})["cc-ide"] = {
 }
 st["statusLine"] = {
     "type": "command",
-    "command": f"{os.path.join(claude_dir, 'bin', 'ccide-core')} statusline",
+    "command": f"{shlex.quote(os.path.join(claude_dir, 'bin', 'ccide-core'))} statusline",
 }
 if "hooks" in st and isinstance(st["hooks"], dict):
     for hk in ("PostToolUse", "SubagentStart", "SubagentStop"):
@@ -747,6 +776,34 @@ PYEOF
   log_ok "Registered cc-ide@cc-ide v$PLUGIN_VERSION in ~/.claude/plugins & ~/.claude/settings.json"
 else
   log_ok "Packaged plugin cache (skipped settings.json registration per user selection)"
+fi
+
+if [[ "$WITH_AGY" == "1" ]] || command -v agy >/dev/null 2>&1; then
+  AGY_PLUGIN_DIR="$HOME_DIR/.gemini/config/plugins/cc-ide"
+  if [[ -d "$AGY_PLUGIN_DIR" && ! -f "$AGY_PLUGIN_DIR/.ccide-managed" ]]; then
+    log_warn "Skipping Antigravity plugin: $AGY_PLUGIN_DIR exists without .ccide-managed marker"
+  else
+    mkdir -p "$AGY_PLUGIN_DIR"
+    cp -f "$PROJECT_ROOT/integrations/antigravity/plugin.json" "$AGY_PLUGIN_DIR/plugin.json"
+    cp -f "$PROJECT_ROOT/integrations/antigravity/hooks.json" "$AGY_PLUGIN_DIR/hooks.json"
+    cp -f "$PROJECT_ROOT/integrations/antigravity/hook.sh" "$AGY_PLUGIN_DIR/hook.sh"
+    chmod +x "$AGY_PLUGIN_DIR/hook.sh"
+    printf 'managed-by=cc-ide\n' > "$AGY_PLUGIN_DIR/.ccide-managed"
+    log_ok "Installed Antigravity plugin -> $AGY_PLUGIN_DIR"
+  fi
+fi
+
+if [[ "$WITH_CODEX" == "1" ]] || command -v codex >/dev/null 2>&1; then
+  CODEX_HOME_DIR="${CODEX_HOME:-$HOME_DIR/.codex}"
+  mkdir -p "$CODEX_HOME_DIR/cc-ide"
+  cp -f "$PROJECT_ROOT/integrations/codex/hook.sh" "$CODEX_HOME_DIR/cc-ide/hook.sh"
+  cp -f "$PROJECT_ROOT/integrations/codex/hook.cmd" "$CODEX_HOME_DIR/cc-ide/hook.cmd"
+  chmod +x "$CODEX_HOME_DIR/cc-ide/hook.sh"
+  "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/merge_agent_hooks.py" \
+    --target "$CODEX_HOME_DIR/hooks.json" \
+    --template "$PROJECT_ROOT/integrations/codex/hooks.json" \
+    --hook-bin "$CODEX_HOME_DIR/cc-ide/hook.sh"
+  log_ok "Merged Codex CLI hooks -> $CODEX_HOME_DIR/hooks.json"
 fi
 
 # ------------------------------------------------------------------------------

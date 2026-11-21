@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use crate::commands::sidebar::orch_panel::{TAG_ORCH_PRESET, TAG_ORCH_ROLE};
+use crate::session::is_subagent_alive;
 use crate::session::transcript::SubagentItem;
 use crate::tui::context::TAG_CTX_TOGGLE;
 
@@ -115,7 +116,7 @@ impl SidebarGeomMask {
                 let can_dismiss = col >= self.cols.saturating_sub(4)
                     && subagents
                         .get(idx)
-                        .map(|a| a.status != "running")
+                        .map(|a| !is_subagent_alive(a.status))
                         .unwrap_or(false);
                 if can_dismiss {
                     HitZone::SubagentDismiss(idx)
@@ -252,5 +253,26 @@ mod tests {
             Some(MaskedAction::FocusZoneOnly(None))
         );
         assert_eq!(cap.on_mouse_up(0, 20, 18, z_ctx), None);
+
+        // Right-edge `×` (`col >= cols - 4`) gates dismissal on `!is_subagent_alive`.
+        let sub_tags = HashMap::from([(15, (2, 0)), (17, (2, 1))]);
+        let subs = vec![
+            SubagentItem {
+                status: "waiting",
+                ..SubagentItem::default()
+            },
+            SubagentItem {
+                status: "killed",
+                ..SubagentItem::default()
+            },
+        ];
+        assert_eq!(
+            mask.classify(38, 15, &sub_tags, &subs),
+            HitZone::SubagentItem(0)
+        );
+        assert_eq!(
+            mask.classify(38, 17, &sub_tags, &subs),
+            HitZone::SubagentDismiss(1)
+        );
     }
 }

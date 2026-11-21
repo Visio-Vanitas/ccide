@@ -213,6 +213,7 @@ pub fn poll_and_dispatch_input(
         cwd: target_cwd,
         sid: &sb.session_id,
         cpid: sb.ui_pid,
+        agent: sb.agent,
         main_file,
         main_line,
         main_span,
@@ -237,9 +238,7 @@ pub fn poll_and_dispatch_input(
         sel,
         orch_cfg,
     );
-    if let Some(ok) = env.switch_signal_ok.get() {
-        sel.status_notice = (!ok).then(|| "repatch needed (ccide doctor)".to_string());
-    }
+    env.sync_notice(&mut sel.status_notice);
     true
 }
 

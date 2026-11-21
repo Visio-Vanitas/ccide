@@ -28,8 +28,12 @@ jobs:
         run: |
           BASE_VER="$(grep '^version =' Cargo.toml | head -n 1 | cut -d '"' -f 2)"
           echo "base_ver=${BASE_VER}" >> "$GITHUB_OUTPUT"
+          MILESTONE_TAG="v${BASE_VER%.*}.0"
           if [[ "${BASE_VER}" == *.0 ]]; then
             echo "is_minor=true" >> "$GITHUB_OUTPUT"
+          elif ! git ls-remote --exit-code --tags origin "refs/tags/${MILESTONE_TAG}" >/dev/null 2>&1; then
+            echo "is_minor=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Milestone tag '${MILESTONE_TAG}' is absent on origin; promoting patch v${BASE_VER} as a full 6-target binary release."
           else
             echo "is_minor=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Patch version v${BASE_VER} (0.x.y): skipping 6-platform release binary compilation per SemVer policy (prebuilt archives compile only on 0.X.0 minor milestones)."

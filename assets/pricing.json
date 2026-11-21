@@ -5,8 +5,16 @@
   // Upstream reference: https://github.com/pydantic/genai-prices & vendor docs.
   // Run `ccide --sync-pricing` to refresh upstream rates into `~/.config/cc-ide/pricing.json`.
   // Any entry added to `custom_overrides` takes highest priority and is preserved across syncs.
-  "updated_at": "2026-11-13",
+  "updated_at": "2026-11-19",
   "source": "anthropic + google + deepseek + openai + xai + pydantic/genai-prices",
+
+  // Canonical display-name & multi-agent (`agy` / `codex`) alias notes (resolved via
+  // `normalize_model_key` -> progressive lookup against `"models"` below; no hand-typed rates):
+  // - "Claude Opus 4.6 (Thinking)" -> "claude-opus-4-6"
+  // - "Claude Sonnet 4.6 (Thinking)" -> "claude-sonnet-4-6"
+  // - "Claude Sonnet 4.5" -> "claude-sonnet-4-5"
+  // - "gpt-5.4-codex" -> "gpt-5.4"
+  // - "gpt-5.3-codex" -> "gpt-5.3"
 
   "custom_overrides": {
     // Example custom gateway override:
@@ -39,6 +47,9 @@
     "claude-3-5-haiku":   { "input": 0.80, "output": 4.0,  "cache_write_5m": 1.0,   "cache_write_1h": 1.6,  "cache_read": 0.08 },
 
     // ── Google Gemini ──
+    "gemini-4-argon":     { "input": 2.0,  "output": 12.0, "cache_write_5m": 2.0,   "cache_read": 0.20, "above_tokens": 200000, "long_input": 4.0,  "long_output": 18.0, "long_cache_write": 4.0,  "long_cache_read": 0.40 },
+    "gemini-4-hydrogen":  { "input": 2.0,  "output": 12.0, "cache_write_5m": 2.0,   "cache_read": 0.20, "above_tokens": 200000, "long_input": 4.0,  "long_output": 18.0, "long_cache_write": 4.0,  "long_cache_read": 0.40 },
+    "gemini-4-neon":      { "input": 2.0,  "output": 12.0, "cache_write_5m": 2.0,   "cache_read": 0.20, "above_tokens": 200000, "long_input": 4.0,  "long_output": 18.0, "long_cache_write": 4.0,  "long_cache_read": 0.40 },
     "gemini-4-carbon":    { "input": 2.0,  "output": 12.0, "cache_write_5m": 2.0,   "cache_read": 0.20, "above_tokens": 200000, "long_input": 4.0,  "long_output": 18.0, "long_cache_write": 4.0,  "long_cache_read": 0.40 },
     "gemini-4-pro":       { "input": 2.0,  "output": 12.0, "cache_write_5m": 2.0,   "cache_read": 0.20, "above_tokens": 200000, "long_input": 4.0,  "long_output": 18.0, "long_cache_write": 4.0,  "long_cache_read": 0.40 },
     "gemini-3.8-flash":   { "input": 1.5,  "output": 7.5,  "cache_write_5m": 1.5,   "cache_read": 0.15 },
@@ -77,6 +88,8 @@
     "gpt-4o":             { "input": 2.5,  "output": 10.0, "cache_write_5m": 2.5,   "cache_read": 1.25 },
     "o4-mini":            { "input": 1.1,  "output": 4.4,  "cache_write_5m": 1.1,   "cache_read": 0.275 },
     "o3":                 { "input": 2.0,  "output": 8.0,  "cache_write_5m": 2.0,   "cache_read": 0.50 },
+    "gpt-oss-120b":       { "input": 0.15, "output": 0.60, "cache_write_5m": 0.15,  "cache_read": 0.0375 },
+    "gpt-oss":            { "input": 0.15, "output": 0.60, "cache_write_5m": 0.15,  "cache_read": 0.0375 },
 
     // ── xAI Grok ──
     "grok-4.5":           { "input": 2.0,  "output": 6.0,  "cache_write_5m": 2.0,   "cache_read": 0.50 },

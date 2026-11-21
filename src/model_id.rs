@@ -84,3 +84,22 @@ pub fn model_from_shim_agent_type(home: &str, agent_type: &str) -> Option<(&'sta
         .or_else(|| clean_name.strip_prefix(RO_SHIM_PREFIX))?;
     Some((role_badge, slug.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_multi_agent_display_and_codex_model_ids() {
+        assert!(is_valid_model_name("Claude Opus 4.6 (Thinking)"));
+        assert!(is_valid_model_name("gpt-6-astra"));
+        assert!(is_valid_model_name("auto"));
+        assert!(!is_valid_model_name(""));
+        assert!(!is_valid_model_name("<synthetic>"));
+        assert!(!is_valid_model_name("null"));
+        assert_eq!(
+            model_slug("Claude Opus 4.6 (Thinking)"),
+            "claude-opus-4-6-thinking"
+        );
+    }
+}

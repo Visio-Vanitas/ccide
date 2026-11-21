@@ -1,0 +1,71 @@
+{
+  "title": "Demo Swarm",
+  "members": {
+    "coordinator": {
+      "conversation_id": "coord-001",
+      "role": "coordinator",
+      "desired_state": "RUNNING",
+      "applied_model": "gemini-flash-worker-agy",
+      "model": "gemini-flash-worker-agy",
+      "workspace_mode": "inherit",
+      "phase": "RUNNING",
+      "wake_mode": "working",
+      "wait_since": 6,
+      "last_read_seq": 6,
+      "killed": false
+    },
+    "arch-opus": {
+      "conversation_id": "worker-opus-001",
+      "role": "worker",
+      "desired_state": "RUNNING",
+      "applied_model": "claude-opus-5-5-high",
+      "model": "claude-opus-5-5-high",
+      "workspace_mode": "inherit",
+      "phase": "RUNNING",
+      "wake_mode": "mentions",
+      "wait_since": 6,
+      "last_read_seq": 6,
+      "killed": false
+    },
+    "backends": {
+      "conversation_id": "worker-argon-002",
+      "role": "worker",
+      "desired_state": "RUNNING",
+      "applied_model": "gemini-4-argon-high",
+      "model": "gemini-4-argon-high",
+      "workspace_mode": "share",
+      "phase": "RUNNING",
+      "wake_mode": "working",
+      "wait_since": 4,
+      "last_read_seq": 5,
+      "killed": false
+    },
+    "audit-old": {
+      "conversation_id": "worker-killed-003",
+      "role": "worker",
+      "added_by": "arch-opus",
+      "desired_state": "KILLED",
+      "applied_model": "claude-opus-5-5-high",
+      "model": "claude-opus-5-5-high",
+      "workspace_mode": "inherit",
+      "phase": "KILLED",
+      "wake_mode": "working",
+      "wait_since": 3,
+      "last_read_seq": 3,
+      "killed": true
+    },
+    "stale-worker": {
+      "conversation_id": "worker-stopped-004",
+      "role": "worker",
+      "desired_state": "RUNNING",
+      "applied_model": "gemini-4-hydrogen-high",
+      "model": "gemini-4-hydrogen-high",
+      "workspace_mode": "inherit",
+      "phase": "STOPPED",
+      "wake_mode": "mentions",
+      "wait_since": 2,
+      "last_read_seq": 2,
+      "killed": false
+    }
+  }
+}

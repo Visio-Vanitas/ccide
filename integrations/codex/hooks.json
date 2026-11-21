@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./hook.sh yazi-hook --agent codex",
+            "commandWindows": "hook.cmd yazi-hook --agent codex",
+            "timeoutSec": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./hook.sh yazi-hook --agent codex",
+            "commandWindows": "hook.cmd yazi-hook --agent codex",
+            "timeoutSec": 5
+          }
+        ]
+      }
+    ]
+  }
+}

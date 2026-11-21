@@ -15,13 +15,15 @@ param(
     [switch]$Doctor,
     [switch]$Json,
     [switch]$PatchOnly,
+    [switch]$WithAgy,
+    [switch]$WithCodex,
     [switch]$Uninstall,
     [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$PluginVersion = "0.10.0"
+$PluginVersion = "0.11.3"
 $HomeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 $ClaudeDir = Join-Path $HomeDir ".claude"
 $CacheDir = Join-Path $HomeDir ".cache\cc-ide"
@@ -41,6 +43,8 @@ Usage: .\install.ps1 [options]  (or `install.cmd [options]` from cmd.exe)
 Options:
   (no args)        Launch interactive TUI Setup & Doctor (falls back to -Yes if non-interactive)
   -Yes             Non-interactive full build/download, plugin install, claude.exe patch & PATH setup
+  -WithAgy         Force Antigravity (`agy`) plugin installation even if `agy` is not on PATH
+  -WithCodex       Force Codex CLI hook installation even if `codex` is not on PATH
   -Doctor [-Json]  Run environment, WezTerm/WT & patch-anchor health check (TUI or JSON)
   -PatchOnly       Re-apply structural patches to Windows claude.exe
   -Uninstall       Cleanly restore claude.exe.bak, remove managed configs & strip User PATH entry
@@ -66,6 +70,12 @@ function Backup-Once([string]$Path) {
     if ((Test-Path $Path) -and -not (Test-Path "$Path.ccide.bak")) {
         Copy-Item -LiteralPath $Path -Destination "$Path.ccide.bak" -Force
     }
+}
+
+function Invoke-BestEffort([scriptblock]$Block) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $Block } catch {} finally { $ErrorActionPreference = $prev }
 }
 
 function Ensure-EngineBinary {
@@ -120,7 +130,7 @@ if ($Uninstall) {
     Get-Process -Name "ccide-core" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     $FoundBin = $null
     if ($PyExe) {
-        $FoundBin = & $PyExe -I -c "import sys; sys.path.insert(0, r'$ProjectRoot\scripts'); import bun_pe; print(bun_pe.discover_claude_bin())" 2>$null
+        $FoundBin = Invoke-BestEffort { & $PyExe -I -c "import sys; sys.path.insert(0, sys.argv[1]); import bun_pe; print(bun_pe.discover_claude_bin())" (Join-Path $ProjectRoot "scripts") 2>$null }
     }
     if (-not $FoundBin) {
         $ClaudeCmd = Get-Command claude -ErrorAction SilentlyContinue
@@ -164,7 +174,7 @@ if ($Uninstall) {
     $StFile = Join-Path $ClaudeDir "settings.json"
     if (Test-Path $StFile) {
         if ($PyExe) {
-            & $PyExe -I -c "import json,os; p=r'$StFile'; st=json.load(open(p,encoding='utf-8')); (st.get('enabledPlugins') or {}).pop('cc-ide@cc-ide',None); (st.get('extraKnownMarketplaces') or {}).pop('cc-ide',None); sl=st.get('statusLine'); (st.pop('statusLine',None) if isinstance(sl,dict) and 'ccide-core' in str(sl.get('command','')) else None); json.dump(st,open(p,'w',encoding='utf-8'),indent=2)"
+            & $PyExe -I -c "import json,sys; p=sys.argv[1]; st=json.load(open(p,encoding='utf-8')); (st.get('enabledPlugins') or {}).pop('cc-ide@cc-ide',None); (st.get('extraKnownMarketplaces') or {}).pop('cc-ide',None); sl=st.get('statusLine'); (st.pop('statusLine',None) if isinstance(sl,dict) and 'ccide-core' in str(sl.get('command','')) else None); json.dump(st,open(p,'w',encoding='utf-8'),indent=2)" $StFile
         } else {
             try {
                 $st = Get-Content -LiteralPath $StFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -184,6 +194,17 @@ if ($Uninstall) {
     if (Test-Path $PluginCacheDir) {
         Remove-Item -LiteralPath $PluginCacheDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+    $AgyPluginDir = Join-Path $HomeDir ".gemini\config\plugins\cc-ide"
+    if (Test-Path (Join-Path $AgyPluginDir ".ccide-managed")) {
+        Remove-Item -LiteralPath $AgyPluginDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $CodexHomeDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HomeDir ".codex" }
+    $CodexHooks = Join-Path $CodexHomeDir "hooks.json"
+    if ((Test-Path $CodexHooks) -and $PyExe) {
+        Invoke-BestEffort { & $PyExe -I (Join-Path $ProjectRoot "scripts\merge_agent_hooks.py") --remove --target $CodexHooks 2>$null } | Out-Null
+    }
+    $CodexWrapperDir = Join-Path $CodexHomeDir "cc-ide"
+    if (Test-Path $CodexWrapperDir) { Remove-Item -LiteralPath $CodexWrapperDir -Recurse -Force -ErrorAction SilentlyContinue }
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($UserPath -and $UserPath.Contains($LocalBinDir)) {
         $Cleaned = (($UserPath -split ";") | Where-Object { $_ -and ($_ -ne $LocalBinDir) }) -join ";"
@@ -241,7 +262,7 @@ if (Test-Path $WorkflowSrcDir) {
     Copy-Item -Path (Join-Path $WorkflowSrcDir "*.js") -Destination $UserWfDir -Force -ErrorAction SilentlyContinue
 }
 
-Copy-Item -Path (Join-Path $ProjectRoot "scripts\*") -Destination "$ClaudeDir\scripts\" -Force
+Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "scripts") -File | Copy-Item -Destination "$ClaudeDir\scripts\" -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "scripts\lazygit-log.py") -Destination "$ClaudeDir\scripts\lazygit-log.py" -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "scripts\git_smooth_graph.py") -Destination "$ClaudeDir\scripts\git_smooth_graph.py" -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "scripts\ccide.ps1") -Destination (Join-Path $LocalBinDir "ccide.ps1") -Force
@@ -258,7 +279,7 @@ if (($CurUserPath -split ";") -notcontains $LocalBinDir) {
 } else {
     Write-Ok "Launchers ccide.cmd / ccide.ps1 updated in $LocalBinDir"
 }
-& $EngineExe workspace theme sync 2>$null | Out-Null
+Invoke-BestEffort { & $EngineExe workspace theme sync 2>$null | Out-Null } | Out-Null
 
 Write-Step "3/6 Syncing Yazi (%APPDATA%\yazi\config) & Lazygit companion configs..."
 if ($OptCompanion -eq "1") {
@@ -439,7 +460,7 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot ".claude-plugin\plugin.json") -De
 Copy-Item -LiteralPath (Join-Path $ProjectRoot ".claude-plugin\marketplace.json") -Destination "$PluginCacheDir\.claude-plugin\marketplace.json" -Force
 Copy-Item -Path (Join-Path $ProjectRoot "hooks\*") -Destination "$PluginCacheDir\hooks\" -Recurse -Force
 Copy-Item -Path (Join-Path $ProjectRoot "skills\*") -Destination "$PluginCacheDir\skills\" -Recurse -Force
-Copy-Item -Path (Join-Path $ProjectRoot "scripts\*") -Destination "$PluginCacheDir\scripts\" -Recurse -Force
+Copy-Item -Path (Join-Path $ProjectRoot "scripts\*") -Exclude "__pycache__" -Destination "$PluginCacheDir\scripts\" -Recurse -Force
 Copy-Item -Path (Join-Path $ProjectRoot "assets\*") -Destination "$PluginCacheDir\assets\" -Recurse -Force
 if (Test-Path (Join-Path $ProjectRoot "assets\workflows")) {
     New-Item -ItemType Directory -Force -Path (Join-Path $PluginCacheDir "workflows") | Out-Null
@@ -450,10 +471,10 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot "AGENT.md") -Destination "$Plugin
 
 if ($OptPlugin -eq "1" -and $PyExe) {
     Backup-Once (Join-Path $ClaudeDir "settings.json")
-    $StatusCmd = "`"" + (Join-Path $ClaudeDir "bin\ccide-core.exe") + "`" statusline"
     $RegScript = @"
 import datetime, json, os, sys
-proj, pcache, ver, cdir, sl_cmd = sys.argv[1:6]
+proj, pcache, ver, cdir = sys.argv[1:5]
+sl_cmd = f'"{os.path.join(cdir, "bin", "ccide-core.exe")}" statusline'
 pdir = os.path.join(cdir, "plugins")
 os.makedirs(pdir, exist_ok=True)
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -472,8 +493,34 @@ st.setdefault("extraKnownMarketplaces", {})["cc-ide"] = {"source": {"source": "d
 st["statusLine"] = {"type": "command", "command": sl_cmd}
 json.dump(st, open(st_p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
 "@
-    $RegScript | & $PyExe -I - $ProjectRoot $PluginCacheDir $PluginVersion $ClaudeDir $StatusCmd
+    $RegScript | & $PyExe -I - $ProjectRoot $PluginCacheDir $PluginVersion $ClaudeDir
     Write-Ok "Registered cc-ide@cc-ide & quoted statusLine in $ClaudeDir\settings.json"
+}
+
+if ($WithAgy -or ($env:CCIDE_WITH_AGY -eq "1") -or (Get-Command agy -ErrorAction SilentlyContinue)) {
+    $AgyPluginDir = Join-Path $HomeDir ".gemini\config\plugins\cc-ide"
+    $AgyMarker = Join-Path $AgyPluginDir ".ccide-managed"
+    if ((Test-Path $AgyPluginDir) -and -not (Test-Path $AgyMarker)) {
+        Write-Warn "Skipping Antigravity plugin: $AgyPluginDir exists without .ccide-managed marker"
+    } else {
+        New-Item -ItemType Directory -Force -Path $AgyPluginDir | Out-Null
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "integrations\antigravity\plugin.json") -Destination (Join-Path $AgyPluginDir "plugin.json") -Force
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "integrations\antigravity\hooks.windows.json") -Destination (Join-Path $AgyPluginDir "hooks.json") -Force
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "integrations\antigravity\hook.cmd") -Destination (Join-Path $AgyPluginDir "hook.cmd") -Force
+        Set-Content -LiteralPath $AgyMarker -Value "managed-by=cc-ide`n" -NoNewline -Encoding ASCII
+        Write-Ok "Installed Antigravity plugin -> $AgyPluginDir"
+    }
+}
+
+if (($WithCodex -or ($env:CCIDE_WITH_CODEX -eq "1") -or (Get-Command codex -ErrorAction SilentlyContinue)) -and $PyExe) {
+    $CodexHomeDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HomeDir ".codex" }
+    $CodexWrapDir = Join-Path $CodexHomeDir "cc-ide"
+    New-Item -ItemType Directory -Force -Path $CodexWrapDir | Out-Null
+    $CodexHookCmd = Join-Path $CodexWrapDir "hook.cmd"
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot "integrations\codex\hook.sh") -Destination (Join-Path $CodexWrapDir "hook.sh") -Force
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot "integrations\codex\hook.cmd") -Destination $CodexHookCmd -Force
+    & $PyExe -I (Join-Path $ProjectRoot "scripts\merge_agent_hooks.py") --target (Join-Path $CodexHomeDir "hooks.json") --template (Join-Path $ProjectRoot "integrations\codex\hooks.windows.json") --hook-bin $CodexHookCmd
+    Write-Ok "Merged Codex CLI hooks -> $(Join-Path $CodexHomeDir 'hooks.json')"
 }
 
 Write-Step "5/6 Applying structural patches to Windows claude.exe..."
@@ -484,5 +531,5 @@ if ($OptPatch -eq "1" -and $PyExe) {
 }
 
 Write-Step "6/6 Installation complete! Launch `ccide` inside WezTerm or Windows Terminal (`wt.exe`)."
-& $EngineExe orchestrator sync 2>$null | Out-Null
+Invoke-BestEffort { & $EngineExe orchestrator sync 2>$null | Out-Null } | Out-Null
 Write-Ok "Run `ccide doctor` at any time to verify your Windows workspace."

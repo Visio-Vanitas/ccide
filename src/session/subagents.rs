@@ -14,7 +14,11 @@ pub use crate::session::subagent_state::{
     append_dismissed_subagents, find_session_dir, load_dismissed_subagents,
 };
 
-#[derive(Clone)]
+pub fn is_subagent_alive(status: &str) -> bool {
+    matches!(status, "running" | "waiting")
+}
+
+#[derive(Clone, Default)]
 pub struct SubagentItem {
     pub full_id: String,
     pub raw_type: String,

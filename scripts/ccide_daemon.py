@@ -192,12 +192,55 @@ def collect_leaf_sessions(node) -> list[iterm2.Session]:
     return out
 
 
+LEFT_MIN = 22
+CENTER_MIN = 48
+RIGHT_MIN = 28
+RIGHT_PCT = 16
+LEFT_PCT_MIN = 12
+LEFT_PCT_MAX = 45
+
+
+def compute_iterm_column_widths(total_w: int, left_pct: int = 30, has_right: bool = True) -> tuple[int, int, int]:
+    """Compute conserved `(left_w, mid_w, right_w)` column widths matching Rust `LayoutPlan`."""
+    if total_w <= 0:
+        return (0, 0, 0)
+    lp = max(LEFT_PCT_MIN, min(LEFT_PCT_MAX, int(left_pct)))
+    min_budget = LEFT_MIN + CENTER_MIN + (RIGHT_MIN if has_right else 0)
+    if total_w < min_budget:
+        left_w = max(1, (total_w * lp) // 100)
+        right_w = max(1, (total_w * RIGHT_PCT) // 100) if has_right else 0
+        while left_w + right_w >= total_w and (left_w > 0 or right_w > 0):
+            if right_w > left_w and right_w > 0:
+                right_w -= 1
+            elif left_w > 0:
+                left_w -= 1
+            elif right_w > 0:
+                right_w -= 1
+        return (left_w, max(1, total_w - left_w - right_w), right_w)
+
+    right_w = max(RIGHT_MIN, (total_w * RIGHT_PCT + 50) // 100) if has_right else 0
+    left_w = max(LEFT_MIN, (total_w * lp + 50) // 100)
+    if left_w + right_w + CENTER_MIN > total_w:
+        deficit = left_w + right_w + CENTER_MIN - total_w
+        if has_right and right_w > RIGHT_MIN:
+            cut = min(deficit, right_w - RIGHT_MIN)
+            right_w -= cut
+            deficit -= cut
+        if deficit > 0 and left_w > LEFT_MIN:
+            cut = min(deficit, left_w - LEFT_MIN)
+            left_w -= cut
+    mid_w = max(1, total_w - left_w - right_w)
+    return (left_w, mid_w, right_w)
+
+
 async def apply_consistent_tab_widths(
     app: iterm2.App,
     tab: iterm2.Tab,
     left_pct: int = 30,
     right_pct: int = 16,
+    min_total_w: int = 0,
 ):
+    _ = right_pct
     await app.async_refresh()
     root = tab.root
     if not hasattr(root, "children") or len(root.children) < 2:
@@ -215,13 +258,11 @@ async def apply_consistent_tab_widths(
     if not col_widths:
         return
 
-    total_w = sum(col_widths)
+    total_w = max(sum(col_widths), int(min_total_w or 0))
     total_h = max(col_heights) if col_heights else 65
 
     has_right = len(root.children) >= 3
-    left_w = max(56, int(round(total_w * left_pct / 100.0)))
-    right_w = max(38, int(round(total_w * right_pct / 100.0))) if has_right else 0
-    mid_w = max(80, total_w - left_w - right_w)
+    left_w, mid_w, right_w = compute_iterm_column_widths(total_w, left_pct, has_right)
 
     left_leaves = collect_leaf_sessions(root.children[0])
     n_left = max(1, len(left_leaves))
@@ -354,6 +395,7 @@ async def handle_open(
         return ""
 
     await close_existing_side_panes(tab, claude_sess)
+    pre_total_w = getattr(getattr(claude_sess, "grid_size", None), "width", 0) or 0
 
     local_shell_pid = await claude_sess.async_get_variable("pid") or 0
     cache_dir = os.path.expanduser("~/.cache/cc-ide")
@@ -465,8 +507,9 @@ async def handle_open(
         if right_sess:
             created_ids.append(right_sess.session_id)
 
-    await apply_consistent_tab_widths(app, tab, left_pct=left_pct, right_pct=right_pct)
+    await apply_consistent_tab_widths(app, tab, left_pct=left_pct, right_pct=right_pct, min_total_w=pre_total_w)
     await claude_sess.async_set_variable("user.cc_yazi_id", str(yazi_id))
+    await claude_sess.async_set_variable("user.cc_left_pct", str(int(left_pct)))
     await claude_sess.async_set_variable("user.cc_side_panes", ",".join(created_ids))
     if yazi_id:
         YAZI_SESSION_CACHE[str(yazi_id)] = claude_sess.session_id
@@ -530,10 +573,19 @@ async def handle_rebalance(app: iterm2.App):
     for w in app.terminal_windows:
         for t in w.tabs:
             center_bg_img = None
+            tab_left_pct = 30
+            has_ccide_tab = False
             for s in t.sessions:
                 yid = await s.async_get_variable("user.cc_yazi_id")
                 spid = await s.async_get_variable("pid")
                 if yid:
+                    has_ccide_tab = True
+                    try:
+                        raw_lp = await s.async_get_variable("user.cc_left_pct")
+                        if raw_lp is not None and str(raw_lp).strip():
+                            tab_left_pct = int(str(raw_lp).strip())
+                    except (TypeError, ValueError):
+                        pass
                     try:
                         cprof = await s.async_get_profile()
                         center_bg_img = cprof.background_image_location or ""
@@ -547,8 +599,8 @@ async def handle_rebalance(app: iterm2.App):
                 name = s.name or ""
                 if any(tag in name for tag in ("[TREE] yazi", "[GIT] lazygit", "[AI] Companion")):
                     await lock_tui_pane_no_scrollback(s, center_bg_img)
-            if hasattr(t.root, "children") and len(t.root.children) >= 3:
-                await apply_consistent_tab_widths(app, t, left_pct=30, right_pct=16)
+            if hasattr(t.root, "children") and (len(t.root.children) >= 3 or (has_ccide_tab and len(t.root.children) >= 2)):
+                await apply_consistent_tab_widths(app, t, left_pct=tab_left_pct, right_pct=16)
 
 
 async def handle_focus_or_switch(

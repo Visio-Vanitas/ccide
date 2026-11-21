@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::platform::{atomic_write, paths_equal_ci};
+use crate::session::agent::AgentKind;
 use crate::session::scan::SessEntry;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -11,6 +12,8 @@ pub struct SessionBinding {
     pub session_id: String,
     pub ui_pid: u32,
     pub data_pid: u32,
+    pub agent: AgentKind,
+    pub transcript_path: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -109,6 +112,7 @@ where
                     session_id: chosen.session_id.clone(),
                     ui_pid: e.pid,
                     data_pid: chosen.pid,
+                    ..Default::default()
                 },
                 should_commit: !tab_yazi_id.is_empty(),
             };
@@ -127,6 +131,7 @@ where
                             session_id: bg.session_id.clone(),
                             ui_pid: bg.pid,
                             data_pid: bg.pid,
+                            ..Default::default()
                         },
                         should_commit: false,
                     };
@@ -144,6 +149,7 @@ where
                         session_id: e.session_id.clone(),
                         ui_pid: e.pid,
                         data_pid: e.pid,
+                        ..Default::default()
                     },
                     should_commit: false,
                 };
@@ -161,6 +167,7 @@ where
                     session_id: e.session_id.clone(),
                     ui_pid: e.pid,
                     data_pid: e.pid,
+                    ..Default::default()
                 },
                 should_commit: !tab_yazi_id.is_empty(),
             };
@@ -229,7 +236,8 @@ mod tests {
             SessionBinding {
                 session_id: "bg-free-1234".into(),
                 ui_pid: 101,
-                data_pid: 303
+                data_pid: 303,
+                ..Default::default()
             }
         );
         assert!(c1.should_commit);

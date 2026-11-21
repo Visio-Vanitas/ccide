@@ -158,7 +158,7 @@ pub fn run_clear_subagents(home: &str, explicit_sid: String) {
         let items = get_session_subagents(home, sid, cwd, &mut trackers);
         let done_ids: Vec<String> = items
             .into_iter()
-            .filter(|a| a.status != "running")
+            .filter(|a| !crate::session::is_subagent_alive(a.status))
             .map(|a| a.full_id)
             .collect();
         if !done_ids.is_empty() {

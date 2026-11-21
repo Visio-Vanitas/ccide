@@ -1,5 +1,6 @@
 //! Model Family Classification, Label Shortening & Width-Aware Compaction (`src/session/model_compact.rs`).
 
+use crate::session::agent::AgentKind;
 use crate::tui::width::{char_display_width, display_width, floor_char_boundary};
 
 fn has_openai_o_token(low: &str) -> bool {
@@ -13,16 +14,38 @@ fn has_openai_o_token(low: &str) -> bool {
 
 pub fn classify_model_family(model_str: &str) -> &'static str {
     let low = model_str.to_ascii_lowercase();
-    if low.contains("gemini") || low.contains("argon") {
+    if low.contains("gemini")
+        || low.contains("argon")
+        || low.contains("hydrogen")
+        || low.contains("neon")
+        || low.contains("antigravity")
+    {
         "gemini"
     } else if low.contains("deepseek") {
         "deepseek"
     } else if low.contains("grok") {
         "grok"
-    } else if low.contains("gpt") || low.contains("openai") || has_openai_o_token(&low) {
+    } else if low.contains("codex")
+        || low.contains("gpt")
+        || low.contains("openai")
+        || has_openai_o_token(&low)
+    {
         "openai"
     } else {
         "claude"
+    }
+}
+
+pub fn classify_model_family_for(agent: AgentKind, model: &str) -> &'static str {
+    let t = model.trim();
+    if t.is_empty()
+        || t.eq_ignore_ascii_case("auto")
+        || t.eq_ignore_ascii_case("default")
+        || t.eq_ignore_ascii_case("inherit")
+    {
+        agent.default_family()
+    } else {
+        classify_model_family(t)
     }
 }
 
@@ -140,5 +163,25 @@ mod tests {
         assert!(compacted.contains('…'));
         assert_eq!(classify_model_family("o3-mini"), "openai");
         assert_eq!(classify_model_family("nemo1-turbo3"), "claude");
+        assert_eq!(
+            classify_model_family("Claude Opus 4.6 (Thinking)"),
+            "claude"
+        );
+        assert_eq!(classify_model_family("gpt-6-astra"), "openai");
+        assert_eq!(classify_model_family("gpt-6-codex"), "openai");
+        assert_eq!(classify_model_family("hydrogen-preview"), "gemini");
+        assert_eq!(classify_model_family_for(AgentKind::Agy, "auto"), "gemini");
+        assert_eq!(
+            classify_model_family_for(AgentKind::Agy, "Claude Opus 4.6 (Thinking)"),
+            "claude"
+        );
+        assert_eq!(
+            classify_model_family_for(AgentKind::Codex, "default"),
+            "openai"
+        );
+        for w in [6usize, 10, 16] {
+            let s = compact_model_for_width(&short_model_label("Claude Opus 4.6 (Thinking)"), w);
+            assert!(display_width(&s) <= w);
+        }
     }
 }

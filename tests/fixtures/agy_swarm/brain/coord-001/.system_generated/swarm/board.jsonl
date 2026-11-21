@@ -1,0 +1,6 @@
+{"seq":1,"agent":"coordinator","text":"@arch-opus Draft interface spec for src/arch.rs","time":"2026-11-19 12:00:01","kind":"brief","request_id":"req-001"}
+{"seq":2,"agent":"coordinator","text":"@backends Implement src/swarm.rs handlers","time":"2026-11-19 12:00:02","kind":"brief","request_id":"req-002"}
+{"seq":3,"agent":"arch-opus","text":"@audit-old Check boundary conditions","time":"2026-11-19 12:00:03","request_id":"req-003"}
+{"seq":4,"agent":"arch-opus","text":"@coordinator Spec frozen in src/arch.rs","time":"2026-11-19 12:00:04","request_id":"req-004"}
+{"seq":5,"agent":"backends","text":"@coordinator Implementing edits in src/swarm.rs","time":"2026-11-19 12:00:05","request_id":"req-005"}
+{"seq":6,"agent":"coordinator","text":"@arch-opus Wait for backends completion","time":"2026-11-19 12:00:06","request_id":"req-006"}

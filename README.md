@@ -1,10 +1,16 @@
 # `ccide` (`cc-ide`)
 
-**Native 3-Column Tiling Terminal IDE & Real-Time Subagent / Hardware Telemetry Companion for Claude Code (`macOS` & `Linux`)**
+**Native 3-Column Tiling Terminal IDE & Real-Time Multi-Agent / Hardware Telemetry Companion (`macOS`, `Linux` & `Windows`)**
 
-`ccide` transforms **Claude Code** into a zero-polling, sub-millisecond 3-column tiling terminal IDE (`30% Left | 54% Center | 16% Right`) powered by a zero-dependency Rust engine (`ccide-core`, **v0.5.0**) and a 3-tier adaptive workspace controller.
+`ccide` transforms **Claude Code**, **Google Antigravity CLI (`agy`)**, and **OpenAI Codex CLI (`codex`)** into a zero-polling, 3-column tiling terminal IDE (`30% Left | 54% Center | 16% Right`) powered by a zero-dependency Rust engine (`ccide-core`, **v0.11.3**) and a 3-tier adaptive workspace controller.
 
-> **v0.5.0 highlights:** Live **`TASKS ⇄ Hardware Telemetry` sidebar panel** (automatically surfaces session task progress when incomplete tasks exist, supports `t`/`[HW]` toggling, and restores telemetry on completion), **default-unwrapped full-line Lazygit diffs & hash-free commit graphs** (`~/.config/cc-ide/viewer.json` `"wrap": false` default, optional `vi`-style `↪` wrapping) with compact single-column line numbers (`109│`), **real-time `Yazi` file-tree reveal on `Read`/`LSP`/`Edit`/`Write`** + clean H1–H6 Markdown previews, and **ergonomic hover-targeted, content-bounds-clamped Apple Magic Mouse & keyboard scrolling** across both `Lazygit` and `Yazi`.
+> **v0.11.3 highlights:** Fixed Lazygit CJK horizontal scrolling & bold-border `focused_panel` auto-sync (`pty-hscroll-bridge.py`), aligned `[0]-Log` CJK/ASCII author prefixes to `3 + 1 = 4` display columns matching `[4]-Commits` (`lazygit-log.py`), and added `Tab`/`Shift+Tab` cursor cycling inside the focused `SUBAGENTS`/`SWARM` sidebar panel.
+>
+> **v0.11.2 highlights:** Hardened Antigravity `transcript.jsonl` `"args"` & double-encoded string parsing, Swarm worker hook isolation & coordinator promotion, turn-accurate multi-model `COST` + `gemini-4-{argon,hydrogen,neon}`/`gpt-oss-120b` pricing, `is_safe_id` / internal-path filtering, and `(major, minor, patch)` bootstrap & missing-milestone release fallbacks.
+>
+> **v0.11.1 highlights:** Full native **Antigravity Swarm** observability (`SWARM #<board_head> · <run>run·<wait>wait`, swarm title & selected-worker latest `board.jsonl` activity row, `running`/`waiting`/`stopped`/`killed` states with `waiting` protected from dismissal and `killed` dismissible, click-to-inspect worker switching Logo + `CONTEXT` + Yazi follow without `SIGUSR2`, and multi-model Swarm `COST` aggregation across coordinator + unique worker transcripts), validated `--conversation <id>` / `CCIDE_AGY_CONVERSATION` (`^[A-Za-z0-9_-]{8,64}$`), `CCIDE_AGY_HOME`, and Python 3.9+ `merge_agent_hooks.py`.
+>
+> **v0.11.0 highlights:** Multi-agent support across **Claude Code (`[main]`)**, **Google Antigravity CLI (`[agy]`)**, and **OpenAI Codex CLI (`[codex]`)** via `--agy`, `--codex`, `--agent <claude|agy|codex>`, or `CCIDE_AGENT` — complete with live `Yazi` file-tree reveal (`read_file`/`edit_file`/`apply_patch`), disk-only fallback discovery (`last_conversations.json` / `rollout-*.jsonl`), model-family sprite & `CONTEXT`/`COST` telemetry, and non-destructive hook installation (`install.sh --with-agy --with-codex`).
 
 ```text
 ┌──────────────────────┬────────────────────────────────────────┬──────────────┐
@@ -70,7 +76,7 @@
 
 - **Rust Toolchain** — **Edition 2021, MSRV `1.70`+** (`rust-version = "1.70"` in `Cargo.toml`). No nightly features and no post-1.70 compiler requirements, and no external crate dependencies, so it builds out of the box on LTS Linux distributions and macOS. CI's MSRV job runs `cargo +1.70.0 check --all-targets` and `cargo +1.70.0 test` (see [`AGENT.md` §7.1](./AGENT.md) for the `Cargo.lock` note). If you have no `cargo` at all, `scripts/ensure-ccide-core.sh` fetches a prebuilt binary instead.
 - **Zsh** (`zsh`) & **Python 3** (`python3`)
-- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** CLI
+- **CLI Hosts**: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`), and optionally [Google Antigravity CLI](https://antigravity.google) (`agy`) or [OpenAI Codex CLI](https://github.com/openai/codex) (`codex`)
 - **[Yazi](https://github.com/sxyazi/yazi)** (`yazi` + `ya` CLI)
 - **[Lazygit](https://github.com/jesseduffield/lazygit)** (`lazygit`)
 - **Terminal**:
@@ -93,11 +99,11 @@ Or register the Claude Code plugin from the GitHub marketplace (Claude Code 2.1.
 ```
 
 What `./install.sh` does:
-1. Builds `ccide-core` with `cargo build --release` (honoring `CCIDE_RUSTFLAGS`, default `-C target-cpu=native`). If `cargo` is not installed, it falls back to `scripts/ensure-ccide-core.sh` to fetch the prebuilt release binary.
-2. Installs vector logo assets, helper scripts (`~/.claude/scripts/`), and the `ccide` launcher (`~/.local/bin/ccide`).
-3. On macOS, installs `ccide_daemon.py` into `~/Library/Application Support/iTerm2/Scripts/AutoLaunch/`, configures `~/.ssh/ccide_config` (`ControlMaster auto`), and starts `/tmp/.cc-ide/iterm_daemon.sock`.
-4. Registers the unified official Claude Code plugin (`cc-ide@cc-ide`) and statusline in `~/.claude/settings.json`.
-5. Applies idempotent, version-independent binary patches to the Claude Code binary (with automatic backup at `.bak`). Subsequent `ccide` launches re-patch automatically whenever Claude Code is updated.
+1. Builds `ccide-core` with `cargo build --release` (honoring `CCIDE_RUSTFLAGS`, default `-C target-cpu=native`). If `cargo` is not installed, it falls back to `scripts/ensure-ccide-core.{mjs,sh}` to fetch the milestone-pinned prebuilt release binary.
+2. Installs vector logo assets, helper scripts (`~/.claude/scripts/`), and the `ccide` launcher (`~/.local/bin/ccide`, or `ccide.cmd` + `ccide.ps1` via `install.ps1`).
+3. On macOS, installs `ccide_daemon.py` into `~/Library/Application Support/iTerm2/Scripts/AutoLaunch/`, configures `~/.ssh/ccide_config` (`ControlMaster auto`), and starts `$CCIDE_IPC_DIR/iterm_daemon.sock`.
+4. Registers the unified official Claude Code plugin (`cc-ide@cc-ide`) and statusline in `~/.claude/settings.json`. When `agy` / `codex` are present (or forced via `--with-agy` / `--with-codex`, `-WithAgy` / `-WithCodex` on Windows), installs the Antigravity plugin into `~/.gemini/config/plugins/cc-ide/` (stamped `.ccide-managed`) and merges `ccide-core` hooks into `$CODEX_HOME/hooks.json` via `scripts/merge_agent_hooks.py` (preserving foreign entries with a single-time `hooks.json.ccide.bak`). `--uninstall` cleanly reverses both.
+5. Applies idempotent, version-independent binary patches to the Claude Code binary (with automatic backup at `.bak`). Subsequent `ccide` launches re-patch automatically whenever Claude Code is updated (`agy` and `codex` are never binary-patched).
 
 ---
 
@@ -106,6 +112,16 @@ What `./install.sh` does:
 ```bash
 # Launch the 3-column workspace in the current project directory (Auto-selects Tier 1 -> Tier 2 -> Tier 3)
 ccide
+
+# Launch with Google Antigravity CLI (`agy`) or OpenAI Codex CLI (`codex`)
+ccide --agy
+ccide --agy --conversation <id>        # Validated ^[A-Za-z0-9_-]{8,64}$; or CCIDE_AGY_CONVERSATION / CCIDE_AGY_HOME
+ccide --codex
+CCIDE_AGENT=agy ccide --agent codex   # CLI flag overrides CCIDE_AGENT
+
+# Force non-destructive integration setup for agy / codex (reversible via --uninstall)
+./install.sh --with-agy --with-codex
+./install.sh --uninstall
 
 # Force universal tmux 3-column mode (works in Ghostty, Kitty, WezTerm, Alacritty, or SSH)
 ccide --tmux
@@ -120,11 +136,16 @@ ccide --no-git
 ./install.sh --patch-only
 
 # Dry-run the patcher and print a JSON compatibility report (exit 1 if a required anchor fails)
-python3 scripts/patch_claude_binary.py --verify
+python3 -I scripts/patch_claude_binary.py --verify
 
-# Uninstall binary patches and restore original claude.exe.bak
-./install.sh --uninstall
+# Inspect environment, backends, agents & hooks diagnostics
+ccide doctor --json
 ```
+
+### Multi-Agent Discovery, Antigravity Swarm & Opt-In `agy` Routing
+- **Hooks + Disk Fallback**: Both `agy` (`SessionStart` / `PostToolUse` emitting `{}`) and `codex` (`SessionStart` / `PostToolUse` emitting empty stdout) report live sessions to `ccide-core yazi-hook`, while every sidebar feature also works without hooks via disk-only discovery (`~/.gemini/antigravity-cli/cache/last_conversations.json` -> `transcript.jsonl`, and `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`). `scripts/merge_agent_hooks.py` supports Python 3.9+ (including stock macOS `/usr/bin/python3`).
+- **Native Antigravity Swarm Sidebar (`SWARM`)**: Automatically detects `<sys_gen>/swarm/{swarm.json,members.json,board.jsonl}` and `subagents/*.json` relative to the active `agy` transcript, displaying `SWARM #<board_head> · <run>run·<wait>wait`, the swarm title, and the selected worker's latest `board.jsonl` snippet. Worker statuses map to `running`, `waiting` (protected from dismissal), `stopped`, and `killed` (dismissible); clicking a worker switches the Top Logo, `CONTEXT` panel, and Yazi preview target without `SIGUSR2`, while `COST` aggregates across the coordinator and unique worker transcripts.
+- **Opt-In `agy` Subagent Routing (`CCIDE_AGY_ORCH=1`)**: `integrations/antigravity/hooks.json` registers **no `PreToolUse` hook by default** because Antigravity's `PreToolUse` gate is fail-closed (`allow`/`deny`/`ask`/`force_ask`). Only enable `CCIDE_AGY_ORCH=1` with an `invoke_subagent` `PreToolUse` matcher if you intentionally want `pre-tool-hook` to return `{"decision":"allow","overwrite":{"Model":"..."}}` (**warning: this auto-approves matched `invoke_subagent` calls**).
 
 Inside Claude Code, you can also invoke the built-in plugin skills:
 - `/cc-ide:ccide` — Open or reset companion panes in the current tab
@@ -138,25 +159,29 @@ Releases are promoted through a strict two-stage pull-request pipeline. Direct p
 
 | Stage | Branch | Trigger | CI Gate | Release Output |
 |-------|--------|---------|---------|----------------|
-| **Development** | `dev` | `push` / PR | `ci.yml`: Rust `1.70.0` MSRV check + tests, stable `rustfmt` + `clippy -D warnings`, 4-target build matrix (`aarch64`/`x86_64` × macOS/Linux), shell/Python/JSON manifest validation, patcher mutation tests | none |
-| **Preview RC** | `preview` | PR from `dev` merges (push) | Same gate **plus** live npm `@anthropic-ai/claude-code@latest` patch verification | Pre-release `v0.5.0-rc.<run_number>` marked *not latest* |
-| **Stable Release** | `main` | PR from `preview` merges (push) | Same gate **plus** live npm CC verification | Immutable `v0.5.0` marked *latest* |
+| **Development** | `dev` | `push` / PR | `ci.yml`: Rust `1.70.0` MSRV check + tests, stable `rustfmt` + `clippy -D warnings`, 6-target build matrix (`aarch64`/`x86_64` × macOS/Linux/Windows MSVC), shell/Python/JSON manifest validation, patcher & multi-agent tests | none |
+| **Preview RC** | `preview` | PR from `dev` merges (push) | Same gate **plus** live npm `@anthropic-ai/claude-code@latest` patch verification | Pre-release `v0.X.0-rc.<run_number>` (`0.X.0` milestones) |
+| **Stable Release** | `main` | PR from `preview` merges (push) | Same gate **plus** live npm CC verification | Immutable `v0.X.0` marked *latest* (`0.x.y` tags only) |
 
-- **CI Gate (`.github/workflows/ci.yml`)**: Runs on every push and PR to `dev`, `preview`, and `main`. The MSRV job builds and tests with a real `1.70.0` toolchain, then runs formatting and Clippy against stable. The `scripts-and-patcher` job validates `ensure-ccide-core.sh`, `install.sh`, `scripts/ccide`, and `pane-runner.sh`, byte-compiles the Python scripts, parses all plugin/hook/asset JSON manifests, runs the patcher mutation/structural unit tests, and — on `preview`/`main` — downloads the latest published Claude Code and runs `patch_claude_binary.py --verify` against it.
-- **Release Pipeline (`.github/workflows/release.yml`)**: Triggered on push to `preview` or `main`. Builds `ccide-core` for all four targets, packages `ccide-core-<triple>.tar.gz`, generates `SHA256SUMS.txt`, and publishes the GitHub Release. On `preview` the tag is a moving pre-release (`v0.5.0-rc.<run>`); on `main` it is the immutable stable `v0.5.0` and is marked `make_latest`.
+- **CI Gate (`.github/workflows/ci.yml`)**: Runs on every push and PR to `dev`, `preview`, and `main`. The MSRV job builds and tests with a real `1.70.0` toolchain, then runs formatting and Clippy against stable. The `scripts-and-patcher` job validates `ensure-ccide-core.{sh,mjs}`, `install.{sh,ps1}`, `scripts/ccide*`, and `pane-runner.sh`, byte-compiles the Python scripts, checks 5-way version parity, runs all `tests/` unit tests, and — on `preview`/`main` — verifies `@anthropic-ai/claude-code@latest`.
+- **Release Pipeline (`.github/workflows/release.yml`)**: Triggered on push to `preview` or `main`. Builds `ccide-core` across all 6 targets on `0.X.0` minor milestones, packages `ccide-core-<triple>.tar.gz`, generates `SHA256SUMS.txt`, and publishes the GitHub Release (on `0.x.y` patches, skips binary compilation and creates tag `v0.x.y` on `main`).
 - **Daily Upstream Compatibility Probe (`.github/workflows/cc-compat-watch.yml`)**: Runs at `03:17 UTC` every day (plus manual `workflow_dispatch`). It installs the current `@anthropic-ai/claude-code@latest` from npm, runs the patcher in `--verify` mode, and opens a deduplicated `[Compat Alert]` GitHub issue if the upstream bundle layout changes enough to break a required patch.
 
 ---
 
 ## Roadmap
 
-- **v1.0 — First-class PowerShell (`pwsh` / Windows Terminal / WezTerm) support**: native Windows packaging and a PowerShell pane runner, extending the adaptive workspace beyond the current macOS + Linux matrix while keeping the same `30% | 54% | 16%` layout contract.
+- **v0.11.3 (Current)**: Lazygit CJK horizontal scrolling & bold-border focus sync, `[0]-Log` 4-column CJK author alignment, and `SUBAGENTS`/`SWARM` `Tab`/`Shift+Tab` cursor navigation.
+- **v0.11.2**: Hardened Antigravity `transcript.jsonl` parsing, Swarm worker hook isolation & coordinator promotion, turn-accurate multi-model `COST` + `gemini-4-*`/`gpt-oss-120b` pricing, `is_safe_id` / internal-path filtering, and `(M,m,p)` bootstrap / CI release fallbacks.
+- **v0.11.1**: Native Antigravity Swarm observability (`SWARM` header, board activity row, click-to-inspect worker Logo/`CONTEXT`/Yazi, multi-model Swarm `COST` aggregation, `--conversation` / `CCIDE_AGY_HOME`), plus Python 3.9+ compatibility in `scripts/merge_agent_hooks.py`.
+- **v0.11.0**: Multi-agent workspace, sidebar, telemetry & hook integration across **Claude Code**, **Google Antigravity CLI (`agy`)**, and **OpenAI Codex CLI (`codex`)**.
+- **v1.0**: First-class PowerShell (`pwsh`) Windows Terminal reopen-based rebalance, WezTerm packaging & marketplace distribution, and passing `LayoutPlan` column widths to the iTerm2 daemon (`30% | 54% | 16%`).
 
 ---
 
 ## Architecture Documentation
 
-See [`AGENT.md`](./AGENT.md) for the complete module breakdown, FFI contracts, IPC file specifications (`/tmp/.cc-ide/*`), and the structural binary-patching strategy.
+See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md), [`docs/ARCH_v0.11_multi_agent.md`](./docs/ARCH_v0.11_multi_agent.md), [`docs/ARCH_v0.11.1_agy_swarm.md`](./docs/ARCH_v0.11.1_agy_swarm.md), [`docs/ARCH_v0.11.2_hardening.md`](./docs/ARCH_v0.11.2_hardening.md), and [`AGENT.md`](./AGENT.md) for the complete module breakdown, multi-agent & Swarm contracts, FFI/IPC specifications, and structural binary-patching strategy.
 
 ---
 

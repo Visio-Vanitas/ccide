@@ -3,7 +3,8 @@
 //! Subcommands (`macOS`, `Linux`, `Windows MSVC`, zero external Cargo dependencies):
 //! - `ccide-core sidebar <target_dir> <yazi_id> [shell_pid]`
 //! - `ccide-core pane-runner <yazi|lazygit|macmon|sidebar> <target_dir> [yazi_id] [shell_pid]`
-//! - `ccide-core yazi-hook`
+//! - `ccide-core yazi-hook [--agent claude|agy|codex]`
+//! - `ccide-core pre-tool-hook [--agent claude|agy|codex]`
 //! - `ccide-core statusline`
 //! - `ccide-core workspace <open|close|rebalance|detect|focus|switch-subagent|clear-subagents|theme> ...`
 //! - `ccide-core setup [project_root]` / `ccide-core doctor [--json] [project_root]`
@@ -23,6 +24,20 @@ mod telemetry;
 mod tui;
 
 use std::env;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
+fn parse_forced_agent(args: &[String]) -> Option<session::AgentKind> {
+    let mut it = args.iter().skip(2);
+    while let Some(arg) = it.next() {
+        if arg == "--agent" {
+            return it.next().and_then(|v| session::AgentKind::from_name(v));
+        }
+        if let Some(v) = arg.strip_prefix("--agent=") {
+            return session::AgentKind::from_name(v);
+        }
+    }
+    None
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -45,9 +60,19 @@ fn main() {
             commands::sidebar::run(&target_dir, yazi_id, shell_pid);
         }
         "pane-runner" => commands::pane_runner::run(&args),
-        "pre-tool-hook" => commands::pre_tool_hook::run_pre_tool_hook(),
+        "pre-tool-hook" => {
+            let forced = parse_forced_agent(&args);
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                commands::pre_tool_hook::run_pre_tool_hook_with_agent(forced);
+            }));
+        }
         "orchestrator" => commands::pre_tool_hook::run_orchestrator_cli(&args),
-        "yazi-hook" => commands::yazi_hook::run(),
+        "yazi-hook" => {
+            let forced = parse_forced_agent(&args);
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                commands::yazi_hook::run_with_agent(forced);
+            }));
+        }
         "statusline" => commands::statusline::run(),
         "workspace" => commands::workspace::run(&args),
         "setup" | "install" => commands::setup::run_setup(&args),

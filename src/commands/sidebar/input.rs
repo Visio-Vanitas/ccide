@@ -27,6 +27,8 @@ pub enum InputEvent {
     DismissSelected,
     ClearAllDone,
     ToggleBottomPanel,
+    Tab,
+    BackTab,
     ToggleOrchestrator,
     FocusIn,
     FocusOut,
@@ -133,6 +135,7 @@ pub fn parse_input_events(input: &str) -> Vec<InputEvent> {
                     ("3", b'~') => events.push(InputEvent::DismissSelected),
                     ("1", b'~') | ("7", b'~') | ("", b'H') => events.push(InputEvent::Home),
                     ("4", b'~') | ("8", b'~') | ("", b'F') => events.push(InputEvent::End),
+                    ("", b'Z') | ("1;2", b'Z') => events.push(InputEvent::BackTab),
                     (_, b'A') => events.push(InputEvent::CursorUp),
                     (_, b'B') => events.push(InputEvent::CursorDown),
                     (_, b'C') => events.push(InputEvent::CursorRight),
@@ -172,7 +175,8 @@ pub fn parse_input_events(input: &str) -> Vec<InputEvent> {
             b'\r' | b'\n' | b' ' => events.push(InputEvent::ActivateSelected),
             b'x' | b'X' | b'd' | b'D' | 0x7f | 0x08 => events.push(InputEvent::DismissSelected),
             b'c' | b'C' => events.push(InputEvent::ClearAllDone),
-            b't' | b'T' | b'\t' => events.push(InputEvent::ToggleBottomPanel),
+            b't' | b'T' => events.push(InputEvent::ToggleBottomPanel),
+            b'\t' => events.push(InputEvent::Tab),
             b'o' | b'O' => events.push(InputEvent::ToggleOrchestrator),
             b'g' => events.push(InputEvent::Home),
             b'G' => events.push(InputEvent::End),
@@ -263,6 +267,16 @@ mod tests {
                 InputEvent::ClearAllDone,
                 InputEvent::FocusOut,
                 InputEvent::Escape,
+            ]
+        );
+        assert_eq!(
+            parse_input_events("\t\x1b[Z\x1b[1;2ZtT"),
+            vec![
+                InputEvent::Tab,
+                InputEvent::BackTab,
+                InputEvent::BackTab,
+                InputEvent::ToggleBottomPanel,
+                InputEvent::ToggleBottomPanel,
             ]
         );
     }

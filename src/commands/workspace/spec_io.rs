@@ -4,7 +4,7 @@ use std::fs;
 
 use crate::commands::workspace::spec::PaneSpec;
 use crate::ffi::{is_pid_alive, ProcToken};
-use crate::platform::{atomic_write, cache_dir, ipc_dir, ipc_path};
+use crate::platform::{atomic_write, cache_dir, ipc_dir, ipc_path, user_home_dir};
 
 pub fn read_pane_spec(yid: &str) -> Option<PaneSpec> {
     let raw = fs::read_to_string(ipc_path(&format!("panes_{yid}.txt"))).ok()?;
@@ -24,6 +24,17 @@ pub fn remove_tab_state(yid: &str) {
     let _ = fs::remove_file(ipc_path(&format!("reload_lg_{yid}")));
     for role in ["yazi", "lazygit", "mon", "sidebar"] {
         let _ = fs::remove_file(ipc_path(&format!("geom_{yid}_{role}.txt")));
+    }
+    let cdir = cache_dir(&user_home_dir());
+    for f in [
+        format!("tab_agent_{yid}.txt"),
+        format!("tab_conv_{yid}.txt"),
+        format!("live_tab_{yid}.json"),
+        format!("active_view_{yid}.txt"),
+        format!("main_last_file_{yid}.json"),
+        format!("tab_shell_{yid}.txt"),
+    ] {
+        let _ = fs::remove_file(cdir.join(f));
     }
 }
 
@@ -54,6 +65,16 @@ pub fn prune_dead_specs(home: &str) -> usize {
         };
         if !alive {
             remove_tab_state(yid);
+            for f in [
+                format!("tab_agent_{yid}.txt"),
+                format!("tab_conv_{yid}.txt"),
+                format!("live_tab_{yid}.json"),
+                format!("active_view_{yid}.txt"),
+                format!("main_last_file_{yid}.json"),
+                format!("tab_shell_{yid}.txt"),
+            ] {
+                let _ = fs::remove_file(cdir.join(f));
+            }
             pruned += 1;
         }
     }

@@ -3,14 +3,13 @@
 use std::collections::HashMap;
 
 use crate::commands::sidebar::hit_mask::FocusZone;
-use crate::commands::sidebar::input::{
-    default_cursor_for_active, parse_input_events, sync_scroll_to_cursor, InputEvent,
-};
+use crate::commands::sidebar::input::{default_cursor_for_active, parse_input_events, InputEvent};
 use crate::commands::sidebar::ipc::spawn_center_focus_restore;
 use crate::commands::sidebar::mouse_actions::{
     apply_masked_action, dismiss_all_completed, dismiss_single_completed,
 };
 pub use crate::commands::sidebar::mouse_actions::{DispatchEnv, SidebarSelectState};
+use crate::commands::sidebar::nav::{handle_tab, set_sub_cursor, toggle_bottom_panel};
 use crate::orchestrator::{OrchestratorConfig, ALL_ROLES};
 use crate::session::transcript::SubagentItem;
 
@@ -40,15 +39,15 @@ pub fn handle_input_batch(
                 sel.sub_cursor = None;
                 sel.orch_cursor = None;
             }
-            InputEvent::ToggleBottomPanel => {
-                sel.show_context = !sel.show_context;
-                sel.sub_cursor = None;
-                sel.focus_zone = Some(if sel.show_context {
-                    FocusZone::Context
-                } else {
-                    FocusZone::Telemetry
-                });
-            }
+            InputEvent::ToggleBottomPanel => toggle_bottom_panel(sel),
+            InputEvent::Tab | InputEvent::BackTab => handle_tab(
+                matches!(ev, InputEvent::Tab),
+                env,
+                subagents,
+                active_view_id,
+                sel,
+                cur_max_scroll,
+            ),
             InputEvent::ToggleOrchestrator => {
                 sel.show_orchestrator = !sel.show_orchestrator;
                 sel.sub_cursor = None;
@@ -78,18 +77,11 @@ pub fn handle_input_batch(
                     sel.orch_cursor = Some(sel.orch_cursor.unwrap_or(0).saturating_sub(1));
                 }
                 _ => {
-                    sel.focus_zone = Some(FocusZone::Subagents);
                     let next = sel
                         .sub_cursor
                         .unwrap_or_else(|| default_cursor_for_active(active_view_id, subagents))
                         .saturating_sub(1);
-                    sel.sub_cursor = Some(next);
-                    sync_scroll_to_cursor(
-                        next,
-                        &mut sel.sub_scroll,
-                        env.viewport_h,
-                        cur_max_scroll,
-                    );
+                    set_sub_cursor(next, env, sel, cur_max_scroll);
                 }
             },
             InputEvent::CursorDown => match sel.focus_zone {
@@ -105,19 +97,12 @@ pub fn handle_input_batch(
                     );
                 }
                 _ => {
-                    sel.focus_zone = Some(FocusZone::Subagents);
                     let next = (sel
                         .sub_cursor
                         .unwrap_or_else(|| default_cursor_for_active(active_view_id, subagents))
                         + 1)
                     .min(max_idx);
-                    sel.sub_cursor = Some(next);
-                    sync_scroll_to_cursor(
-                        next,
-                        &mut sel.sub_scroll,
-                        env.viewport_h,
-                        cur_max_scroll,
-                    );
+                    set_sub_cursor(next, env, sel, cur_max_scroll);
                 }
             },
             InputEvent::PageUp => match sel.focus_zone {
@@ -125,23 +110,12 @@ pub fn handle_input_batch(
                     sel.cost_scroll = sel.cost_scroll.saturating_sub(3);
                 }
                 _ => {
-                    sel.focus_zone = Some(FocusZone::Subagents);
                     let step = (env.viewport_h / 2).max(1);
                     let next = sel
                         .sub_cursor
                         .unwrap_or_else(|| default_cursor_for_active(active_view_id, subagents))
                         .saturating_sub(step);
-                    sel.sub_cursor = Some(next);
-                    if next == 0 {
-                        sel.sub_scroll = 0;
-                    } else {
-                        sync_scroll_to_cursor(
-                            next,
-                            &mut sel.sub_scroll,
-                            env.viewport_h,
-                            cur_max_scroll,
-                        );
-                    }
+                    set_sub_cursor(next, env, sel, cur_max_scroll);
                 }
             },
             InputEvent::PageDown => match sel.focus_zone {
@@ -149,20 +123,13 @@ pub fn handle_input_batch(
                     sel.cost_scroll = (sel.cost_scroll + 3).min(env.cost_max_scroll);
                 }
                 _ => {
-                    sel.focus_zone = Some(FocusZone::Subagents);
                     let step = (env.viewport_h / 2).max(1);
                     let next = (sel
                         .sub_cursor
                         .unwrap_or_else(|| default_cursor_for_active(active_view_id, subagents))
                         + step)
                         .min(max_idx);
-                    sel.sub_cursor = Some(next);
-                    sync_scroll_to_cursor(
-                        next,
-                        &mut sel.sub_scroll,
-                        env.viewport_h,
-                        cur_max_scroll,
-                    );
+                    set_sub_cursor(next, env, sel, cur_max_scroll);
                 }
             },
             InputEvent::Home => match sel.focus_zone {
