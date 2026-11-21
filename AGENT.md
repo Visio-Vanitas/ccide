@@ -1,7 +1,7 @@
 # `cc-ide` (`ccide-core`) — Architecture & Agent Maintenance Guide
 
 ## 1. Overview
-`cc-ide` (v0.11.2) is a high-performance, cross-platform native engine for the 3-column tiling workspace across **Claude Code**, **Google Antigravity CLI (`agy`, including Antigravity Swarm)**, and **OpenAI Codex CLI (`codex`)** on **macOS**, **Linux**, and **Windows (`pwsh` / `cmd.exe`)**. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses zero external Cargo crates and no nightly features, and builds out of the box on LTS Linux distributions, macOS, and Windows MSVC:
+`cc-ide` (v0.11.3) is a high-performance, cross-platform native engine for the 3-column tiling workspace across **Claude Code**, **Google Antigravity CLI (`agy`, including Antigravity Swarm)**, and **OpenAI Codex CLI (`codex`)** on **macOS**, **Linux**, and **Windows (`pwsh` / `cmd.exe`)**. It is written in **Rust Edition 2021** with a **minimum supported Rust version of `1.70`** (`rust-version = "1.70"`), uses zero external Cargo crates and no nightly features, and builds out of the box on LTS Linux distributions, macOS, and Windows MSVC:
 - **Left Column (30%)**: `Yazi` File Tree (top, synced live on Claude Code `Read`/`Edit`/`Write`/`MultiEdit`/`NotebookEdit`/`LSP`/`Grep` ops — automatically revealing the file AND scrolling/highlighting the exact modified or inspected line range in preview via `assets/yazi-hscroll.lua` + `src/session/focus.rs`) + `Lazygit` Diff (bottom, unwrapped by default via `~/.config/cc-ide/viewer.json` with compact single-column `109│` line numbers via `scripts/lazygit-pager.sh`, full-stream zero-telemetry hash-free commit logs via `scripts/lazygit-log.py`, optional `vi`-style `↪` wrapping when `"wrap": true`, and hover-targeted content-bounds-clamped Magic Mouse scrolling via `scripts/pty-hscroll-bridge.py`), locked to zero terminal scrollback (`scrollback_lines = 0`).
 - **Center Column (54%)**: `Claude Code` Main Workspace (with native `viewing-agent` switching, untouched native `/btw` overlay, and clean bottom chrome).
 - **Right Column (16%)**: `ccide-core sidebar` 3-Tier Interactive TUI:
@@ -31,11 +31,11 @@ ccide/
 ├── install.sh                # POSIX Interactive TUI & Headless Installer, Doctor & Uninstaller
 ├── install.ps1 / install.cmd # Native PowerShell & cmd.exe Windows Installer, Doctor & Uninstaller
 ├── .claude-plugin/
-│   ├── marketplace.json      # Official Claude Code Marketplace manifest ("cc-ide" v0.11.2)
-│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.11.2)
+│   ├── marketplace.json      # Official Claude Code Marketplace manifest ("cc-ide" v0.11.3)
+│   └── plugin.json           # Official Claude Code Plugin manifest ("cc-ide" v0.11.3)
 ├── integrations/
 │   ├── antigravity/          # Native Antigravity plugin (`plugin.json`, `hooks*.json`, `hook.{sh,cmd}`)
-│   └── codex/                # Codex plugin & hooks (`.codex-plugin/plugin.json` v0.11.2, `hooks*.json`, `hook.{sh,cmd}`)
+│   └── codex/                # Codex plugin & hooks (`.codex-plugin/plugin.json` v0.11.3, `hooks*.json`, `hook.{sh,cmd}`)
 ├── hooks/
 │   ├── hooks.json            # Official Plugin Hooks (modules: ./register.ts + Pre/PostToolUse, Subagent*, PostModelSwitch, SessionStart)
 │   └── register.ts           # In-process mod: immediate slash commands (/palette, /rebalance-panes, /clear-agents, /orch, /ccide-doctor), turn.step TPS/TTFT & model sync
@@ -279,7 +279,7 @@ ccide doctor [--json]
 Installer side effects worth knowing:
 - **Stage 3a (`scripts/iterm-pyenv.py`)**: locates `iTerm.app` across `/Applications`, `~/Applications`, and `mdfind`; respects `PIP_INDEX_URL` / `pip config list` or concurrently probes `pypi.org`, TUNA, Aliyun, and USTC (cached 24h in `~/.cache/cc-ide/pypi_mirror.json`); provisions an isolated PEP 668-safe venv at `~/.local/share/cc-ide/pyenv` with `iterm2` installed and records `~/.cache/cc-ide/python_bin` (falling back cleanly to Tier 3 `tmux` with copy-pasteable commands when offline).
 - **Stage 3b (`scripts/iterm-preferences.py`)**: backs up `com.googlecode.iterm2.plist` + original key snapshot under `~/.config/cc-ide/backups/iterm2/`, idempotently applies `ShowPaneTitles=false`, `ShowPaneTitlesEvenIfOnlyOnePane=false`, `PerPaneBackgroundImage=false`, `DimInactiveSplitPanes=false`, and `EnableAPIServer=true` (leaving `SplitPaneDimmingAmount` untouched and clearing per-pane wallpapers via `LocalWriteOnlyProfile`), and supports exact rollback via `./install.sh --restore-iterm-preferences`.
-- **Scripts, SSH & Plugin Cache**: symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/` (and `ccide.cmd` + `ccide.ps1` on Windows via `install.ps1` / `install.cmd`), (re)writes `~/.ssh/ccide_config` + `Include` in `~/.ssh/config`, (re)starts `ccide_daemon.py`, packages `cc-ide` into `~/.claude/plugins/cache/cc-ide/cc-ide/0.11.2/` (fetching release binaries via `scripts/ensure-ccide-core.{mjs,sh}` when `cargo` is absent, trying `v<M>.<m>.0` first and falling back to `v<M>.<m>.<p>`, with `(M, m, p)` `--version` skew detection), and non-destructively installs Antigravity (`~/.gemini/config/plugins/cc-ide/`) & Codex (`$CODEX_HOME/hooks.json` via `scripts/merge_agent_hooks.py`) integrations when present or requested via `--with-agy` / `--with-codex`.
+- **Scripts, SSH & Plugin Cache**: symlinks `scripts/*` into `~/.claude/scripts/`, links `ccide`/`cc-ide` into `~/.local/bin/` (and `ccide.cmd` + `ccide.ps1` on Windows via `install.ps1` / `install.cmd`), (re)writes `~/.ssh/ccide_config` + `Include` in `~/.ssh/config`, (re)starts `ccide_daemon.py`, packages `cc-ide` into `~/.claude/plugins/cache/cc-ide/cc-ide/0.11.3/` (fetching release binaries via `scripts/ensure-ccide-core.{mjs,sh}` when `cargo` is absent, trying `v<M>.<m>.0` first and falling back to `v<M>.<m>.<p>`, with `(M, m, p)` `--version` skew detection), and non-destructively installs Antigravity (`~/.gemini/config/plugins/cc-ide/`) & Codex (`$CODEX_HOME/hooks.json` via `scripts/merge_agent_hooks.py`) integrations when present or requested via `--with-agy` / `--with-codex`.
 
 ---
 
@@ -302,7 +302,8 @@ Runs daily at `03:17 UTC` (and on `workflow_dispatch`). It resolves the newest `
 ---
 
 ## 8. Roadmap
-- **v0.11.2 (Current Multi-Agent & Swarm Hardening Release)**:
-  1. **Multi-Agent Workspace & Antigravity Swarm**: unified support for `claude`, `agy` (including Antigravity Swarm `SWARM #<board_head>`, click-to-inspect workers, multi-model `COST`), and `codex` (`rollout-*.jsonl`), hardened with real `"args"`/double-encoded parsing, coordinator promotion, worker hook isolation, turn-accurate `COST`, `gemini-4-*`/`gpt-oss-120b` pricing, `is_safe_id`/path filtering, and `release.yml`/`ensure-ccide-core` patch fallbacks.
+- **v0.11.3 (Current Release)**:
+  1. **Lazygit CJK Alignment & Sidebar `Tab` UX**: fixed CJK horizontal scroll matching & bold-border focus sync (`pty-hscroll-bridge.py`), aligned `[0]-Log` CJK/ASCII author prefixes to 4 display columns (`lazygit-log.py`), and added `Tab`/`Shift+Tab` cursor navigation inside `SUBAGENTS`/`SWARM`.
+  2. **Multi-Agent Workspace & Antigravity Swarm Hardening (`v0.11.0–v0.11.2`)**: unified support for `claude`, `agy` (including Antigravity Swarm `SWARM #<board_head>`, click-to-inspect workers, multi-model `COST`), and `codex` (`rollout-*.jsonl`), hardened with real `"args"`/double-encoded parsing, coordinator promotion, worker hook isolation, turn-accurate `COST`, `gemini-4-*`/`gpt-oss-120b` pricing, `is_safe_id`/path filtering, and `release.yml`/`ensure-ccide-core` patch fallbacks.
 - **v0.12**: remove read-only `legacy_ipc_dir()` (`/tmp/.cc-ide`) compatibility fallback and adopt Linux Ghostty native split transport once upstream supports surface-targeted split actions.
 - **v1.0**: first-class **PowerShell (`pwsh`) support** for Windows Terminal (including reopen-based rebalance) and WezTerm packaging & marketplace distribution, plus passing `LayoutPlan` column widths to the iTerm2 daemon (`30% | 54% | 16%`).

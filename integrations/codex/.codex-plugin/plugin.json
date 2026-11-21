@@ -1,6 +1,6 @@
 {
   "name": "cc-ide",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "description": "3-column adaptive terminal IDE workspace, context monitor, and live file reveal for Codex CLI",
   "author": {
     "name": "Visio-Vanitas"

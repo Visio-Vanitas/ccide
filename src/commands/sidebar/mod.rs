@@ -10,6 +10,7 @@ pub mod input;
 pub mod ipc;
 pub mod ipc_guard;
 pub mod mouse_actions;
+pub mod nav;
 pub mod orch_panel;
 pub mod subagents_panel;
 pub mod subagents_rows;

@@ -1,6 +1,6 @@
 {
   "name": "cc-ide",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "owner": {
     "name": "Visio-Vanitas"
   },
@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "cc-ide",
-      "version": "0.11.2",
+      "version": "0.11.3",
       "source": "./",
       "description": "3-column tiling workspace (Yazi + Lazygit | Claude Code | AI Companion & Hardware Oscilloscope + Split CONTEXT/COST Telemetry) with palette-unified syntax highlighting across iTerm2 Metal, Ghostty 1.3+, SSH OSC 1337, WezTerm, Windows Terminal (wt.exe), and tmux."
     }

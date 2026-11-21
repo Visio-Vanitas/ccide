@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.3] - 2026-11-21
+
+### Fixed
+- **Lazygit CJK Horizontal Scrolling & Focus Auto-Sync (`scripts/pty-hscroll-bridge.py`, `tests/test_viewer_and_hscroll.py`)**:
+  - Added `_row_plain_text` in `match_visible_main` so 2-column CJK/wide-character `""` trailing halves are not expanded into spaces (while keeping `find_boxes` and `has_popup_over_main` column coordinates exact).
+  - Fixed `can_scroll_right` to treat trailing wide-char `""` halves at `edge_x` as overflowing content (`!= " "`), and tracked `cell_bold` in `VtScreen` to sync `focused_panel` automatically from active bold borders.
+- **Lazygit `[0]-Log` 4-Column CJK Author Alignment (`scripts/lazygit-log.py`, `tests/test_viewer_and_hscroll.py`)**:
+  - Tightened wide-character budget in `compact_author` to `<= 3` display columns and stripped trailing separator/ZWJ residue so CJK and ASCII rows align cleanly at `3 + 1 = 4` display columns alongside Lazygit `[4]-Commits`, verified across both unwrapped and `--wrap` continuation lines.
+- **Right Sidebar `SUBAGENTS` / `SWARM` `Tab` Cursor Navigation (`src/commands/sidebar/{input,nav,dispatch,mod}.rs`)**:
+  - Split `\t` into `InputEvent::Tab` and `\x1b[Z`/`\x1b[1;2Z` into `InputEvent::BackTab`; when `FocusZone::Subagents` is active (e.g., after clicking `SubagentFrame`), `Tab`/`Shift+Tab` cycles `sub_cursor` (or `orch_cursor` in orchestrator view) downward/upward with wrapping and synced scrolling, while keeping `Tab` bottom-panel toggle outside `Subagents` and `t`/`T` global toggle everywhere.
+
+---
+
 ## [0.11.2] - 2026-11-20
 
 ### Fixed & Hardened
@@ -276,7 +289,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shared Cross-Platform Hardware Oscilloscope & Quadrant Model Logos (`src/telemetry/`, `src/tui/logo.rs`)**:
   - Single-instance `500 ms` `/tmp/.cc-ide/hw_telemetry_v1.bin` binary snapshot shared across all open tabs (`< 2 µs` read) rendering sub-pixel `CPU`, `GPU` (`IOKit AGX` / Linux `sysfs` & `nvidia-smi`), `MEM`, and `NET` curves alongside dynamic 2×2 Quadrant vector model logos (`CLAUDE`, `GEMINI`, `DEEPSEEK`, `OPENAI`, `GROK`).
 
-[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/Visio-Vanitas/ccide/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/Visio-Vanitas/ccide/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/Visio-Vanitas/ccide/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/Visio-Vanitas/ccide/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/Visio-Vanitas/ccide/compare/v0.10.1...v0.11.0

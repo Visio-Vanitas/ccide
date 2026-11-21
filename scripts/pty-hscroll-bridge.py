@@ -411,6 +411,12 @@ class VtFrameGate:
         return buf[:safe_end]
 
 
+def _row_plain_text(row: list[str], start: int, end: int) -> str:
+    if start < end and row[start] == "":
+        return " " + "".join(row[start + 1 : end])
+    return "".join(row[start:end])
+
+
 class VtScreen:
     """Lightweight VT cell tracker + 120Hz in-memory `[0]` viewport blitter."""
 
@@ -419,6 +425,7 @@ class VtScreen:
         self.cols = max(20, cols)
         self.grid: list[list[str]] = [[" "] * self.cols for _ in range(self.rows)]
         self.cell_touched = bytearray(self.rows * self.cols)
+        self.cell_bold = bytearray(self.rows * self.cols)
         self.r = 0
         self.c = 0
         self.saved_r = 0
@@ -512,6 +519,7 @@ class VtScreen:
         self.cols = cols
         self.grid = [[" "] * self.cols for _ in range(self.rows)]
         self.cell_touched = bytearray(self.rows * self.cols)
+        self.cell_bold = bytearray(self.rows * self.cols)
         self.r = min(self.r, self.rows - 1)
         self.c = min(self.c, self.cols - 1)
         self.matched_top_idx = None
@@ -527,6 +535,7 @@ class VtScreen:
         cols = self.cols
         grid = self.grid
         touched = self.cell_touched
+        bold = self.cell_bold
         r = self.r
         c = self.c
         state = self._vt_state
@@ -547,17 +556,26 @@ class VtScreen:
                     if cw > 0 and 0 <= r < rows and 0 <= c < cols:
                         row_ref = grid[r]
                         row_base = r * cols
+                        is_bold = 1 if self.cursor_sgr[2] else 0
                         if c > 0 and row_ref[c] == "":
                             row_ref[c - 1] = " "
                             touched[row_base + c - 1] = 1
+                            bold[row_base + c - 1] = 0
                         row_ref[c] = ch
                         touched[row_base + c] = 1
+                        bold[row_base + c] = is_bold
                         if cw == 2 and c + 1 < cols:
+                            if c + 2 < cols and row_ref[c + 2] == "":
+                                row_ref[c + 2] = " "
+                                touched[row_base + c + 2] = 1
+                                bold[row_base + c + 2] = 0
                             row_ref[c + 1] = ""
                             touched[row_base + c + 1] = 1
+                            bold[row_base + c + 1] = is_bold
                         elif cw == 1 and c + 1 < cols and row_ref[c + 1] == "":
                             row_ref[c + 1] = " "
                             touched[row_base + c + 1] = 1
+                            bold[row_base + c + 1] = 0
                         c += cw
             elif state == "esc":
                 if ch == "[":
@@ -608,22 +626,27 @@ class VtScreen:
                                 for cx in range(max(0, c), cols):
                                     grid[r][cx] = " "
                                     touched[rb + cx] = 1
+                                    bold[rb + cx] = 0
                             for ry in range(r + 1, rows):
                                 grid[ry] = [" "] * cols
                                 touched[ry * cols : (ry + 1) * cols] = b"\x01" * cols
+                                bold[ry * cols : (ry + 1) * cols] = b"\x00" * cols
                         elif seq == "1":
                             for ry in range(0, r):
                                 grid[ry] = [" "] * cols
                                 touched[ry * cols : (ry + 1) * cols] = b"\x01" * cols
+                                bold[ry * cols : (ry + 1) * cols] = b"\x00" * cols
                             if 0 <= r < rows:
                                 rb = r * cols
                                 for cx in range(0, min(cols, c + 1)):
                                     grid[r][cx] = " "
                                     touched[rb + cx] = 1
+                                    bold[rb + cx] = 0
                         elif seq in ("2", "3"):
                             for ry in range(rows):
                                 grid[ry] = [" "] * cols
                             touched[:] = b"\x01" * (rows * cols)
+                            bold[:] = b"\x00" * (rows * cols)
                     elif cmd == "K":
                         if 0 <= r < rows:
                             row_ref = grid[r]
@@ -632,14 +655,17 @@ class VtScreen:
                                 for cx in range(max(0, c), cols):
                                     row_ref[cx] = " "
                                     touched[rb + cx] = 1
+                                    bold[rb + cx] = 0
                             elif seq == "1":
                                 for cx in range(0, min(cols, c + 1)):
                                     row_ref[cx] = " "
                                     touched[rb + cx] = 1
+                                    bold[rb + cx] = 0
                             elif seq == "2":
                                 for cx in range(cols):
                                     row_ref[cx] = " "
                                     touched[rb + cx] = 1
+                                    bold[rb + cx] = 0
                     elif cmd == "X":
                         if 0 <= r < rows:
                             step = int(seq) if seq.isdigit() else 1
@@ -648,6 +674,7 @@ class VtScreen:
                             for cx in range(max(0, c), min(cols, c + step)):
                                 row_ref[cx] = " "
                                 touched[rb + cx] = 1
+                                bold[rb + cx] = 0
                     elif cmd in ("C", "a"):
                         step = int(seq) if seq.isdigit() else 1
                         c = min(cols - 1, c + step)
@@ -821,7 +848,7 @@ class VtScreen:
             self.plain_clips_mw = cmp_w
 
         grid_rows = [
-            clip_plain_cols("".join(ch if ch != "" else " " for ch in self.grid[ry][x0 + 1 : x1]).rstrip(), cmp_w)
+            clip_plain_cols(_row_plain_text(self.grid[ry], x0 + 1, x1).rstrip(), cmp_w)
             for ry in range(y0 + 1, vis_end_y)
         ]
         if not any(grid_rows):
@@ -1018,6 +1045,14 @@ class VtScreen:
 
         self.pending_pan_flush = False
         boxes_now = self.find_boxes()
+        if not getattr(self, "_dimmed_unfocused", False):
+            bold_pids = [
+                pid
+                for pid, (bx0, by0, _, _) in boxes_now.items()
+                if self.cell_bold[by0 * self.cols + bx0] == 1
+            ]
+            if len(bold_pids) == 1:
+                self.focused_panel = bold_pids[0]
         b0 = boxes_now.get("0")
         pre_restore = b""
         overlay = b""
@@ -1073,9 +1108,9 @@ class VtScreen:
             return False
         check_second = self.pan_x.get(pid, 0) > 0 and (edge_x - 1) > (x0 + 2)
         for ry in range(y0 + 1, min(self.rows, y1)):
-            if self.grid[ry][edge_x] not in (" ", ""):
+            if self.grid[ry][edge_x] != " ":
                 return True
-            if check_second and self.grid[ry][edge_x - 1] not in (" ", ""):
+            if check_second and self.grid[ry][edge_x - 1] != " ":
                 return True
         return False
 

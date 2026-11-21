@@ -277,11 +277,12 @@ def compact_author(raw_author: str) -> str:
         w = 0
         for c in name:
             cw = char_cols(c)
-            if w + cw > 4:
+            if w + cw > 3:
                 break
             out.append(c)
             w += cw
-        return "".join(out)
+        res = "".join(out).rstrip(" ._-\u200d")
+        return res or "??"
     parts = [p for p in re.split(r"[\s._-]+", name) if p]
     if len(parts) >= 2:
         return (parts[0][0] + parts[-1][0]).upper()

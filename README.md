@@ -2,8 +2,10 @@
 
 **Native 3-Column Tiling Terminal IDE & Real-Time Multi-Agent / Hardware Telemetry Companion (`macOS`, `Linux` & `Windows`)**
 
-`ccide` transforms **Claude Code**, **Google Antigravity CLI (`agy`)**, and **OpenAI Codex CLI (`codex`)** into a zero-polling, 3-column tiling terminal IDE (`30% Left | 54% Center | 16% Right`) powered by a zero-dependency Rust engine (`ccide-core`, **v0.11.2**) and a 3-tier adaptive workspace controller.
+`ccide` transforms **Claude Code**, **Google Antigravity CLI (`agy`)**, and **OpenAI Codex CLI (`codex`)** into a zero-polling, 3-column tiling terminal IDE (`30% Left | 54% Center | 16% Right`) powered by a zero-dependency Rust engine (`ccide-core`, **v0.11.3**) and a 3-tier adaptive workspace controller.
 
+> **v0.11.3 highlights:** Fixed Lazygit CJK horizontal scrolling & bold-border `focused_panel` auto-sync (`pty-hscroll-bridge.py`), aligned `[0]-Log` CJK/ASCII author prefixes to `3 + 1 = 4` display columns matching `[4]-Commits` (`lazygit-log.py`), and added `Tab`/`Shift+Tab` cursor cycling inside the focused `SUBAGENTS`/`SWARM` sidebar panel.
+>
 > **v0.11.2 highlights:** Hardened Antigravity `transcript.jsonl` `"args"` & double-encoded string parsing, Swarm worker hook isolation & coordinator promotion, turn-accurate multi-model `COST` + `gemini-4-{argon,hydrogen,neon}`/`gpt-oss-120b` pricing, `is_safe_id` / internal-path filtering, and `(major, minor, patch)` bootstrap & missing-milestone release fallbacks.
 >
 > **v0.11.1 highlights:** Full native **Antigravity Swarm** observability (`SWARM #<board_head> · <run>run·<wait>wait`, swarm title & selected-worker latest `board.jsonl` activity row, `running`/`waiting`/`stopped`/`killed` states with `waiting` protected from dismissal and `killed` dismissible, click-to-inspect worker switching Logo + `CONTEXT` + Yazi follow without `SIGUSR2`, and multi-model Swarm `COST` aggregation across coordinator + unique worker transcripts), validated `--conversation <id>` / `CCIDE_AGY_CONVERSATION` (`^[A-Za-z0-9_-]{8,64}$`), `CCIDE_AGY_HOME`, and Python 3.9+ `merge_agent_hooks.py`.
@@ -169,7 +171,8 @@ Releases are promoted through a strict two-stage pull-request pipeline. Direct p
 
 ## Roadmap
 
-- **v0.11.2 (Current)**: Hardened Antigravity `transcript.jsonl` parsing, Swarm worker hook isolation & coordinator promotion, turn-accurate multi-model `COST` + `gemini-4-*`/`gpt-oss-120b` pricing, `is_safe_id` / internal-path filtering, and `(M,m,p)` bootstrap / CI release fallbacks.
+- **v0.11.3 (Current)**: Lazygit CJK horizontal scrolling & bold-border focus sync, `[0]-Log` 4-column CJK author alignment, and `SUBAGENTS`/`SWARM` `Tab`/`Shift+Tab` cursor navigation.
+- **v0.11.2**: Hardened Antigravity `transcript.jsonl` parsing, Swarm worker hook isolation & coordinator promotion, turn-accurate multi-model `COST` + `gemini-4-*`/`gpt-oss-120b` pricing, `is_safe_id` / internal-path filtering, and `(M,m,p)` bootstrap / CI release fallbacks.
 - **v0.11.1**: Native Antigravity Swarm observability (`SWARM` header, board activity row, click-to-inspect worker Logo/`CONTEXT`/Yazi, multi-model Swarm `COST` aggregation, `--conversation` / `CCIDE_AGY_HOME`), plus Python 3.9+ compatibility in `scripts/merge_agent_hooks.py`.
 - **v0.11.0**: Multi-agent workspace, sidebar, telemetry & hook integration across **Claude Code**, **Google Antigravity CLI (`agy`)**, and **OpenAI Codex CLI (`codex`)**.
 - **v1.0**: First-class PowerShell (`pwsh`) Windows Terminal reopen-based rebalance, WezTerm packaging & marketplace distribution, and passing `LayoutPlan` column widths to the iTerm2 daemon (`30% | 54% | 16%`).

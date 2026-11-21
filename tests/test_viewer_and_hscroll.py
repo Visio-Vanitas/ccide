@@ -393,6 +393,157 @@ class TestViewerWrapAndHScroll(unittest.TestCase):
         for ry in range(1, 4):
             self.assertEqual(term.grid[ry], scr.grid[ry])
 
+    def test_cjk_main_hscroll_side_edge_and_bold_border_focus_sync(self) -> None:
+        bridge = load_script_module("pty_hscroll_bridge_cjk", "scripts/pty-hscroll-bridge.py")
+
+        def disp_w(s: str) -> int:
+            return sum(bridge.char_cols(ch) for ch in s)
+
+        # 1. [0]-Log CJK row matching & SGR 66/67 smooth pan
+        full_rows = [
+            "BD  │ ○ fix(test): 日期格式下拉用固定示例日期，避免月==日时文本碰撞",
+            "CA  ⏣─┤ Merge pull request #388 from org/fix-date-picker-collision",
+        ]
+        inner_w = 52
+        vis0 = bridge.clip_plain_cols(full_rows[0], inner_w)
+        vis0 += " " * (inner_w - disp_w(vis0))
+        vis1 = bridge.clip_plain_cols(full_rows[1], inner_w)
+        vis1 += " " * (inner_w - disp_w(vis1))
+
+        scr_cjk = bridge.VtScreen(6, 56)
+        scr_cjk.sid = 999996
+        scr_cjk.feed(
+            (
+                f"\x1b[1;1H╭─[0]─Log{'─' * (inner_w - 7)}╮"
+                f"\x1b[2;1H│{vis0}│"
+                f"\x1b[3;1H│{vis1}│"
+                f"\x1b[4;1H╰{'─' * inner_w}╯"
+            ).encode("utf-8")
+        )
+        scr_cjk.set_full_lines(full_rows, panel_w=inner_w)
+        b0 = scr_cjk.find_boxes()["0"]
+        self.assertEqual(scr_cjk.match_visible_main(b0), 0)
+
+        direct_out: list[bytes] = []
+        self.assertEqual(bridge.translate_input(b"\x1b[<66;20;2M", scr_cjk, [0.0], direct_out), b"")
+        self.assertEqual(scr_cjk.pan_x["0"], 2)
+        self.assertEqual(bridge.translate_input(b"\x1b[<66;20;2M", scr_cjk, [0.0], direct_out), b"")
+        self.assertEqual(scr_cjk.pan_x["0"], 4)
+        self.assertEqual(len(direct_out), 2)
+        self.assertIn("‹".encode("utf-8"), direct_out[-1])
+
+        self.assertEqual(bridge.translate_input(b"\x1b[<67;20;2M", scr_cjk, [0.0], direct_out), b"")
+        self.assertEqual(bridge.translate_input(b"\x1b[<67;20;2M", scr_cjk, [0.0], direct_out), b"")
+        self.assertEqual(scr_cjk.pan_x["0"], 0)
+
+        # 2. Side panel [4]-Commits CJK trailing half "" at edge_x = x1 - 1
+        scr_side = bridge.VtScreen(5, 28)
+        scr_side.focused_panel = "4"
+        scr_side.feed(
+            (
+                "\x1b[1;1H╭─[4]─Commits──────────╮"
+                "\x1b[2;1H│* feat: 123456789012期│"
+                "\x1b[3;1H╰──────────────────────╯"
+            ).encode("utf-8")
+        )
+        b4 = scr_side.find_boxes()["4"]
+        edge_x = b4[2] - 1
+        self.assertEqual(scr_side.grid[1][edge_x - 1], "期")
+        self.assertEqual(scr_side.grid[1][edge_x], "")
+        self.assertTrue(scr_side.can_scroll_right("4", b4))
+        self.assertEqual(bridge.translate_input(b"\x1b[<66;8;2M", scr_side, [0.0], []), b"L")
+
+        # 3. Active bold border auto-syncing focused_panel from "1" -> "2"
+        scr_focus = bridge.VtScreen(10, 30)
+        scr_focus.focused_panel = "1"
+        focus_frame = (
+            b"\x1b[?2026h"
+            b"\x1b[0m\x1b[1;1H\xe2\x95\xad\xe2\x94\x80[1]\xe2\x94\x80Status\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x95\xae"
+            b"\x1b[2;1H\xe2\x94\x82clean                 \xe2\x94\x82"
+            b"\x1b[3;1H\xe2\x95\xb0\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x95\xaf"
+            b"\x1b[4;1H\x1b[38;2;139;233;253m\x1b[1m\xe2\x95\xad\xe2\x94\x80[2]\xe2\x94\x80Files\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x95\xae"
+            b"\x1b[0m\x1b[5;1H\xe2\x94\x82M long_filename_overflow\xe2\x94\x82"
+            b"\x1b[6;1H\xe2\x95\xb0\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x95\xaf"
+            b"\x1b[0m\x1b[7;1H\xe2\x95\xad\xe2\x94\x80[4]\xe2\x94\x80Commits\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x95\xae"
+            b"\x1b[8;1H\xe2\x94\x82* c1                  \xe2\x94\x82"
+            b"\x1b[9;1H\xe2\x95\xb0\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x95\xaf"
+            b"\x1b[?2026l"
+        )
+        scr_focus.process_pty_chunk(focus_frame, 10, 30)
+        self.assertEqual(scr_focus.focused_panel, "2")
+        self.assertEqual(bridge.translate_input(b"\x1b[<66;6;5M", scr_focus, [0.0], []), b"L")
+
+    def test_lazygit_log_compact_author_cjk_fixed_4col_alignment(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        log_mod = load_script_module("lazygit_log_cjk", "scripts/lazygit-log.py")
+
+        cases = [
+            ("林栀夏", "林"),
+            ("油松", "油"),
+            ("林 栀夏", "林"),
+            ("林_dev", "林"),
+            ("林A", "林A"),
+            ("A林", "A林"),
+            ("AB林", "AB"),
+            ("Visio Vanitas", "VV"),
+            ("57U", "57U"),
+            ("Neko", "Nek"),
+            ("", "??"),
+        ]
+        for raw, expected in cases:
+            au = log_mod.compact_author(raw)
+            self.assertEqual(au, expected, msg=f"raw={raw!r}")
+            self.assertLessEqual(log_mod.visible_width(au), 3, msg=f"raw={raw!r}, au={au!r}")
+
+        dag_glyphs = {"○", "⏣", "│", "├", "╰"}
+
+        def prefix_before_dag(plain_line: str) -> str:
+            for idx, ch in enumerate(plain_line):
+                if ch in dag_glyphs:
+                    return plain_line[:idx]
+            self.fail(f"Expected DAG glyph in line: {plain_line!r}")
+
+        # Mixed ASCII & CJK commits forming merges + branches (every non-root row keeps a pipe)
+        git_stdout = "\n".join(
+            [
+                "\x1f".join(["c5", "m1", "Chihaya Anon", " (HEAD -> dev)", "feat: align commit log columns"]),
+                "\x1f".join(["m1", "b1 f1", "57U", "", "Merge pull request #388 from org/fix-cjk"]),
+                "\x1f".join(["f1", "b0", "林栀夏", "", "fix(test): 日期格式下拉用固定示例日期，避免月==日时文本碰撞以及超长主题换行对齐"]),
+                "\x1f".join(["b1", "b0", "油松", "", "chore: update lazygit sidebar layout"]),
+                "\x1f".join(["b0", "", "林A", "", "init: bootstrap repository"]),
+            ]
+        ) + "\n"
+        fake_res = SimpleNamespace(stdout=git_stdout, returncode=0)
+
+        with patch.object(log_mod.subprocess, "run", return_value=fake_res):
+            rows_unwrapped = log_mod.format_full_width_log(None, True, 20, 60, wrap_enabled=False)
+        self.assertEqual(len(rows_unwrapped), 5)
+        for row in rows_unwrapped:
+            plain = log_mod.strip_ansi(row)
+            pfx = prefix_before_dag(plain)
+            self.assertEqual(log_mod.visible_width(pfx), 4, msg=f"unwrapped misalignment: {plain!r}")
+
+        with patch.object(log_mod.subprocess, "run", return_value=fake_res):
+            rows_wrapped = log_mod.format_full_width_log(None, True, 20, 40, wrap_enabled=True)
+        plain_wrapped = [log_mod.strip_ansi(r) for r in rows_wrapped]
+        cjk_idx = next(i for i, ln in enumerate(plain_wrapped) if "林" in ln and "日期格式" in ln)
+        self.assertEqual(log_mod.visible_width(prefix_before_dag(plain_wrapped[cjk_idx])), 4)
+        cont_lines = []
+        for ln in plain_wrapped[cjk_idx + 1 :]:
+            if "↪" in ln:
+                cont_lines.append(ln)
+            else:
+                break
+        self.assertGreaterEqual(len(cont_lines), 1, msg=f"Expected continuation line after {plain_wrapped[cjk_idx]!r}")
+        for cln in cont_lines:
+            self.assertEqual(
+                log_mod.visible_width(prefix_before_dag(cln)),
+                4,
+                msg=f"continuation misalignment: {cln!r}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
